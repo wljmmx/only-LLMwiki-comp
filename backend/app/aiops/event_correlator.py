@@ -203,6 +203,8 @@ class EventCorrelator:
 
     def __init__(self, time_window_minutes: int = 5) -> None:
         self.time_window = timedelta(minutes=time_window_minutes)
+        # P2-2.1: 上次去重计数，供 correlate() 报告 noise_filtered 使用
+        self._last_dup_count: int = 0
 
     def ingest(self, events: list[dict]) -> dict:
         """接收事件并存储
@@ -276,14 +278,18 @@ class EventCorrelator:
         # 持久化 incident + 关联事件
         self._persist_incidents(conn, incidents)
 
+        # P2-2.1/P2-2.3: noise_filtered 包含指纹去重数 + 无实体单事件过滤数
+        dup_count = getattr(self, "_last_dup_count", 0)
+        noise_filtered = max(
+            0, len(events) - sum(len(i.alert_ids) for i in incidents)
+        )
         return {
             "incidents": [self._incident_to_dict(i) for i in incidents],
             "stats": {
                 "total_alerts": len(events),
                 "incidents": len(incidents),
-                "noise_filtered": max(
-                    0, len(events) - sum(len(i.alert_ids) for i in incidents)
-                ),
+                "noise_filtered": noise_filtered,
+                "duplicates_suppressed": dup_count,
             },
         }
 
@@ -471,8 +477,15 @@ class EventCorrelator:
         if not events:
             return []
 
+        # 0. P2-2.1 指纹去重：同指纹重复告警只保留首条，其余计入 duplicate_count
+        deduped, dup_count = self._deduplicate(events)
+        if dup_count:
+            logger.info("alert_dedup", duplicates=dup_count, kept=len(deduped))
+        # 记录去重计数，供 correlate() 计算 noise_filtered 使用
+        self._last_dup_count = dup_count
+
         # 1. 按时间窗口分批
-        batches = self._time_window_batch(events)
+        batches = self._time_window_batch(deduped)
 
         # 2. 每批内按实体维度聚类
         incidents: list[Incident] = []
@@ -491,6 +504,53 @@ class EventCorrelator:
             self._infer_root_cause(inc)
 
         return merged
+
+    # ────────── P2-2.1 指纹去重 ──────────
+
+    @staticmethod
+    def _fingerprint(e: Event) -> str:
+        """生成告警指纹（用于去重）
+
+        同 host+service+component+severity+message 视为同一告警的重复触发。
+        message 做轻量归一化：去除多余空白、转小写、截断到 200 字。
+        """
+        msg_norm = " ".join((e.message or "").lower().split())[:200]
+        raw = "|".join(
+            [
+                (e.host or "").lower(),
+                (e.service or "").lower(),
+                (e.component or "").lower(),
+                (e.severity or "").lower(),
+                msg_norm,
+            ]
+        )
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+    def _deduplicate(
+        self, events: list[Event]
+    ) -> tuple[list[Event], int]:
+        """P2-2.1 指纹去重：同指纹事件只保留首条（按时间戳最早）
+
+        重复事件计数为 noise（duplicate），不进入 incident。
+
+        Returns:
+            (deduped_events, duplicate_count)
+        """
+        if not events:
+            return [], 0
+        # 按时间戳排序，保留最早出现的
+        sorted_evts = sorted(events, key=lambda e: e.timestamp)
+        seen: dict[str, Event] = {}
+        dup_count = 0
+        for e in sorted_evts:
+            fp = self._fingerprint(e)
+            if fp in seen:
+                dup_count += 1
+            else:
+                seen[fp] = e
+        # 保持原时间顺序
+        deduped = sorted(seen.values(), key=lambda e: e.timestamp)
+        return deduped, dup_count
 
     def _time_window_batch(self, events: list[Event]) -> list[list[Event]]:
         """按时间窗口分批"""
