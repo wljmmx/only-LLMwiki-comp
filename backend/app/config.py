@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     doc_gen_token_soft: int = 120_000
     doc_gen_token_hard: int = 200_000
 
+    # 认证（P0-2）— 留空则关闭认证（开发模式）
+    api_token: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

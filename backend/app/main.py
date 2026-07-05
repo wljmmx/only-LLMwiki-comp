@@ -1,12 +1,12 @@
-"""FastAPI 应用入口 + 解析器 API（W3） + 抽取 API（W4） + 图谱 API（W5） + 编译 API（W6）"""
+"""FastAPI 应用入口 + 解析器 API（W3） + 抽取 API（W4） + 图谱 API（W5） + 编译 API（W6） + 文档存储 API（P0）"""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import structlog
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.responses import JSONResponse, Response
 
 from app.config import get_settings
 from app.parsers import get_parser, supported_formats
@@ -16,6 +16,8 @@ from app.knowledge import (
     GraphEntity, GraphRelation, get_graph_store, get_compiler, get_pipeline,
     get_review_queue,
 )
+from app.storage import get_document_store
+from app.auth import verify_token
 
 logger = structlog.get_logger()
 
@@ -50,11 +52,12 @@ async def list_parsers() -> dict[str, list[str]]:
     return {"formats": supported_formats()}
 
 
-@app.post("/parsers/parse/batch")
+@app.post("/parsers/parse/batch", dependencies=[Depends(verify_token)])
 async def parse_batch(files: list[UploadFile] = File(..., alias="files")) -> dict:
-    """批量解析，自动检测格式"""
+    """批量解析，自动检测格式（文件持久化存储）"""
     results = []
     formats = set(supported_formats())
+    store = get_document_store()
 
     for file in files:
         ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
@@ -63,44 +66,49 @@ async def parse_batch(files: list[UploadFile] = File(..., alias="files")) -> dic
             results.append({"filename": file.filename, "error": f"不支持的格式: {fmt}"})
             continue
 
-        import tempfile, os
-        suffix = os.path.splitext(file.filename or "")[1] or f".{fmt}"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(await file.read())
-            tmp_path = tmp.name
+        content = await file.read()
+        # 持久化存储
+        doc_meta = store.save(file.filename or "unknown", content, fmt)
+        stored_path = doc_meta["stored_path"]
 
         try:
             parser = get_parser(fmt)
-            doc = parser.parse(tmp_path, file.filename or "unknown")
-            results.append({"filename": file.filename, "format": fmt, "doc": _serialize_doc(doc)})
+            doc = parser.parse(stored_path, doc_meta["doc_id"])
+            store.update_status(doc_meta["doc_id"], "parsed", title=doc.title)
+            results.append({
+                "filename": file.filename, "format": fmt,
+                "doc_id": doc_meta["doc_id"],
+                "doc": _serialize_doc(doc),
+            })
         except Exception as e:
+            store.update_status(doc_meta["doc_id"], "error")
             results.append({"filename": file.filename, "format": fmt, "error": str(e)})
-        finally:
-            os.unlink(tmp_path)
 
     return {"results": results}
 
 
-@app.post("/parsers/parse/{fmt}")
+@app.post("/parsers/parse/{fmt}", dependencies=[Depends(verify_token)])
 async def parse_file(fmt: str, file: UploadFile = File(...)) -> dict:
-    """解析单个文件，返回 ParsedDocument 结构"""
+    """解析单个文件（持久化存储），返回 ParsedDocument 结构"""
     if fmt not in supported_formats():
         raise HTTPException(400, f"不支持的格式: {fmt}。支持: {supported_formats()}")
 
-    import tempfile, os
-
-    suffix = os.path.splitext(file.filename or "")[1] or f".{fmt}"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        content = await file.read()
-        tmp.write(content)
-        tmp_path = tmp.name
+    content = await file.read()
+    store = get_document_store()
+    doc_meta = store.save(file.filename or "unknown", content, fmt)
+    stored_path = doc_meta["stored_path"]
 
     try:
         parser = get_parser(fmt)
-        doc = parser.parse(tmp_path, file.filename or "unknown")
-        return _serialize_doc(doc)
-    finally:
-        os.unlink(tmp_path)
+        doc = parser.parse(stored_path, doc_meta["doc_id"])
+        store.update_status(doc_meta["doc_id"], "parsed", title=doc.title)
+        result = _serialize_doc(doc)
+        result["doc_id"] = doc_meta["doc_id"]
+        result["stored"] = True
+        return result
+    except Exception as e:
+        store.update_status(doc_meta["doc_id"], "error")
+        raise HTTPException(500, f"解析失败: {e}")
 
 
 def _serialize_doc(doc: ParsedDocument) -> dict:
@@ -121,7 +129,7 @@ def _serialize_doc(doc: ParsedDocument) -> dict:
 
 # ────────── W4 抽取 API ──────────
 
-@app.post("/extract", response_model=dict)
+@app.post("/extract", response_model=dict, dependencies=[Depends(verify_token)])
 async def extract_knowledge(file: UploadFile = File(...)) -> dict:
     """解析文档 → 抽取知识 → 置信度门控，返回完整结果"""
     import tempfile, os
@@ -182,7 +190,7 @@ async def extract_knowledge(file: UploadFile = File(...)) -> dict:
 # ────────── W8 审查队列 API ──────────
 
 @app.get("/review/queue")
-async def get_review_queue(
+async def list_review_queue(
     status: str = "pending",
     limit: int = 50,
     offset: int = 0,
@@ -204,7 +212,7 @@ async def review_stats() -> dict:
     return queue.get_stats()
 
 
-@app.post("/review/{item_id}/approve")
+@app.post("/review/{item_id}/approve", dependencies=[Depends(verify_token)])
 async def review_approve(item_id: int, note: str = "") -> dict:
     """批准审查项"""
     queue = get_review_queue()
@@ -214,7 +222,7 @@ async def review_approve(item_id: int, note: str = "") -> dict:
     return {"id": item_id, "status": "approved"}
 
 
-@app.post("/review/{item_id}/reject")
+@app.post("/review/{item_id}/reject", dependencies=[Depends(verify_token)])
 async def review_reject(item_id: int, note: str = "") -> dict:
     """驳回审查项"""
     queue = get_review_queue()
@@ -224,7 +232,7 @@ async def review_reject(item_id: int, note: str = "") -> dict:
     return {"id": item_id, "status": "rejected"}
 
 
-@app.post("/review/batch-approve")
+@app.post("/review/batch-approve", dependencies=[Depends(verify_token)])
 async def review_batch_approve(item_ids: list[int]) -> dict:
     """批量批准"""
     queue = get_review_queue()
@@ -234,7 +242,7 @@ async def review_batch_approve(item_ids: list[int]) -> dict:
 
 # ────────── W5 图谱存储 API ──────────
 
-@app.post("/graph/upload")
+@app.post("/graph/upload", dependencies=[Depends(verify_token)])
 async def graph_upload(file: UploadFile = File(...)) -> dict:
     """解析文档 → 抽取知识 → 编译 → 写入图谱（全流水线）"""
     import tempfile, os
@@ -437,7 +445,7 @@ def _entity_group(entity_type: str) -> int:
 
 # ────────── W6 编译 API ──────────
 
-@app.post("/compile")
+@app.post("/compile", dependencies=[Depends(verify_token)])
 async def compile_knowledge(file: UploadFile = File(...)) -> dict:
     """解析 → 抽取 → 编译（不写入图谱，仅返回编译结果）"""
     import tempfile, os
@@ -499,7 +507,7 @@ class DocGenRequest(BaseModel):
     max_iterations: int | None = None
 
 
-@app.post("/doc/generate")
+@app.post("/doc/generate", dependencies=[Depends(verify_token)])
 async def generate_document(req: DocGenRequest) -> dict:
     """多智能体文档生成（完整流水线）"""
     pipeline = get_pipeline()
@@ -521,7 +529,7 @@ async def generate_document(req: DocGenRequest) -> dict:
     }
 
 
-@app.post("/doc/generate-from-knowledge")
+@app.post("/doc/generate-from-knowledge", dependencies=[Depends(verify_token)])
 async def generate_from_knowledge(req: DocGenRequest) -> dict:
     """从知识图谱检索上下文 → 文档生成"""
     pipeline = get_pipeline()
@@ -559,3 +567,73 @@ async def generate_from_knowledge(req: DocGenRequest) -> dict:
         "token_usage": state.get("token_usage", 0),
         "error": state.get("error", ""),
     }
+
+
+# ──────────────────────────────────────────────────────────────────
+# P0-1: 文档管理 API
+# ──────────────────────────────────────────────────────────────────
+
+@app.get("/documents")
+async def list_documents(
+    limit: int = 50,
+    offset: int = 0,
+    format: str | None = None,
+    status: str | None = None,
+) -> dict:
+    """列出所有存储的文档"""
+    store = get_document_store()
+    docs = store.list(limit, offset, format, status)
+    stats = store.get_stats()
+    return {"documents": docs, "stats": stats, "limit": limit, "offset": offset}
+
+
+@app.get("/documents/stats")
+async def document_stats() -> dict:
+    """文档统计"""
+    store = get_document_store()
+    return store.get_stats()
+
+
+@app.get("/documents/search")
+async def search_documents(q: str, limit: int = 20) -> dict:
+    """搜索文档（按文件名/标题）"""
+    store = get_document_store()
+    results = store.search(q, limit)
+    return {"query": q, "results": results, "count": len(results)}
+
+
+@app.get("/documents/{doc_id}")
+async def get_document(doc_id: str) -> dict:
+    """获取文档元数据"""
+    store = get_document_store()
+    doc = store.get(doc_id)
+    if not doc:
+        raise HTTPException(404, f"文档不存在: {doc_id}")
+    return doc
+
+
+@app.get("/documents/{doc_id}/content")
+async def get_document_content(doc_id: str) -> Response:
+    """下载文档原始内容"""
+    store = get_document_store()
+    doc = store.get(doc_id)
+    if not doc:
+        raise HTTPException(404, f"文档不存在: {doc_id}")
+    content = store.read_content(doc_id)
+    if content is None:
+        raise HTTPException(404, "文件内容不存在（可能已被删除）")
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{doc["filename"]}"'},
+    )
+
+
+@app.delete("/documents/{doc_id}", dependencies=[Depends(verify_token)])
+async def delete_document(doc_id: str) -> dict:
+    """删除文档（文件+元数据）"""
+    store = get_document_store()
+    ok = store.delete(doc_id)
+    if not ok:
+        raise HTTPException(404, f"文档不存在: {doc_id}")
+    return {"deleted": True, "doc_id": doc_id}

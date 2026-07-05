@@ -47,6 +47,8 @@ services:
       # 抽取门控
       - CONFIDENCE_AUTO=0.85
       - CONFIDENCE_REVIEW=0.60
+      # 认证（留空关闭，生产请设置）
+      - OPSKG_API_TOKEN=${OPSKG_API_TOKEN:-}
     volumes:
       - backend_data:/app/data
     depends_on:
