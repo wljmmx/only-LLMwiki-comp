@@ -28,9 +28,11 @@ class OpenAICompatClient:
         default_temperature: float,
         default_max_tokens: int,
         label: str = "openai_compat",
+        embedding_model: str | None = None,
     ) -> None:
         self._label = label
         self._model = model
+        self._embedding_model = embedding_model
         self._default_temperature = default_temperature
         self._default_max_tokens = default_max_tokens
         self._client = AsyncOpenAI(
@@ -95,6 +97,31 @@ class OpenAICompatClient:
             logger.warning("health_check_failed", label=self._label, error=str(e))
             return False
 
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> list[list[float]]:
+        """调用 OpenAI 兼容的 embeddings API 生成向量
+
+        Args:
+            texts: 待向量化的文本列表
+            model: embedding 模型名（默认使用 self._embedding_model 或 chat 模型）
+        """
+        if not texts:
+            return []
+        emb_model = model or self._embedding_model or "text-embedding-3-small"
+        resp = await self._client.embeddings.create(
+            model=emb_model,
+            input=texts,
+            **kwargs,
+        )
+        # 按 index 排序确保顺序与输入一致
+        sorted_data = sorted(resp.data, key=lambda d: d.index)
+        return [list(d.embedding) for d in sorted_data]
+
 
 def build_vllm_client(settings) -> OpenAICompatClient:
     return OpenAICompatClient(
@@ -105,6 +132,7 @@ def build_vllm_client(settings) -> OpenAICompatClient:
         default_temperature=settings.llm_temperature,
         default_max_tokens=settings.llm_max_tokens,
         label="vllm",
+        embedding_model=getattr(settings, "embedding_model", None),
     )
 
 
@@ -117,4 +145,5 @@ def build_openai_compat_client(settings) -> OpenAICompatClient:
         default_temperature=settings.llm_temperature,
         default_max_tokens=settings.llm_max_tokens,
         label="openai_compat",
+        embedding_model=getattr(settings, "embedding_model", None),
     )

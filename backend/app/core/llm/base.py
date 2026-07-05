@@ -42,4 +42,11 @@ class LLMClient(Protocol):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]: ...
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> list[list[float]]: ...
     async def health(self) -> bool: ...

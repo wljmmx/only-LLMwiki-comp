@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     openai_compat_api_key: str = ""
     openai_compat_model: str = "deepseek-chat"
 
+    # Embedding（P2-1.1 向量检索）
+    # 留空则关闭向量检索，搜索退化为纯关键词
+    embedding_model: str = ""
+    embedding_dim: int = 1024
+    embedding_batch_size: int = 16
+
     # Neo4j
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"

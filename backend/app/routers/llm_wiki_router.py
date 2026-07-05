@@ -318,7 +318,7 @@ async def llm_wiki_recall(q: str, limit: int = 5) -> dict:
     """
     if not q.strip():
         raise HTTPException(400, "q 不能为空")
-    hits = recall_pages(q, limit=limit)
+    hits = await recall_pages(q, limit=limit)
     return {
         "query": q,
         "count": len(hits),

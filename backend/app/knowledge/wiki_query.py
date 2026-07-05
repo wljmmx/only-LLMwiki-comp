@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 import structlog
 
 from app.config import get_settings
-from app.core.llm import ChatMessage, get_llm_client
+from app.core.llm import ChatMessage, get_llm_client, embed_query, embed_texts
 from app.knowledge.wikilink import (
     render_wikilinks_text,
     get_backlinks,
@@ -31,6 +31,18 @@ from app.knowledge.wiki_index import list_wiki_pages, _key_from_slug
 from app.storage.version_control import get_version_control
 
 logger = structlog.get_logger()
+
+# 尝试 numpy 加速余弦相似度（与 SearchEngine 保持一致）
+try:  # pragma: no cover
+    import numpy as np  # type: ignore[import-untyped]
+
+    _HAS_NUMPY = True
+except ImportError:  # pragma: no cover
+    _HAS_NUMPY = False
+
+# wiki 页面 embedding 内存缓存：slug → (version, embedding)
+# 版本变化时自动失效（无需手动清理）
+_wiki_emb_cache: dict[str, tuple[int, list[float]]] = {}
 
 
 @dataclass
@@ -168,73 +180,270 @@ def _tokenize(text: str) -> list[str]:
 # ────────── 召回引擎 ──────────
 
 
-def recall_pages(
-    question: str, limit: int = 5, min_score: float = 5.0
+async def recall_pages(
+    question: str,
+    limit: int = 5,
+    min_score: float = 5.0,
+    *,
+    use_vector: bool = True,
+    rrf_k: int = 60,
 ) -> list[WikiPageHit]:
     """从 wiki 召回与问题相关的页面
 
-    评分：
-    - title 命中 +5
-    - tags 命中 +3
-    - body 命中 +1（每个匹配 token）
+    双路召回 + RRF 融合（P2-1.1）：
+    - 关键词路径：title +5 / tags +3 / body +1
+    - 向量路径：余弦相似度（依赖 LLM embedding，未配置时自动降级）
+    - 融合：Reciprocal Rank Fusion，score(d) = Σ 1/(k + rank_i(d))
 
     Args:
         question: 用户问题
         limit: 返回数量上限
-        min_score: 最低召回分数阈值（避免噪音召回）
+        min_score: 关键词路径最低分数阈值（避免噪音召回）
+        use_vector: 是否启用向量召回（默认 True，未配置 embedding 时自动降级）
+        rrf_k: RRF 平滑常数，默认 60（业界经验值）
     """
     tokens = _tokenize(question)
-    if not tokens:
-        return []
 
     pages = list_wiki_pages(limit=1000)
+    if not pages:
+        return []
+
     vc = get_version_control()
-    hits: list[WikiPageHit] = []
 
-    for p in pages:
-        if p["slug"] == "index":
-            continue
-        latest = vc.get_latest(_key_from_slug(p["slug"]))
-        if not latest:
-            continue
-        title = (p.get("title") or p["slug"]).lower()
-        tags = [t.lower() for t in p.get("tags", [])]
-        body_md = latest["content"]
-        body_text = render_wikilinks_text(body_md).lower()
+    # slug → body_md 缓存（关键词路径与向量路径共用，避免重复 I/O）
+    body_cache: dict[str, str] = {}
 
-        score = 0.0
-        matched_tokens: set[str] = set()
-        for tok in tokens:
-            if tok in matched_tokens:
+    # ── 关键词召回路径 ──
+    keyword_hits: dict[str, WikiPageHit] = {}
+    if tokens:
+        for p in pages:
+            if p["slug"] == "index":
                 continue
-            if tok in title:
-                score += 5
-                matched_tokens.add(tok)
-            elif any(tok in t for t in tags):
-                score += 3
-                matched_tokens.add(tok)
-            elif tok in body_text:
-                score += 1
-                matched_tokens.add(tok)
+            latest = vc.get_latest(_key_from_slug(p["slug"]))
+            if not latest:
+                continue
+            title = (p.get("title") or p["slug"]).lower()
+            tags = [t.lower() for t in p.get("tags", [])]
+            body_md = latest["content"]
+            body_cache[p["slug"]] = body_md
+            body_text = render_wikilinks_text(body_md).lower()
 
-        if score < min_score:
-            continue
+            score = 0.0
+            matched_tokens: set[str] = set()
+            for tok in tokens:
+                if tok in matched_tokens:
+                    continue
+                if tok in title:
+                    score += 5
+                    matched_tokens.add(tok)
+                elif any(tok in t for t in tags):
+                    score += 3
+                    matched_tokens.add(tok)
+                elif tok in body_text:
+                    score += 1
+                    matched_tokens.add(tok)
 
-        # 截取 snippet（首个命中 token 周围 200 字符）
-        snippet = _extract_snippet(body_md, list(matched_tokens))
-        hits.append(
-            WikiPageHit(
+            if score < min_score:
+                continue
+
+            snippet = _extract_snippet(body_md, list(matched_tokens))
+            keyword_hits[p["slug"]] = WikiPageHit(
                 slug=p["slug"],
                 title=p.get("title") or p["slug"],
                 type=p["type"],
                 score=score,
                 snippet=snippet,
             )
+
+    # ── 向量召回路径（P2-1.1） ──
+    vector_hits: dict[str, WikiPageHit] = {}
+    vector_used = False
+    if use_vector:
+        try:
+            query_emb = await embed_query(question)
+            if query_emb:
+                wiki_embs = await _get_wiki_embeddings(pages, vc, body_cache)
+                if wiki_embs:
+                    scored = _rank_by_cosine(query_emb, wiki_embs)
+                    # 取更多候选以保证 RRF 融合后 top-K 质量
+                    candidate_limit = max(limit * 3, 15)
+                    for slug, sim in scored[:candidate_limit]:
+                        if slug == "index":
+                            continue
+                        p = next((x for x in pages if x["slug"] == slug), None)
+                        if not p:
+                            continue
+                        body_md = body_cache.get(slug, "")
+                        snippet = (
+                            _extract_snippet(body_md, [question])
+                            if body_md
+                            else ""
+                        )
+                        vector_hits[slug] = WikiPageHit(
+                            slug=slug,
+                            title=p.get("title") or slug,
+                            type=p["type"],
+                            score=float(sim),
+                            snippet=snippet,
+                        )
+                    vector_used = bool(vector_hits)
+        except Exception as e:
+            logger.warning("wiki_vector_recall_failed", error=str(e))
+
+    # ── 融合 ──
+    if not vector_used:
+        # 向量不可用 → 仅返回关键词结果（兼容旧行为）
+        merged = list(keyword_hits.values())
+        merged.sort(key=lambda h: h.score, reverse=True)
+        return merged[:limit]
+
+    if not keyword_hits:
+        # 仅向量召回（例如问题为纯中文且分词后无 token 匹配）
+        merged = list(vector_hits.values())
+        merged.sort(key=lambda h: h.score, reverse=True)
+        return merged[:limit]
+
+    # RRF 融合
+    kw_ranked = sorted(
+        keyword_hits.items(), key=lambda kv: kv[1].score, reverse=True
+    )
+    vec_ranked = sorted(
+        vector_hits.items(), key=lambda kv: kv[1].score, reverse=True
+    )
+    kw_rank = {slug: i + 1 for i, (slug, _) in enumerate(kw_ranked)}
+    vec_rank = {slug: i + 1 for i, (slug, _) in enumerate(vec_ranked)}
+
+    all_slugs = set(kw_rank.keys()) | set(vec_rank.keys())
+    merged_hits: list[WikiPageHit] = []
+    for slug in all_slugs:
+        kw_hit = keyword_hits.get(slug)
+        vec_hit = vector_hits.get(slug)
+        rrf_score = 0.0
+        if slug in kw_rank:
+            rrf_score += 1.0 / (rrf_k + kw_rank[slug])
+        if slug in vec_rank:
+            rrf_score += 1.0 / (rrf_k + vec_rank[slug])
+        # 取较丰富的元信息（关键词路径通常带 snippet）
+        meta_hit = kw_hit or vec_hit
+        merged_hits.append(
+            WikiPageHit(
+                slug=slug,
+                title=meta_hit.title,
+                type=meta_hit.type,
+                score=rrf_score,
+                snippet=meta_hit.snippet,
+            )
         )
 
-    # 按分数降序
-    hits.sort(key=lambda h: h.score, reverse=True)
-    return hits[:limit]
+    merged_hits.sort(key=lambda h: h.score, reverse=True)
+    return merged_hits[:limit]
+
+
+async def _get_wiki_embeddings(
+    pages: list[dict],
+    vc,
+    body_cache: dict[str, str],
+) -> dict[str, list[float]]:
+    """获取 wiki 页面 embedding，带版本级内存缓存
+
+    缓存键：(slug, version)。version 变化时自动失效重算。
+    """
+    result: dict[str, list[float]] = {}
+    slugs_to_embed: list[str] = []
+    texts_to_embed: list[str] = []
+    versions_to_embed: list[int] = []
+
+    for p in pages:
+        slug = p["slug"]
+        if slug == "index":
+            continue
+        version = p.get("version", 0)
+        cached = _wiki_emb_cache.get(slug)
+        if cached and cached[0] == version:
+            result[slug] = cached[1]
+            continue
+
+        # 获取正文
+        body_md = body_cache.get(slug)
+        if body_md is None:
+            latest = vc.get_latest(_key_from_slug(slug))
+            if not latest:
+                continue
+            body_md = latest["content"]
+            body_cache[slug] = body_md
+
+        body = _strip_frontmatter(body_md)
+        # 拼接 title + body，截断到 2000 字符（避免 token 过多）
+        text = f"{p.get('title') or slug}\n{body}"[:2000]
+        slugs_to_embed.append(slug)
+        texts_to_embed.append(text)
+        versions_to_embed.append(version)
+
+    if not texts_to_embed:
+        return result
+
+    embs = await embed_texts(texts_to_embed)
+    if not embs:
+        return result
+
+    for slug, emb, version in zip(slugs_to_embed, embs, versions_to_embed):
+        _wiki_emb_cache[slug] = (version, emb)
+        result[slug] = emb
+
+    return result
+
+
+def _rank_by_cosine(
+    query_emb: list[float],
+    wiki_embs: dict[str, list[float]],
+) -> list[tuple[str, float]]:
+    """计算查询向量与所有 wiki 向量的余弦相似度，按降序返回"""
+    if not wiki_embs:
+        return []
+
+    if _HAS_NUMPY:
+        q_vec = np.asarray(query_emb, dtype=np.float32)
+        q_norm = float(np.linalg.norm(q_vec))
+        if q_norm == 0:
+            return []
+        q_unit = q_vec / q_norm
+        scored: list[tuple[str, float]] = []
+        for slug, emb in wiki_embs.items():
+            d_vec = np.asarray(emb, dtype=np.float32)
+            if d_vec.shape != q_vec.shape:
+                continue
+            d_norm = float(np.linalg.norm(d_vec))
+            if d_norm == 0:
+                continue
+            score = float(np.dot(q_unit, d_vec / d_norm))
+            scored.append((slug, score))
+    else:
+        scored = []
+        for slug, emb in wiki_embs.items():
+            score = _cosine_similarity(query_emb, emb)
+            scored.append((slug, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """纯 Python 余弦相似度（numpy 不可用时兜底）"""
+    import math
+
+    if len(a) != len(b) or not a:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def clear_wiki_embedding_cache() -> None:
+    """清空 wiki embedding 内存缓存（测试或运维使用）"""
+    _wiki_emb_cache.clear()
 
 
 def _extract_snippet(md: str, tokens: list[str], window: int = 200) -> str:
@@ -279,7 +488,7 @@ class WikiQAEngine:
             4. LLM 基于上下文回答，引用 [[slug]]
         """
         # 1. 召回
-        recalled = recall_pages(question, limit=recall_limit)
+        recalled = await recall_pages(question, limit=recall_limit)
         if not recalled:
             return WikiQueryResult(
                 question=question,

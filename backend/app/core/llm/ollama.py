@@ -18,6 +18,7 @@ class OllamaClient:
     def __init__(self, settings) -> None:
         self._base_url = settings.ollama_base_url.rstrip("/")
         self._model = settings.ollama_model
+        self._embedding_model = getattr(settings, "embedding_model", None) or settings.ollama_model
         self._timeout = settings.llm_timeout
         self._default_temperature = settings.llm_temperature
         self._default_max_tokens = settings.llm_max_tokens
@@ -96,3 +97,31 @@ class OllamaClient:
         except Exception as e:
             logger.warning("ollama_health_failed", error=str(e))
             return False
+
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> list[list[float]]:
+        """调用 Ollama 的 /api/embeddings 接口生成向量
+
+        注意：Ollama 的 embeddings 接口单次只接受一段文本，这里循环调用。
+        如需批量优化，可改用 /api/embed（新版 Ollama 支持）。
+        """
+        if not texts:
+            return []
+        emb_model = model or self._embedding_model
+        results: list[list[float]] = []
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            for text in texts:
+                resp = await client.post(
+                    f"{self._base_url}/api/embeddings",
+                    json={"model": emb_model, "prompt": text, **kwargs},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                emb = data.get("embedding") or []
+                results.append(list(emb))
+        return results
