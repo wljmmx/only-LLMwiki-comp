@@ -1,0 +1,196 @@
+# 运维知识图谱本体模型（V2.1）
+# 定义 12 类实体 + 11 类关系，对齐知识抽取引擎
+
+entities:
+  - name: Host
+    display: 主机/服务器
+    description: 物理机、虚拟机、容器宿主机
+    properties:
+      - hostname
+      - ip
+      - os
+      - os_version
+      - role          # web/db/cache/mq/monitor
+      - env           # prod/staging/dev
+      - cpu_cores
+      - memory_gb
+      - disk_gb
+      - status        # 正常/故障/维护中/已下线
+
+  - name: Service
+    display: 业务服务
+    description: 微服务、应用服务
+    properties:
+      - service_id
+      - name
+      - owner_team
+      - tier          # t0/t1/t2
+      - port
+      - health_check_url
+      - deploy_type   # k8s/vm/bare-metal
+
+  - name: Component
+    display: 中间件/组件
+    description: 数据库、缓存、消息队列、Nginx 等
+    properties:
+      - component_type  # mysql/redis/kafka/nginx/elasticsearch
+      - version
+      - port
+      - cluster_name
+      - config_path
+
+  - name: Parameter
+    display: 配置参数
+    description: 组件或服务的配置项
+    properties:
+      - key
+      - value
+      - default_value
+      - scope         # global/session/instance
+      - recommended_value
+      - risk_level    # safe/caution/danger
+
+  - name: Command
+    display: 命令/脚本
+    description: 运维命令、自动化脚本
+    properties:
+      - cmd
+      - shell         # bash/zsh/sql
+      - risk_level    # safe/caution/danger
+      - is_reversible
+      - expected_output
+
+  - name: Procedure
+    display: 操作步骤/SOP
+    description: 标准操作流程、故障恢复步骤
+    properties:
+      - title
+      - steps         # 步骤列表
+      - estimated_time
+      - rollback_plan
+      - required_approval
+
+  - name: Incident
+    display: 故障案例
+    description: 历史故障记录
+    properties:
+      - title
+      - severity      # P0/P1/P2/P3
+      - root_cause
+      - resolution
+      - impact_duration_minutes
+      - estimated_loss
+      - occurred_at
+      - resolved_at
+
+  - name: Symptom
+    display: 故障现象
+    description: 故障表现、告警信号
+    properties:
+      - description
+      - category      # cpu/memory/disk/network/application
+      - alert_name
+      - threshold
+
+  - name: Experience
+    display: 运维经验
+    description: 最佳实践、经验教训
+    properties:
+      - title
+      - content
+      - tags
+      - author
+      - verified      # true/false
+
+  - name: Concept
+    display: 概念/术语
+    description: 运维领域术语定义
+    properties:
+      - term
+      - definition
+      - category
+      - aliases
+
+  - name: Document
+    display: 文档
+    description: 原始文档引用
+    properties:
+      - title
+      - format
+      - path
+      - checksum
+      - author
+      - created_at
+      - updated_at
+
+relations:
+  - name: RUNS_ON
+    display: 运行于
+    from: Service
+    to: Host
+    description: 服务部署在主机上
+
+  - name: USES
+    display: 使用
+    from: Service
+    to: Component
+    description: 服务使用中间件/组件
+
+  - name: DEPENDS_ON
+    display: 依赖
+    from: Service
+    to: Service
+    description: 服务间调用依赖
+
+  - name: HAS_PARAMETER
+    display: 配置参数
+    from: Component
+    to: Parameter
+    description: 组件拥有配置参数
+
+  - name: CONFIGURED_BY
+    display: 配置来源
+    from: Parameter
+    to: Document
+    description: 参数的配置来源文档
+
+  - name: DESCRIBED_IN
+    display: 描述于
+    from: Host
+    to: Document
+    from_alt: [Service, Component, Procedure, Incident]
+    to: Document
+    description: 实体在文档中被描述
+
+  - name: INVOLVES
+    display: 涉及
+    from: Incident
+    to: Host
+    to_alt: [Service, Component]
+    description: 故障涉及的主机/服务/组件
+
+  - name: MANIFESTS_AS
+    display: 表现为
+    from: Incident
+    to: Symptom
+    description: 故障表现为某种现象
+
+  - name: RESOLVED_BY
+    display: 解决方式
+    from: Incident
+    to: Procedure
+    description: 故障通过某步骤解决
+
+  - name: DERIVED_FROM
+    display: 派生自
+    from: Experience
+    to: Incident
+    description: 经验从故障中总结
+
+  - name: RELATED_TO
+    display: 相关
+    from: Concept
+    to: Concept
+    from_alt: [Host, Service, Component, Parameter, Command, Procedure, Incident, Symptom, Experience, Document]
+    to_alt: [Host, Service, Component, Parameter, Command, Procedure, Incident, Symptom, Experience, Concept, Document]
+    description: 通用关联关系

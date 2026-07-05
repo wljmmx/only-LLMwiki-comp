@@ -14,6 +14,7 @@ from app.parsers.base import ParsedDocument, ParsedElement
 from app.extraction import KnowledgeExtractor, ExtractionStats
 from app.knowledge import (
     GraphEntity, GraphRelation, get_graph_store, get_compiler, get_pipeline,
+    get_review_queue,
 )
 
 logger = structlog.get_logger()
@@ -178,10 +179,57 @@ async def extract_knowledge(file: UploadFile = File(...)) -> dict:
         os.unlink(tmp_path)
 
 
-@app.get("/extract/review-queue")
-async def get_review_queue() -> dict:
-    """获取建议审查队列（占位，W6 实现持久化后返回实际数据）"""
-    return {"items": [], "note": "W6 实现：从 PostgreSQL 查询待审查条目"}
+# ────────── W8 审查队列 API ──────────
+
+@app.get("/review/queue")
+async def get_review_queue(
+    status: str = "pending",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """获取审查队列"""
+    queue = get_review_queue()
+    if status == "pending":
+        items = queue.list_pending(limit, offset)
+    else:
+        items = []  # 其他状态通过 stats 查询
+    stats = queue.get_stats()
+    return {"items": items, "stats": stats, "limit": limit, "offset": offset}
+
+
+@app.get("/review/stats")
+async def review_stats() -> dict:
+    """审查队列统计"""
+    queue = get_review_queue()
+    return queue.get_stats()
+
+
+@app.post("/review/{item_id}/approve")
+async def review_approve(item_id: int, note: str = "") -> dict:
+    """批准审查项"""
+    queue = get_review_queue()
+    ok = queue.approve(item_id, note)
+    if not ok:
+        raise HTTPException(404, f"审查项不存在: {item_id}")
+    return {"id": item_id, "status": "approved"}
+
+
+@app.post("/review/{item_id}/reject")
+async def review_reject(item_id: int, note: str = "") -> dict:
+    """驳回审查项"""
+    queue = get_review_queue()
+    ok = queue.reject(item_id, note)
+    if not ok:
+        raise HTTPException(404, f"审查项不存在: {item_id}")
+    return {"id": item_id, "status": "rejected"}
+
+
+@app.post("/review/batch-approve")
+async def review_batch_approve(item_ids: list[int]) -> dict:
+    """批量批准"""
+    queue = get_review_queue()
+    count = queue.batch_approve(item_ids)
+    return {"approved": count}
 
 
 # ────────── W5 图谱存储 API ──────────
@@ -232,6 +280,23 @@ async def graph_upload(file: UploadFile = File(...)) -> dict:
         compiler = get_compiler()
         compile_result = compiler.compile_and_store(entities, relations)
 
+        # 审查项存入审查队列
+        review_queue = get_review_queue()
+        review_entities_data = [
+            {"entity_type": e.entity_type, "name": e.name,
+             "properties": e.properties, "confidence": e.confidence,
+             "evidence_span": e.evidence_span, "source_doc_id": doc.doc_id}
+            for e in result.review_entities
+        ]
+        review_relations_data = [
+            {"relation_type": r.relation_type, "from_entity": r.from_entity,
+             "to_entity": r.to_entity, "properties": r.properties,
+             "confidence": r.confidence, "evidence_span": r.evidence_span,
+             "source_doc_id": doc.doc_id}
+            for r in result.review_relations
+        ]
+        review_result = review_queue.batch_add(review_entities_data, review_relations_data)
+
         return {
             "doc_id": doc.doc_id,
             "title": doc.title,
@@ -247,6 +312,7 @@ async def graph_upload(file: UploadFile = File(...)) -> dict:
             },
             "review_entities": len(result.review_entities),
             "review_relations": len(result.review_relations),
+            "review_queued": review_result,
             "discarded": result.discarded_count,
         }
     finally:
@@ -299,6 +365,74 @@ async def graph_by_type(entity_type: str, limit: int = 50) -> dict:
         return {"entity_type": entity_type, "results": results, "count": len(results)}
     except Exception as e:
         return {"error": str(e), "hint": "Neo4j 未连接或不可用"}
+
+
+@app.get("/graph/visualize")
+async def graph_visualize(entity_type: str | None = None, limit: int = 100) -> dict:
+    """图谱可视化数据（D3.js/vis.js force-directed graph 格式）"""
+    try:
+        store = get_graph_store()
+        driver = store.driver
+
+        with driver.session() as session:
+            if entity_type:
+                result = session.run(
+                    """
+                    MATCH (n:Entity {entity_type: $type})-[r]-(m:Entity)
+                    RETURN n.name AS source, n.entity_type AS source_type,
+                           type(r) AS relation, m.name AS target,
+                           m.entity_type AS target_type, r.confidence AS confidence
+                    LIMIT $limit
+                    """,
+                    type=entity_type, limit=limit,
+                )
+            else:
+                result = session.run(
+                    """
+                    MATCH (n:Entity)-[r]-(m:Entity)
+                    RETURN n.name AS source, n.entity_type AS source_type,
+                           type(r) AS relation, m.name AS target,
+                           m.entity_type AS target_type, r.confidence AS confidence
+                    LIMIT $limit
+                    """,
+                    limit=limit,
+                )
+
+            records = [dict(r) for r in result]
+
+            # 构建 D3.js 格式：{nodes: [...], links: [...]}
+            node_map = {}
+            links = []
+            for rec in records:
+                src_id = rec["source"]
+                tgt_id = rec["target"]
+                if src_id not in node_map:
+                    node_map[src_id] = {"id": src_id, "type": rec["source_type"], "group": _entity_group(rec["source_type"])}
+                if tgt_id not in node_map:
+                    node_map[tgt_id] = {"id": tgt_id, "type": rec["target_type"], "group": _entity_group(rec["target_type"])}
+                links.append({
+                    "source": src_id, "target": tgt_id,
+                    "type": rec["relation"], "confidence": rec["confidence"],
+                })
+
+            return {
+                "nodes": list(node_map.values()),
+                "links": links,
+                "node_count": len(node_map),
+                "link_count": len(links),
+            }
+    except Exception as e:
+        return {"error": str(e), "hint": "Neo4j 未连接或不可用", "nodes": [], "links": []}
+
+
+def _entity_group(entity_type: str) -> int:
+    """实体类型 → D3.js 颜色分组"""
+    groups = {
+        "Host": 1, "Service": 2, "Component": 3, "Parameter": 4,
+        "Command": 5, "Procedure": 6, "Incident": 7, "Symptom": 8,
+        "Experience": 9, "Concept": 10, "Document": 11,
+    }
+    return groups.get(entity_type, 0)
 
 
 # ────────── W6 编译 API ──────────

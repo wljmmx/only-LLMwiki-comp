@@ -1,0 +1,12 @@
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pydantic>=2.0
+pydantic-settings>=2.0
+structlog>=24.0
+httpx>=0.28
+neo4j>=5.0
+markitdown>=0.0.2
+unstructured>=0.16
+langgraph>=1.0
+langgraph-checkpoint>=4.0
+pyyaml>=6.0
