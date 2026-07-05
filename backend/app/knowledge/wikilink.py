@@ -8,11 +8,12 @@
 
 这是 L2 Wiki 层的基础设施，被 wiki_compiler / linter / wiki_api 共用。
 """
+
 from __future__ import annotations
 
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,24 +31,27 @@ WIKILINK_RE = re.compile(r"\[\[([a-zA-Z0-9][a-zA-Z0-9\-_]*)(?:\|([^\]]+))?\]\]")
 @dataclass
 class WikiLink:
     """解析出的 wikilink"""
-    slug: str           # 目标 slug
-    display: str        # 显示文本（默认等于 slug）
-    raw: str            # 原始文本 [[...]]
+
+    slug: str  # 目标 slug
+    display: str  # 显示文本（默认等于 slug）
+    raw: str  # 原始文本 [[...]]
 
 
 @dataclass
 class DeadLink:
     """死链"""
-    slug: str           # 不存在的目标 slug
-    source_slug: str    # 来源页面
-    line: int           # 行号
+
+    slug: str  # 不存在的目标 slug
+    source_slug: str  # 来源页面
+    line: int  # 行号
 
 
 @dataclass
 class BacklinkEntry:
     """反向索引条目"""
-    source_slug: str    # 来源页面
-    target_slug: str    # 目标页面
+
+    source_slug: str  # 来源页面
+    target_slug: str  # 目标页面
     display: str
     count: int
 
@@ -84,6 +88,7 @@ def render_wikilinks_html(md: str, slug_to_url: dict[str, str]) -> str:
     Returns:
         渲染后的 Markdown（wikilink 替换为 <a>）
     """
+
     def replace(m: re.Match) -> str:
         slug = m.group(1)
         display = m.group(2) or slug
@@ -99,12 +104,16 @@ def render_wikilinks_text(md: str) -> str:
 
     用于搜索索引、摘要等场景。
     """
+
     def replace(m: re.Match) -> str:
         return m.group(2) or m.group(1)
+
     return WIKILINK_RE.sub(replace, md)
 
 
-def validate_links(md: str, source_slug: str, existing_slugs: set[str]) -> list[DeadLink]:
+def validate_links(
+    md: str, source_slug: str, existing_slugs: set[str]
+) -> list[DeadLink]:
     """检测死链
 
     Args:
@@ -125,6 +134,7 @@ def validate_links(md: str, source_slug: str, existing_slugs: set[str]) -> list[
 
 
 # ────────── 反向索引（backlink）持久化 ──────────
+
 
 def _get_db() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -223,12 +233,15 @@ def get_backlinks(target_slug: str) -> list[BacklinkEntry]:
            ORDER BY count DESC, source_slug""",
         (target_slug,),
     ).fetchall()
-    return [BacklinkEntry(
-        source_slug=r["source_slug"],
-        target_slug=r["target_slug"],
-        display=r["display"],
-        count=r["count"],
-    ) for r in rows]
+    return [
+        BacklinkEntry(
+            source_slug=r["source_slug"],
+            target_slug=r["target_slug"],
+            display=r["display"],
+            count=r["count"],
+        )
+        for r in rows
+    ]
 
 
 def get_outlinks(source_slug: str) -> list[BacklinkEntry]:
@@ -240,12 +253,15 @@ def get_outlinks(source_slug: str) -> list[BacklinkEntry]:
            ORDER BY count DESC, target_slug""",
         (source_slug,),
     ).fetchall()
-    return [BacklinkEntry(
-        source_slug=r["source_slug"],
-        target_slug=r["target_slug"],
-        display=r["display"],
-        count=r["count"],
-    ) for r in rows]
+    return [
+        BacklinkEntry(
+            source_slug=r["source_slug"],
+            target_slug=r["target_slug"],
+            display=r["display"],
+            count=r["count"],
+        )
+        for r in rows
+    ]
 
 
 def get_orphan_slugs(known_slugs: set[str]) -> list[str]:
@@ -261,9 +277,7 @@ def get_orphan_slugs(known_slugs: set[str]) -> list[str]:
         return []
     conn = _get_db()
     # 查所有被链接的 target
-    rows = conn.execute(
-        "SELECT DISTINCT target_slug FROM wiki_backlinks"
-    ).fetchall()
+    rows = conn.execute("SELECT DISTINCT target_slug FROM wiki_backlinks").fetchall()
     linked_targets = {r["target_slug"] for r in rows}
     # 已知 slug 中不在 linked_targets 的就是孤岛
     return sorted(known_slugs - linked_targets)
@@ -282,14 +296,16 @@ def get_all_deadlinks(existing_slugs: set[str]) -> list[DeadLink]:
     rows = conn.execute(
         """SELECT DISTINCT source_slug, target_slug
            FROM wiki_backlinks
-           WHERE target_slug NOT IN ({})""".format(
-               ",".join("?" * len(existing_slugs))
-           ) if existing_slugs else
-           "SELECT DISTINCT source_slug, target_slug FROM wiki_backlinks",
+           WHERE target_slug NOT IN ({})""".format(",".join("?" * len(existing_slugs)))
+        if existing_slugs
+        else "SELECT DISTINCT source_slug, target_slug FROM wiki_backlinks",
         tuple(existing_slugs) if existing_slugs else (),
     ).fetchall()
-    return [DeadLink(
-        slug=r["target_slug"],
-        source_slug=r["source_slug"],
-        line=0,  # backlink 表不存行号
-    ) for r in rows]
+    return [
+        DeadLink(
+            slug=r["target_slug"],
+            source_slug=r["source_slug"],
+            line=0,  # backlink 表不存行号
+        )
+        for r in rows
+    ]

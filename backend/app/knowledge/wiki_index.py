@@ -5,19 +5,19 @@
 
 index.md 保存为特殊 slug `wiki:index`，由本模块自动刷新。
 """
+
 from __future__ import annotations
 
-import re
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any
 
 import structlog
 import yaml
 
 from app.storage.version_control import get_version_control
 from app.knowledge.wikilink import (
-    parse_wikilinks, get_orphan_slugs, update_backlinks, remove_backlinks,
+    get_orphan_slugs,
+    update_backlinks,
 )
 
 logger = structlog.get_logger()
@@ -27,7 +27,7 @@ INDEX_SLUG = "wiki:index"
 
 def _slug_from_key(doc_key: str) -> str:
     """wiki:nginx-502 → nginx-502"""
-    return doc_key[len("wiki:"):] if doc_key.startswith("wiki:") else doc_key
+    return doc_key[len("wiki:") :] if doc_key.startswith("wiki:") else doc_key
 
 
 def _key_from_slug(slug: str) -> str:
@@ -67,17 +67,19 @@ def list_wiki_pages(limit: int = 500) -> list[dict]:
         if not latest:
             continue
         meta, _ = _parse_frontmatter(latest["content"])
-        pages.append({
-            "slug": slug,
-            "doc_key": r["doc_key"],
-            "version": r["version"],
-            "title": meta.get("title") or r.get("title") or slug,
-            "type": meta.get("type", "concept"),
-            "tags": meta.get("tags", []),
-            "created_at": meta.get("created_at") or r["created_at"],
-            "updated_at": meta.get("updated_at") or r["created_at"],
-            "review_status": meta.get("review_status", "auto"),
-        })
+        pages.append(
+            {
+                "slug": slug,
+                "doc_key": r["doc_key"],
+                "version": r["version"],
+                "title": meta.get("title") or r.get("title") or slug,
+                "type": meta.get("type", "concept"),
+                "tags": meta.get("tags", []),
+                "created_at": meta.get("created_at") or r["created_at"],
+                "updated_at": meta.get("updated_at") or r["created_at"],
+                "review_status": meta.get("review_status", "auto"),
+            }
+        )
     return pages
 
 
@@ -140,7 +142,9 @@ def rebuild_index() -> dict:
 
     logger.info(
         "wiki_index_rebuilt",
-        pages=len(pages), orphans=len(orphan_slugs), types=len(by_type),
+        pages=len(pages),
+        orphans=len(orphan_slugs),
+        types=len(by_type),
     )
     return {
         "pages_count": len(pages),
@@ -179,7 +183,9 @@ def _render_index_md(
     lines.append("")
     lines.append("# Wiki Index")
     lines.append("")
-    lines.append(f"> 共 {len(all_pages)} 个页面，{len(orphans)} 个孤岛。最后更新：{now}")
+    lines.append(
+        f"> 共 {len(all_pages)} 个页面，{len(orphans)} 个孤岛。最后更新：{now}"
+    )
     lines.append("")
 
     # 按类型分组

@@ -18,9 +18,9 @@
   3. 按类别聚合：Host/Service/Component/Command/Procedure/Incident/Parameter
   4. 套用 runbook 模板组织输出
 """
+
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
 
 import structlog
@@ -36,11 +36,12 @@ logger = structlog.get_logger()
 @dataclass
 class RunbookSources:
     """引用来源"""
-    docs: list[dict] = field(default_factory=list)          # 来源文档
-    commands: list[dict] = field(default_factory=list)      # 命令清单
-    procedures: list[dict] = field(default_factory=list)    # 处置步骤
-    incidents: list[dict] = field(default_factory=list)     # 历史故障
-    parameters: list[dict] = field(default_factory=list)    # 配置参数
+
+    docs: list[dict] = field(default_factory=list)  # 来源文档
+    commands: list[dict] = field(default_factory=list)  # 命令清单
+    procedures: list[dict] = field(default_factory=list)  # 处置步骤
+    incidents: list[dict] = field(default_factory=list)  # 历史故障
+    parameters: list[dict] = field(default_factory=list)  # 配置参数
     hosts: list[str] = field(default_factory=list)
     services: list[str] = field(default_factory=list)
     components: list[str] = field(default_factory=list)
@@ -102,7 +103,8 @@ class RunbookGenerator:
         search_results = self.search.search(query, limit=max_docs)
         logger.info(
             "runbook_search_done",
-            query=query, hits=len(search_results),
+            query=query,
+            hits=len(search_results),
         )
 
         # 3. 抽取实体（从命中文档原文）
@@ -126,14 +128,16 @@ class RunbookGenerator:
                 logger.warning("runbook_parse_failed", doc_id=doc_id, error=str(e))
                 entities = []
 
-            sources.docs.append({
-                "doc_id": doc_id,
-                "title": doc_meta.get("title") or doc_id,
-                "format": fmt,
-                "score": hit.get("combined_score", 0.0),
-                "snippet": hit.get("snippet", "")[:200],
-                "entity_count": len(entities),
-            })
+            sources.docs.append(
+                {
+                    "doc_id": doc_id,
+                    "title": doc_meta.get("title") or doc_id,
+                    "format": fmt,
+                    "score": hit.get("combined_score", 0.0),
+                    "snippet": hit.get("snippet", "")[:200],
+                    "entity_count": len(entities),
+                }
+            )
 
             # 聚合实体
             for e in entities:
@@ -144,7 +148,10 @@ class RunbookGenerator:
 
         # 5. 生成 Markdown
         runbook_md = self._render_runbook(
-            symptom=symptom, service=service, host=host, sources=sources,
+            symptom=symptom,
+            service=service,
+            host=host,
+            sources=sources,
         )
 
         stats = {
@@ -179,6 +186,7 @@ class RunbookGenerator:
     def _tokenize(text: str) -> list[str]:
         """简单分词：按空白/标点切分，保留中英文混合词"""
         import re
+
         # 中英文+数字+短横线
         tokens = re.findall(r"[A-Za-z][A-Za-z0-9_-]+|[一-鿿]+|\d+", text)
         return tokens
@@ -187,33 +195,41 @@ class RunbookGenerator:
     def _collect_entity(entity, sources: RunbookSources) -> None:
         et = entity.entity_type
         if et == "Command":
-            sources.commands.append({
-                "name": entity.name,
-                "cmd": entity.properties.get("cmd", entity.name),
-                "shell": entity.properties.get("shell", "bash"),
-                "risk_level": entity.properties.get("risk_level", "low"),
-                "evidence": entity.evidence_span,
-                "source_doc_id": entity.source_doc_id,
-            })
+            sources.commands.append(
+                {
+                    "name": entity.name,
+                    "cmd": entity.properties.get("cmd", entity.name),
+                    "shell": entity.properties.get("shell", "bash"),
+                    "risk_level": entity.properties.get("risk_level", "low"),
+                    "evidence": entity.evidence_span,
+                    "source_doc_id": entity.source_doc_id,
+                }
+            )
         elif et == "Procedure":
-            sources.procedures.append({
-                "title": entity.name,
-                "raw_text": entity.properties.get("raw_text", ""),
-                "source_doc_id": entity.source_doc_id,
-            })
+            sources.procedures.append(
+                {
+                    "title": entity.name,
+                    "raw_text": entity.properties.get("raw_text", ""),
+                    "source_doc_id": entity.source_doc_id,
+                }
+            )
         elif et == "Incident":
-            sources.incidents.append({
-                "title": entity.name,
-                "severity": entity.properties.get("severity", "unknown"),
-                "source_doc_id": entity.source_doc_id,
-            })
+            sources.incidents.append(
+                {
+                    "title": entity.name,
+                    "severity": entity.properties.get("severity", "unknown"),
+                    "source_doc_id": entity.source_doc_id,
+                }
+            )
         elif et == "Parameter":
-            sources.parameters.append({
-                "key": entity.name,
-                "value": entity.properties.get("value", ""),
-                "scope": entity.properties.get("scope", ""),
-                "source_doc_id": entity.source_doc_id,
-            })
+            sources.parameters.append(
+                {
+                    "key": entity.name,
+                    "value": entity.properties.get("value", ""),
+                    "scope": entity.properties.get("scope", ""),
+                    "source_doc_id": entity.source_doc_id,
+                }
+            )
         elif et == "Host":
             sources.hosts.append(entity.name)
         elif et == "Service":
@@ -258,7 +274,10 @@ class RunbookGenerator:
 
     @staticmethod
     def _render_runbook(
-        symptom: str, service: str, host: str, sources: RunbookSources,
+        symptom: str,
+        service: str,
+        host: str,
+        sources: RunbookSources,
     ) -> str:
         """渲染 Runbook Markdown"""
         lines: list[str] = []
@@ -359,7 +378,9 @@ class RunbookGenerator:
         lines.append("## 7. 参考来源")
         lines.append("")
         for d in sources.docs:
-            lines.append(f"- [{d['title']}]({d['doc_id']}) (相关度 {d['score']:.3f}, 命中实体 {d['entity_count']})")
+            lines.append(
+                f"- [{d['title']}]({d['doc_id']}) (相关度 {d['score']:.3f}, 命中实体 {d['entity_count']})"
+            )
         lines.append("")
 
         # 8. 备注

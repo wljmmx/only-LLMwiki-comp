@@ -13,19 +13,19 @@
 2. Backlink 扩展：被召回页面的入链页面作为补充上下文
 3. 类型路由：故障类问题优先召回 incident/runbook；概念类优先 concept
 """
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
 
 import structlog
-import yaml
 
 from app.config import get_settings
 from app.core.llm import ChatMessage, get_llm_client
 from app.knowledge.wikilink import (
-    parse_wikilinks, render_wikilinks_text, get_backlinks,
+    render_wikilinks_text,
+    get_backlinks,
 )
 from app.knowledge.wiki_index import list_wiki_pages, _key_from_slug
 from app.storage.version_control import get_version_control
@@ -36,16 +36,18 @@ logger = structlog.get_logger()
 @dataclass
 class WikiPageHit:
     """召回的 wiki 页面"""
+
     slug: str
     title: str
     type: str
     score: float
-    snippet: str               # 命中片段（用于上下文）
+    snippet: str  # 命中片段（用于上下文）
 
 
 @dataclass
 class WikiQueryResult:
     """wiki Q&A 结果"""
+
     question: str
     answer: str
     cited_slugs: list[str] = field(default_factory=list)
@@ -59,17 +61,88 @@ class WikiQueryResult:
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _STOP_WORDS = {
     # 英文停用词
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "and", "or", "but", "if", "then", "of", "in", "on", "at", "to", "for",
-    "with", "without", "from", "by", "as", "into", "through",
-    "what", "how", "why", "when", "where", "who", "which",
-    "do", "does", "did", "can", "could", "should", "would", "will",
-    "i", "you", "he", "she", "it", "we", "they",
+    "the",
+    "a",
+    "an",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "and",
+    "or",
+    "but",
+    "if",
+    "then",
+    "of",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "with",
+    "without",
+    "from",
+    "by",
+    "as",
+    "into",
+    "through",
+    "what",
+    "how",
+    "why",
+    "when",
+    "where",
+    "who",
+    "which",
+    "do",
+    "does",
+    "did",
+    "can",
+    "could",
+    "should",
+    "would",
+    "will",
+    "i",
+    "you",
+    "he",
+    "she",
+    "it",
+    "we",
+    "they",
     # 中文停用词
-    "的", "是", "在", "了", "有", "和", "与", "或", "但", "如果",
-    "什么", "怎么", "为什么", "何时", "哪里", "哪个", "谁",
-    "我", "你", "他", "她", "它", "我们", "你们", "他们",
-    "请", "帮", "一下", "吗", "呢", "啊",
+    "的",
+    "是",
+    "在",
+    "了",
+    "有",
+    "和",
+    "与",
+    "或",
+    "但",
+    "如果",
+    "什么",
+    "怎么",
+    "为什么",
+    "何时",
+    "哪里",
+    "哪个",
+    "谁",
+    "我",
+    "你",
+    "他",
+    "她",
+    "它",
+    "我们",
+    "你们",
+    "他们",
+    "请",
+    "帮",
+    "一下",
+    "吗",
+    "呢",
+    "啊",
 }
 
 
@@ -94,7 +167,10 @@ def _tokenize(text: str) -> list[str]:
 
 # ────────── 召回引擎 ──────────
 
-def recall_pages(question: str, limit: int = 5, min_score: float = 5.0) -> list[WikiPageHit]:
+
+def recall_pages(
+    question: str, limit: int = 5, min_score: float = 5.0
+) -> list[WikiPageHit]:
     """从 wiki 召回与问题相关的页面
 
     评分：
@@ -146,13 +222,15 @@ def recall_pages(question: str, limit: int = 5, min_score: float = 5.0) -> list[
 
         # 截取 snippet（首个命中 token 周围 200 字符）
         snippet = _extract_snippet(body_md, list(matched_tokens))
-        hits.append(WikiPageHit(
-            slug=p["slug"],
-            title=p.get("title") or p["slug"],
-            type=p["type"],
-            score=score,
-            snippet=snippet,
-        ))
+        hits.append(
+            WikiPageHit(
+                slug=p["slug"],
+                title=p.get("title") or p["slug"],
+                type=p["type"],
+                score=score,
+                snippet=snippet,
+            )
+        )
 
     # 按分数降序
     hits.sort(key=lambda h: h.score, reverse=True)
@@ -175,6 +253,7 @@ def _extract_snippet(md: str, tokens: list[str], window: int = 200) -> str:
 
 
 # ────────── 答案生成 ──────────
+
 
 class WikiQAEngine:
     """基于 wiki 的问答引擎"""
@@ -213,18 +292,23 @@ class WikiQAEngine:
             existing_slugs = {h.slug for h in recalled}
             for hit in list(recalled):
                 for back in get_backlinks(hit.slug):
-                    if back.source_slug in existing_slugs or back.source_slug == "index":
+                    if (
+                        back.source_slug in existing_slugs
+                        or back.source_slug == "index"
+                    ):
                         continue
                     latest = self.vc.get_latest(_key_from_slug(back.source_slug))
                     if not latest:
                         continue
-                    recalled.append(WikiPageHit(
-                        slug=back.source_slug,
-                        title=back.display,
-                        type="",
-                        score=hit.score * 0.3,  # 较低权重
-                        snippet=_extract_snippet(latest["content"], [question]),
-                    ))
+                    recalled.append(
+                        WikiPageHit(
+                            slug=back.source_slug,
+                            title=back.display,
+                            type="",
+                            score=hit.score * 0.3,  # 较低权重
+                            snippet=_extract_snippet(latest["content"], [question]),
+                        )
+                    )
                     existing_slugs.add(back.source_slug)
                     if len(recalled) >= recall_limit + 2:
                         break
@@ -253,9 +337,8 @@ class WikiQAEngine:
         # 4. LLM 回答
         answer = await self._llm_answer(question, contexts)
         if not answer:
-            answer = (
-                "已召回以下 wiki 页面，但 LLM 暂时无法生成回答：\n"
-                + "\n".join(f"- [[{h.slug}]] {h.title}" for h in recalled)
+            answer = "已召回以下 wiki 页面，但 LLM 暂时无法生成回答：\n" + "\n".join(
+                f"- [[{h.slug}]] {h.title}" for h in recalled
             )
 
         return WikiQueryResult(
@@ -275,8 +358,7 @@ class WikiQAEngine:
         )
         prompt = (
             f"# 用户问题\n{question}\n\n"
-            f"# 相关 wiki 页面\n" + "\n\n".join(contexts)
-            + "\n\n# 回答要求\n"
+            f"# 相关 wiki 页面\n" + "\n\n".join(contexts) + "\n\n# 回答要求\n"
             "1. 直接回答问题，不要复述问题\n"
             "2. 在引用具体页面信息时，用 [[slug]] 标注来源\n"
             "3. 如有排查步骤，分点列出\n"
@@ -299,6 +381,7 @@ class WikiQAEngine:
 
 
 # ────────── 内部工具 ──────────
+
 
 def _strip_frontmatter(md: str) -> str:
     """剥离 frontmatter，返回正文"""

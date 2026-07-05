@@ -3,6 +3,7 @@
 支持将生成的文档导出为 Markdown / HTML / 纯文本格式。
 PDF 导出需要额外依赖（wkhtmltopdf），可选。
 """
+
 from __future__ import annotations
 
 import html
@@ -65,6 +66,7 @@ class Exporter:
     def to_text(self, title: str, content: str) -> bytes:
         """导出为纯文本"""
         import re
+
         # 去除 Markdown 标记
         text = re.sub(r"^#+\s+", "", content, flags=re.MULTILINE)
         text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
@@ -99,6 +101,7 @@ class Exporter:
     def _markdown_to_html(self, md: str) -> str:
         """简易 Markdown → HTML 转换（不依赖外部库）"""
         import re
+
         lines = md.split("\n")
         html_parts: list[str] = []
         in_code_block = False
@@ -208,13 +211,16 @@ class Exporter:
             import tempfile
 
             html_content = self.to_html(title, content).decode("utf-8")
-            with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w") as f:
+            with tempfile.NamedTemporaryFile(
+                suffix=".html", delete=False, mode="w"
+            ) as f:
                 f.write(html_content)
                 html_path = f.name
             pdf_path = html_path.replace(".html", ".pdf")
             subprocess.run(
                 ["wkhtmltopdf", "--quiet", html_path, pdf_path],
-                check=True, capture_output=True,
+                check=True,
+                capture_output=True,
             )
             with open(pdf_path, "rb") as f:
                 pdf_bytes = f.read()

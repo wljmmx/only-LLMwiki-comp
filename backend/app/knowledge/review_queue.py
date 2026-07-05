@@ -2,17 +2,16 @@
 
 基于 SQLite 的轻量级审查队列，存储待人工审查的抽取结果。
 """
+
 from __future__ import annotations
 
 import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import structlog
 
-from app.config import get_settings
 from app.knowledge.graph_store import GraphEntity, GraphRelation
 
 logger = structlog.get_logger()
@@ -58,8 +57,15 @@ def _init_schema(conn: sqlite3.Connection) -> None:
 class ReviewQueue:
     """审查队列"""
 
-    def add_entity(self, entity_type: str, name: str, properties: dict,
-                   confidence: float, evidence: str, source_doc_id: str) -> int:
+    def add_entity(
+        self,
+        entity_type: str,
+        name: str,
+        properties: dict,
+        confidence: float,
+        evidence: str,
+        source_doc_id: str,
+    ) -> int:
         """添加待审查实体"""
         conn = _get_db()
         now = datetime.now(timezone.utc).isoformat()
@@ -68,15 +74,31 @@ class ReviewQueue:
                (item_type, entity_type, name, properties, confidence,
                 evidence_span, source_doc_id, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            ("entity", entity_type, name, json.dumps(properties, ensure_ascii=False),
-             confidence, evidence, source_doc_id, now, now),
+            (
+                "entity",
+                entity_type,
+                name,
+                json.dumps(properties, ensure_ascii=False),
+                confidence,
+                evidence,
+                source_doc_id,
+                now,
+                now,
+            ),
         )
         conn.commit()
         return cursor.lastrowid
 
-    def add_relation(self, relation_type: str, from_entity: str, to_entity: str,
-                     properties: dict, confidence: float, evidence: str,
-                     source_doc_id: str) -> int:
+    def add_relation(
+        self,
+        relation_type: str,
+        from_entity: str,
+        to_entity: str,
+        properties: dict,
+        confidence: float,
+        evidence: str,
+        source_doc_id: str,
+    ) -> int:
         """添加待审查关系"""
         conn = _get_db()
         now = datetime.now(timezone.utc).isoformat()
@@ -85,9 +107,18 @@ class ReviewQueue:
                (item_type, relation_type, from_entity, to_entity, properties,
                 confidence, evidence_span, source_doc_id, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            ("relation", relation_type, from_entity, to_entity,
-             json.dumps(properties, ensure_ascii=False),
-             confidence, evidence, source_doc_id, now, now),
+            (
+                "relation",
+                relation_type,
+                from_entity,
+                to_entity,
+                json.dumps(properties, ensure_ascii=False),
+                confidence,
+                evidence,
+                source_doc_id,
+                now,
+                now,
+            ),
         )
         conn.commit()
         return cursor.lastrowid
@@ -198,6 +229,7 @@ class ReviewQueue:
         """将审查项回写知识图谱"""
         try:
             from app.knowledge.graph_store import get_graph_store
+
             store = get_graph_store()
 
             props = json.loads(item.get("properties", "{}"))
@@ -225,10 +257,13 @@ class ReviewQueue:
                     confidence=item.get("confidence", 0.0),
                 )
                 store.upsert_relation(rel)
-                logger.info("review_writeback_relation",
-                            from_=rel.from_entity, to=rel.to_entity)
+                logger.info(
+                    "review_writeback_relation", from_=rel.from_entity, to=rel.to_entity
+                )
         except Exception as e:
-            logger.error("review_writeback_failed", item_id=item.get("id"), error=str(e))
+            logger.error(
+                "review_writeback_failed", item_id=item.get("id"), error=str(e)
+            )
 
     def batch_approve(self, item_ids: list[int]) -> int:
         """批量批准"""

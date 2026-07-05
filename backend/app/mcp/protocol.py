@@ -15,6 +15,7 @@
 - impact_analysis: 影响分析
 - list_documents: 列出已上传文档
 """
+
 from __future__ import annotations
 
 import json
@@ -25,7 +26,9 @@ import structlog
 
 from app.knowledge import get_runbook_generator
 from app.aiops import (
-    get_event_correlator, get_change_correlator, get_topology_builder,
+    get_event_correlator,
+    get_change_correlator,
+    get_topology_builder,
 )
 from app.search import get_search_engine
 from app.storage import get_document_store
@@ -48,7 +51,11 @@ TOOLS: list[dict] = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "搜索关键词"},
-                "limit": {"type": "integer", "description": "返回结果数上限", "default": 5},
+                "limit": {
+                    "type": "integer",
+                    "description": "返回结果数上限",
+                    "default": 5,
+                },
             },
             "required": ["query"],
         },
@@ -62,7 +69,11 @@ TOOLS: list[dict] = [
                 "symptom": {"type": "string", "description": "故障现象描述"},
                 "service": {"type": "string", "description": "受影响服务（可选）"},
                 "host": {"type": "string", "description": "受影响主机（可选）"},
-                "max_docs": {"type": "integer", "description": "检索文档数上限", "default": 5},
+                "max_docs": {
+                    "type": "integer",
+                    "description": "检索文档数上限",
+                    "default": 5,
+                },
             },
             "required": ["symptom"],
         },
@@ -73,7 +84,11 @@ TOOLS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "enum": ["open", "closed"], "default": "open"},
+                "status": {
+                    "type": "string",
+                    "enum": ["open", "closed"],
+                    "default": "open",
+                },
                 "limit": {"type": "integer", "default": 10},
             },
         },
@@ -106,8 +121,14 @@ TOOLS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "node_type": {"type": "string", "enum": ["Host", "Service", "Component"]},
-                "relation": {"type": "string", "enum": ["RUNS_ON", "DEPENDS_ON", "USES"]},
+                "node_type": {
+                    "type": "string",
+                    "enum": ["Host", "Service", "Component"],
+                },
+                "relation": {
+                    "type": "string",
+                    "enum": ["RUNS_ON", "DEPENDS_ON", "USES"],
+                },
             },
         },
     },
@@ -117,7 +138,10 @@ TOOLS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "node_name": {"type": "string", "description": "节点名称（host/service/component）"},
+                "node_name": {
+                    "type": "string",
+                    "description": "节点名称（host/service/component）",
+                },
             },
             "required": ["node_name"],
         },
@@ -137,25 +161,30 @@ TOOLS: list[dict] = [
 
 # ────────── 工具实现 ──────────
 
+
 def _tool_search_knowledge(args: dict) -> str:
     query = args.get("query", "")
     limit = int(args.get("limit", 5))
     if not query:
         return json.dumps({"error": "query 不能为空"}, ensure_ascii=False)
     results = get_search_engine().search(query, limit=limit)
-    return json.dumps({
-        "query": query,
-        "count": len(results),
-        "results": [
-            {
-                "doc_id": r.get("doc_id"),
-                "title": r.get("title"),
-                "snippet": r.get("snippet", "")[:300],
-                "score": r.get("combined_score", 0.0),
-            }
-            for r in results
-        ],
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "query": query,
+            "count": len(results),
+            "results": [
+                {
+                    "doc_id": r.get("doc_id"),
+                    "title": r.get("title"),
+                    "snippet": r.get("snippet", "")[:300],
+                    "score": r.get("combined_score", 0.0),
+                }
+                for r in results
+            ],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _tool_generate_runbook(args: dict) -> str:
@@ -167,31 +196,39 @@ def _tool_generate_runbook(args: dict) -> str:
     max_docs = int(args.get("max_docs", 5))
     result = get_runbook_generator().generate(symptom, service, host, max_docs)
     # 只返回 Markdown 和统计，省略完整 sources 以节省 token
-    return json.dumps({
-        "runbook_md": result["runbook_md"],
-        "stats": result["stats"],
-        "sources_count": len(result["sources"]["docs"]),
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "runbook_md": result["runbook_md"],
+            "stats": result["stats"],
+            "sources_count": len(result["sources"]["docs"]),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _tool_list_incidents(args: dict) -> str:
     status = args.get("status", "open")
     limit = int(args.get("limit", 10))
     items = get_event_correlator().list_incidents(status, limit)
-    return json.dumps({
-        "count": len(items),
-        "incidents": [
-            {
-                "incident_id": i["incident_id"],
-                "started_at": i["started_at"],
-                "severity": i["severity"],
-                "alert_count": i.get("alert_count", 0),
-                "suspected_root_cause": i.get("suspected_root_cause", ""),
-                "scope": i.get("scope", {}),
-            }
-            for i in items
-        ],
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "count": len(items),
+            "incidents": [
+                {
+                    "incident_id": i["incident_id"],
+                    "started_at": i["started_at"],
+                    "severity": i["severity"],
+                    "alert_count": i.get("alert_count", 0),
+                    "suspected_root_cause": i.get("suspected_root_cause", ""),
+                    "scope": i.get("scope", {}),
+                }
+                for i in items
+            ],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _tool_get_incident(args: dict) -> str:
@@ -231,11 +268,15 @@ def _tool_get_topology(args: dict) -> str:
     relation = args.get("relation")
     result = get_topology_builder().get_topology(node_type=node_type, relation=relation)
     # 精简：只返回前 30 个节点和前 30 个边
-    return json.dumps({
-        "stats": result["stats"],
-        "nodes": result["nodes"][:30],
-        "edges": result["edges"][:30],
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "stats": result["stats"],
+            "nodes": result["nodes"][:30],
+            "edges": result["edges"][:30],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _tool_impact_analysis(args: dict) -> str:
@@ -243,37 +284,45 @@ def _tool_impact_analysis(args: dict) -> str:
     if not node_name:
         return json.dumps({"error": "node_name 不能为空"}, ensure_ascii=False)
     result = get_topology_builder().impact_analysis(node_name)
-    return json.dumps({
-        "node": result.get("node"),
-        "impacted_downstream": [
-            {"type": n["node_type"], "name": n["name"]}
-            for n in result.get("impacted_downstream", [])
-        ],
-        "potential_root_cause": [
-            {"type": n["node_type"], "name": n["name"]}
-            for n in result.get("potential_root_cause", [])
-        ],
-        "summary": result.get("summary", {}),
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "node": result.get("node"),
+            "impacted_downstream": [
+                {"type": n["node_type"], "name": n["name"]}
+                for n in result.get("impacted_downstream", [])
+            ],
+            "potential_root_cause": [
+                {"type": n["node_type"], "name": n["name"]}
+                for n in result.get("potential_root_cause", [])
+            ],
+            "summary": result.get("summary", {}),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _tool_list_documents(args: dict) -> str:
     limit = int(args.get("limit", 20))
     docs = get_document_store().list(limit=limit)
-    return json.dumps({
-        "count": len(docs),
-        "documents": [
-            {
-                "doc_id": d["doc_id"],
-                "filename": d.get("filename"),
-                "title": d.get("title"),
-                "format": d.get("format"),
-                "status": d.get("status"),
-                "size_bytes": d.get("size_bytes"),
-            }
-            for d in docs
-        ],
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "count": len(docs),
+            "documents": [
+                {
+                    "doc_id": d["doc_id"],
+                    "filename": d.get("filename"),
+                    "title": d.get("title"),
+                    "format": d.get("format"),
+                    "status": d.get("status"),
+                    "size_bytes": d.get("size_bytes"),
+                }
+                for d in docs
+            ],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 TOOL_HANDLERS = {
@@ -289,6 +338,7 @@ TOOL_HANDLERS = {
 
 
 # ────────── JSON-RPC 处理 ──────────
+
 
 def handle_request(request: dict) -> dict | None:
     """处理单个 JSON-RPC 请求
@@ -325,7 +375,9 @@ def handle_request(request: dict) -> dict | None:
             tool_args = params.get("arguments", {})
             if tool_name not in TOOL_HANDLERS:
                 return _error_response(
-                    req_id, -32601, f"未知工具: {tool_name}",
+                    req_id,
+                    -32601,
+                    f"未知工具: {tool_name}",
                 )
             handler = TOOL_HANDLERS[tool_name]
             text_result = handler(tool_args)
@@ -348,8 +400,12 @@ def handle_request(request: dict) -> dict | None:
         return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
     except Exception as e:
-        logger.error("mcp_handle_error", method=method, error=str(e),
-                     traceback=traceback.format_exc())
+        logger.error(
+            "mcp_handle_error",
+            method=method,
+            error=str(e),
+            traceback=traceback.format_exc(),
+        )
         if is_notification:
             return None
         return _error_response(req_id, -32603, f"内部错误: {e}")

@@ -3,6 +3,7 @@
 为生成的文档和编辑过的内容提供修订历史。
 每次保存创建新版本，支持 diff 对比和回滚。
 """
+
 from __future__ import annotations
 
 import difflib
@@ -93,11 +94,20 @@ class VersionControl:
                     "reason": "内容无变化",
                 }
 
-        cursor = conn.execute(
+        conn.execute(
             """INSERT INTO document_versions
                (doc_key, version, title, content, checksum, author, change_summary, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (doc_key, next_version, title, content, checksum, author, change_summary, now),
+            (
+                doc_key,
+                next_version,
+                title,
+                content,
+                checksum,
+                author,
+                change_summary,
+                now,
+            ),
         )
         conn.commit()
         logger.info("version_saved", doc_key=doc_key, version=next_version)
@@ -154,11 +164,15 @@ class VersionControl:
 
         lines1 = r1["content"].splitlines(keepends=True)
         lines2 = r2["content"].splitlines(keepends=True)
-        diff = list(difflib.unified_diff(
-            lines1, lines2,
-            fromfile=f"v{v1}", tofile=f"v{v2}",
-            lineterm="",
-        ))
+        diff = list(
+            difflib.unified_diff(
+                lines1,
+                lines2,
+                fromfile=f"v{v1}",
+                tofile=f"v{v2}",
+                lineterm="",
+            )
+        )
 
         # 统计
         added = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
@@ -166,7 +180,8 @@ class VersionControl:
 
         return {
             "doc_key": doc_key,
-            "v1": v1, "v2": v2,
+            "v1": v1,
+            "v2": v2,
             "added_lines": added,
             "removed_lines": removed,
             "diff": "".join(diff),

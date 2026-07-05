@@ -1,4 +1,5 @@
 """LLM 统一抽象：protocol + 消息/响应数据结构"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -25,6 +26,20 @@ class LLMResponse:
 class LLMClient(Protocol):
     @property
     def backend_name(self) -> str: ...
-    async def chat(self, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None, **kwargs: Any) -> LLMResponse: ...
-    async def stream(self, messages: list[ChatMessage], *, temperature: float | None = None, max_tokens: int | None = None, **kwargs: Any) -> AsyncIterator[str]: ...
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse: ...
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]: ...
     async def health(self) -> bool: ...

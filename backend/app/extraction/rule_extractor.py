@@ -11,16 +11,17 @@
 
 抽取产出经置信度门控后流入 ExtractionResult。
 """
+
 from __future__ import annotations
 
 import re
-from typing import Iterable
 
 import structlog
 
 from app.parsers.base import ParsedDocument, ParsedElement
 from app.extraction.types import (
-    ExtractionResult, ExtractedEntity, ExtractedRelation,
+    ExtractedEntity,
+    ExtractedRelation,
 )
 
 logger = structlog.get_logger()
@@ -61,8 +62,12 @@ SERVICE_RE = re.compile(
     r"\b([a-z][a-z0-9_-]*(?:-service|service|svc|api))\b", re.IGNORECASE
 )
 # 配置项：key: value 或 key = value
-CONFIG_RE = re.compile(r"^\s*([a-z_][a-z0-9_]*):\s*([^\s].+?)\s*$", re.MULTILINE | re.IGNORECASE)
-CONFIG_EQ_RE = re.compile(r"^\s*([a-z_][a-z0-9_]*?)\s*=\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+CONFIG_RE = re.compile(
+    r"^\s*([a-z_][a-z0-9_]*):\s*([^\s].+?)\s*$", re.MULTILINE | re.IGNORECASE
+)
+CONFIG_EQ_RE = re.compile(
+    r"^\s*([a-z_][a-z0-9_]*?)\s*=\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE
+)
 # 反引号命令
 COMMAND_RE = re.compile(r"`([^`\n]{2,200})`")
 # "依赖服务:" / "上游应用:" 列表项
@@ -70,11 +75,23 @@ DEPENDENCY_LINE_RE = re.compile(
     r"(?:依赖服务|上游应用|上游服务|下游服务|关联组件)[:：]\s*(.+)",
 )
 # 主机: web-01 模式
-HOST_LABEL_RE = re.compile(r"(?:主机|host|hostname|节点)[:：]\s*([^\s,，)]+)", re.IGNORECASE)
-SERVICE_LABEL_RE = re.compile(r"(?:服务|service|service_id)[:：]\s*([^\s,，)]+)", re.IGNORECASE)
+HOST_LABEL_RE = re.compile(
+    r"(?:主机|host|hostname|节点)[:：]\s*([^\s,，)]+)", re.IGNORECASE
+)
+SERVICE_LABEL_RE = re.compile(
+    r"(?:服务|service|service_id)[:：]\s*([^\s,，)]+)", re.IGNORECASE
+)
 # 故障关键词
 INCIDENT_KEYWORDS = ("故障", "告警", "异常", "事故", "incident", "alert", "outage")
-PROCEDURE_KEYWORDS = ("runbook", "处理步骤", "操作步骤", "处置", "sop", "故障处理", "步骤")
+PROCEDURE_KEYWORDS = (
+    "runbook",
+    "处理步骤",
+    "操作步骤",
+    "处置",
+    "sop",
+    "故障处理",
+    "步骤",
+)
 
 
 class RuleBasedExtractor:
@@ -85,7 +102,9 @@ class RuleBasedExtractor:
         self._services: dict[str, ExtractedEntity] = {}
         self._components: dict[str, ExtractedEntity] = {}
 
-    def extract(self, doc: ParsedDocument) -> tuple[list[ExtractedEntity], list[ExtractedRelation]]:
+    def extract(
+        self, doc: ParsedDocument
+    ) -> tuple[list[ExtractedEntity], list[ExtractedRelation]]:
         """抽取实体和关系"""
         entities: list[ExtractedEntity] = []
         relations: list[ExtractedRelation] = []
@@ -125,8 +144,12 @@ class RuleBasedExtractor:
             name = m.group(1).lower()
             if self._is_likely_hostname(name):
                 self._hostnames[name] = self._make_entity(
-                    "Host", name, {"hostname": name, "source_section": section},
-                    confidence=0.78, evidence=m.group(0), doc_id=doc_id,
+                    "Host",
+                    name,
+                    {"hostname": name, "source_section": section},
+                    confidence=0.78,
+                    evidence=m.group(0),
+                    doc_id=doc_id,
                 )
                 entities.append(self._hostnames[name])
 
@@ -134,8 +157,12 @@ class RuleBasedExtractor:
             ip = m.group(1)
             name = ip.split(":")[0]
             self._hostnames[name] = self._make_entity(
-                "Host", name, {"ip": ip, "source_section": section},
-                confidence=0.82, evidence=ip, doc_id=doc_id,
+                "Host",
+                name,
+                {"ip": ip, "source_section": section},
+                confidence=0.82,
+                evidence=ip,
+                doc_id=doc_id,
             )
             entities.append(self._hostnames[name])
 
@@ -143,8 +170,12 @@ class RuleBasedExtractor:
             name = m.group(1).strip().lower()
             if name and not name.startswith("$"):
                 self._hostnames[name] = self._make_entity(
-                    "Host", name, {"source_section": section},
-                    confidence=0.85, evidence=m.group(0), doc_id=doc_id,
+                    "Host",
+                    name,
+                    {"source_section": section},
+                    confidence=0.85,
+                    evidence=m.group(0),
+                    doc_id=doc_id,
                 )
                 entities.append(self._hostnames[name])
 
@@ -153,8 +184,12 @@ class RuleBasedExtractor:
             name = m.group(1).strip().lower()
             if name and not name.startswith("$") and len(name) < 60:
                 self._services[name] = self._make_entity(
-                    "Service", name, {"source_section": section, "tier": "unknown"},
-                    confidence=0.82, evidence=m.group(0), doc_id=doc_id,
+                    "Service",
+                    name,
+                    {"source_section": section, "tier": "unknown"},
+                    confidence=0.82,
+                    evidence=m.group(0),
+                    doc_id=doc_id,
                 )
                 entities.append(self._services[name])
 
@@ -163,8 +198,12 @@ class RuleBasedExtractor:
         for kw, props in COMPONENT_KEYWORDS.items():
             if re.search(rf"\b{re.escape(kw)}\b", lower):
                 self._components[kw] = self._make_entity(
-                    "Component", kw, {**props, "source_section": section},
-                    confidence=0.80, evidence=kw, doc_id=doc_id,
+                    "Component",
+                    kw,
+                    {**props, "source_section": section},
+                    confidence=0.80,
+                    evidence=kw,
+                    doc_id=doc_id,
                 )
                 entities.append(self._components[kw])
 
@@ -172,48 +211,95 @@ class RuleBasedExtractor:
         for m in CONFIG_RE.finditer(text):
             key, value = m.group(1).strip(), m.group(2).strip()
             if self._is_valid_param(key, value):
-                entities.append(self._make_entity(
-                    "Parameter", key,
-                    {"key": key, "value": value[:200], "scope": section or "global"},
-                    confidence=0.72, evidence=m.group(0)[:200], doc_id=doc_id,
-                ))
+                entities.append(
+                    self._make_entity(
+                        "Parameter",
+                        key,
+                        {
+                            "key": key,
+                            "value": value[:200],
+                            "scope": section or "global",
+                        },
+                        confidence=0.72,
+                        evidence=m.group(0)[:200],
+                        doc_id=doc_id,
+                    )
+                )
         for m in CONFIG_EQ_RE.finditer(text):
             key, value = m.group(1).strip(), m.group(2).strip()
             if self._is_valid_param(key, value):
-                entities.append(self._make_entity(
-                    "Parameter", key,
-                    {"key": key, "value": value[:200], "scope": section or "global"},
-                    confidence=0.70, evidence=m.group(0)[:200], doc_id=doc_id,
-                ))
+                entities.append(
+                    self._make_entity(
+                        "Parameter",
+                        key,
+                        {
+                            "key": key,
+                            "value": value[:200],
+                            "scope": section or "global",
+                        },
+                        confidence=0.70,
+                        evidence=m.group(0)[:200],
+                        doc_id=doc_id,
+                    )
+                )
 
         # 5. Command（反引号包裹）
         for m in COMMAND_RE.finditer(text):
             cmd = m.group(1).strip()
             if self._is_likely_command(cmd):
-                entities.append(self._make_entity(
-                    "Command", cmd[:80],
-                    {"cmd": cmd[:500], "shell": self._detect_shell(cmd), "risk_level": "low"},
-                    confidence=0.75, evidence=m.group(0), doc_id=doc_id,
-                ))
+                entities.append(
+                    self._make_entity(
+                        "Command",
+                        cmd[:80],
+                        {
+                            "cmd": cmd[:500],
+                            "shell": self._detect_shell(cmd),
+                            "risk_level": "low",
+                        },
+                        confidence=0.75,
+                        evidence=m.group(0),
+                        doc_id=doc_id,
+                    )
+                )
 
         # 6. Incident / Procedure（基于 section 标题）
         section_orig = elem.section or ""
         if any(kw in section_orig.lower() for kw in INCIDENT_KEYWORDS):
-            entities.append(self._make_entity(
-                "Incident", section_orig or "未命名故障",
-                {"title": section_orig, "source_section": section, "severity": "unknown"},
-                confidence=0.68, evidence=text[:200], doc_id=doc_id,
-            ))
+            entities.append(
+                self._make_entity(
+                    "Incident",
+                    section_orig or "未命名故障",
+                    {
+                        "title": section_orig,
+                        "source_section": section,
+                        "severity": "unknown",
+                    },
+                    confidence=0.68,
+                    evidence=text[:200],
+                    doc_id=doc_id,
+                )
+            )
         if any(kw in section_orig.lower() for kw in PROCEDURE_KEYWORDS):
-            entities.append(self._make_entity(
-                "Procedure", section_orig or "未命名步骤",
-                {"title": section_orig, "source_section": section, "raw_text": text[:500]},
-                confidence=0.70, evidence=text[:200], doc_id=doc_id,
-            ))
+            entities.append(
+                self._make_entity(
+                    "Procedure",
+                    section_orig or "未命名步骤",
+                    {
+                        "title": section_orig,
+                        "source_section": section,
+                        "raw_text": text[:500],
+                    },
+                    confidence=0.70,
+                    evidence=text[:200],
+                    doc_id=doc_id,
+                )
+            )
 
         return entities, relations
 
-    def _extract_dependency_relations(self, doc: ParsedDocument, doc_id: str) -> list[ExtractedRelation]:
+    def _extract_dependency_relations(
+        self, doc: ParsedDocument, doc_id: str
+    ) -> list[ExtractedRelation]:
         """从 "依赖服务: A, B" 这类声明中提取 DEPENDS_ON 关系"""
         relations: list[ExtractedRelation] = []
         for elem in doc.elements:
@@ -232,15 +318,17 @@ class RuleBasedExtractor:
                     if target:
                         # 关系 from → target（暂时用 doc 标题当 from）
                         from_name = (doc.title or doc.doc_id).lower()
-                        relations.append(ExtractedRelation(
-                            relation_type="DEPENDS_ON",
-                            from_entity=from_name,
-                            to_entity=target.name,
-                            properties={"source_line": m.group(0)[:200]},
-                            confidence=0.65,
-                            evidence_span=m.group(0)[:200],
-                            source_doc_id=doc_id,
-                        ))
+                        relations.append(
+                            ExtractedRelation(
+                                relation_type="DEPENDS_ON",
+                                from_entity=from_name,
+                                to_entity=target.name,
+                                properties={"source_line": m.group(0)[:200]},
+                                confidence=0.65,
+                                evidence_span=m.group(0)[:200],
+                                source_doc_id=doc_id,
+                            )
+                        )
         return relations
 
     def _find_service(self, name: str) -> ExtractedEntity | None:
@@ -251,8 +339,12 @@ class RuleBasedExtractor:
 
     @staticmethod
     def _make_entity(
-        entity_type: str, name: str, properties: dict,
-        confidence: float, evidence: str, doc_id: str,
+        entity_type: str,
+        name: str,
+        properties: dict,
+        confidence: float,
+        evidence: str,
+        doc_id: str,
     ) -> ExtractedEntity:
         return ExtractedEntity(
             entity_type=entity_type,
@@ -289,9 +381,29 @@ class RuleBasedExtractor:
     @staticmethod
     def _is_likely_command(cmd: str) -> bool:
         # 含 shell 特征
-        cmd_chars = ("sudo", "systemctl", "service ", "tail ", "grep ", "ps ", "kill ",
-                     "cat ", "echo ", "cd ", "ls ", "awk ", "sed ", "curl ", "wget ",
-                     "docker ", "kubectl ", "nginx ", "mysql ", "redis-", "ssh ")
+        cmd_chars = (
+            "sudo",
+            "systemctl",
+            "service ",
+            "tail ",
+            "grep ",
+            "ps ",
+            "kill ",
+            "cat ",
+            "echo ",
+            "cd ",
+            "ls ",
+            "awk ",
+            "sed ",
+            "curl ",
+            "wget ",
+            "docker ",
+            "kubectl ",
+            "nginx ",
+            "mysql ",
+            "redis-",
+            "ssh ",
+        )
         return any(cmd.startswith(c) or f" {c}" in cmd for c in cmd_chars)
 
     @staticmethod

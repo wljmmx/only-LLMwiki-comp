@@ -14,6 +14,7 @@ LLM 编译的 wiki 是有损压缩（"知识漂移"），漂移会沿引用链�
 数据存储：wiki 页面 frontmatter 中 `stale: true/false` 已由 wiki_compiler 维护；
 本模块额外用 SQLite 维护「doc_id → 影响的 slugs」反向索引以加速查询。
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -35,29 +36,33 @@ DB_PATH = Path(__file__).parent.parent.parent / "data" / "events.db"
 
 # ────────── 数据模型 ──────────
 
+
 @dataclass
 class StalePage:
     """stale wiki 页面"""
+
     slug: str
     title: str
     type: str
-    source_doc_id: str           # 触发 stale 的 raw 文档
-    old_checksum: str            # 编译时记录的 checksum
-    new_checksum: str            # 当前 raw 文档 checksum
+    source_doc_id: str  # 触发 stale 的 raw 文档
+    old_checksum: str  # 编译时记录的 checksum
+    new_checksum: str  # 当前 raw 文档 checksum
     last_compiled_at: str
 
 
 @dataclass
 class DriftReport:
     """一次漂移检测报告"""
+
     doc_id: str
-    changed: bool                # raw 是否发生变化
+    changed: bool  # raw 是否发生变化
     affected_slugs: list[str] = field(default_factory=list)
     new_checksum: str = ""
     old_checksum: str = ""
 
 
 # ────────── DB 初始化 ──────────
+
 
 def _get_db() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +86,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
 
 
 # ────────── 公共 API ──────────
+
 
 def record_compiled_checksum(doc_id: str, checksum: str) -> None:
     """记录 raw 文档编译时的 checksum（编译成功后调用）
@@ -132,14 +138,18 @@ def detect_drift(doc_id: str) -> DriftReport:
         # 首次记录：不算 changed，但记录 checksum
         record_compiled_checksum(doc_id, new_checksum)
         return DriftReport(
-            doc_id=doc_id, changed=False,
-            new_checksum=new_checksum, old_checksum="",
+            doc_id=doc_id,
+            changed=False,
+            new_checksum=new_checksum,
+            old_checksum="",
         )
 
     if old_checksum == new_checksum:
         return DriftReport(
-            doc_id=doc_id, changed=False,
-            new_checksum=new_checksum, old_checksum=old_checksum,
+            doc_id=doc_id,
+            changed=False,
+            new_checksum=new_checksum,
+            old_checksum=old_checksum,
         )
 
     # 发生变化：找到所有引用该 doc 的 wiki 页面
@@ -147,13 +157,16 @@ def detect_drift(doc_id: str) -> DriftReport:
     logger.info(
         "wiki_drift_detected",
         doc_id=doc_id,
-        old=old_checksum[:12], new=new_checksum[:12],
+        old=old_checksum[:12],
+        new=new_checksum[:12],
         affected=len(affected),
     )
     return DriftReport(
-        doc_id=doc_id, changed=True,
+        doc_id=doc_id,
+        changed=True,
         affected_slugs=affected,
-        new_checksum=new_checksum, old_checksum=old_checksum,
+        new_checksum=new_checksum,
+        old_checksum=old_checksum,
     )
 
 
@@ -255,19 +268,22 @@ def list_stale_pages() -> list[StalePage]:
         if store_meta:
             new_cs = store_meta.get("checksum", "")
         old_cs = get_compiled_checksum(source_doc) or ""
-        stale.append(StalePage(
-            slug=p["slug"],
-            title=p["title"],
-            type=p["type"],
-            source_doc_id=source_doc,
-            old_checksum=old_cs,
-            new_checksum=new_cs,
-            last_compiled_at=p.get("updated_at", ""),
-        ))
+        stale.append(
+            StalePage(
+                slug=p["slug"],
+                title=p["title"],
+                type=p["type"],
+                source_doc_id=source_doc,
+                old_checksum=old_cs,
+                new_checksum=new_cs,
+                last_compiled_at=p.get("updated_at", ""),
+            )
+        )
     return stale
 
 
 # ────────── 内部工具 ──────────
+
 
 def _find_pages_citing_doc(doc_id: str) -> list[str]:
     """找到所有引用该 doc_id 的 wiki 页面 slug
@@ -311,15 +327,17 @@ def _assemble_md(meta: dict, body: str) -> str:
 
 # ────────── P1-4 自动重编译闭环 ──────────
 
+
 @dataclass
 class RecompileJob:
     """单文档重编译任务记录"""
+
     doc_id: str
     slugs_affected: list[str]
     pages_created: int = 0
     pages_updated: int = 0
     pages_unchanged: int = 0
-    diff_summary: dict = field(default_factory=dict)   # {slug: {added, removed, v1, v2}}
+    diff_summary: dict = field(default_factory=dict)  # {slug: {added, removed, v1, v2}}
     review_queued: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -327,6 +345,7 @@ class RecompileJob:
 @dataclass
 class RecompileBatchResult:
     """批量重编译结果"""
+
     jobs: list[RecompileJob] = field(default_factory=list)
     total_recompiled: int = 0
     total_review_queued: int = 0
@@ -410,18 +429,26 @@ async def auto_recompile_stale(*, push_review: bool = True) -> RecompileBatchRes
                 try:
                     diff = vc.diff(_key_from_slug(slug), old_v, new_v)
                     job.diff_summary[slug] = {
-                        "v1": old_v, "v2": new_v,
+                        "v1": old_v,
+                        "v2": new_v,
                         "added_lines": diff.get("added_lines", 0),
                         "removed_lines": diff.get("removed_lines", 0),
                     }
                 except Exception as e:
                     job.diff_summary[slug] = {"v1": old_v, "v2": new_v, "error": str(e)}
             else:
-                job.diff_summary[slug] = {"v1": 0, "v2": new_v, "added_lines": 0, "removed_lines": 0}
+                job.diff_summary[slug] = {
+                    "v1": 0,
+                    "v2": new_v,
+                    "added_lines": 0,
+                    "removed_lines": 0,
+                }
 
             # 推 ReviewQueue
-            if review_queue and (job.diff_summary[slug].get("added_lines", 0) > 0
-                                  or job.diff_summary[slug].get("removed_lines", 0) > 0):
+            if review_queue and (
+                job.diff_summary[slug].get("added_lines", 0) > 0
+                or job.diff_summary[slug].get("removed_lines", 0) > 0
+            ):
                 try:
                     review_queue.add_entity(
                         entity_type="WikiDrift",

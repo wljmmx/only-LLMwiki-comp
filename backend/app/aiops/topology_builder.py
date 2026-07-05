@@ -10,14 +10,13 @@
 
 持久化到 SQLite（topology_nodes / topology_edges 表），支持增量更新。
 """
+
 from __future__ import annotations
 
 import json
 import sqlite3
-from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import structlog
 
@@ -220,12 +219,24 @@ class TopologyBuilder:
         #   即 e.target == node_id，对应 e.source
         # - upstream（潜在根因候选）= 我指向的节点（我依赖）
         #   即 e.source == node_id，对应 e.target
-        downstream = [n for n in all_nodes if n["node_id"] != node_id and
-                      any(e["target"] == node_id and e["source"] == n["node_id"]
-                          for e in all_edges)]
-        upstream = [n for n in all_nodes if n["node_id"] != node_id and
-                    any(e["source"] == node_id and e["target"] == n["node_id"]
-                        for e in all_edges)]
+        downstream = [
+            n
+            for n in all_nodes
+            if n["node_id"] != node_id
+            and any(
+                e["target"] == node_id and e["source"] == n["node_id"]
+                for e in all_edges
+            )
+        ]
+        upstream = [
+            n
+            for n in all_nodes
+            if n["node_id"] != node_id
+            and any(
+                e["source"] == node_id and e["target"] == n["node_id"]
+                for e in all_edges
+            )
+        ]
 
         return {
             "node": dict(node),
@@ -248,8 +259,8 @@ class TopologyBuilder:
 
         return {
             "node": neighbors["node"],
-            "impacted_downstream": neighbors["downstream"],   # 我挂了，谁受影响
-            "potential_root_cause": neighbors["upstream"],     # 我挂了，可能是谁的问题
+            "impacted_downstream": neighbors["downstream"],  # 我挂了，谁受影响
+            "potential_root_cause": neighbors["upstream"],  # 我挂了，可能是谁的问题
             "edges": neighbors["edges"],
             "summary": {
                 "impacted_count": len(neighbors["downstream"]),
@@ -273,10 +284,14 @@ class TopologyBuilder:
                 total_nodes += len(nodes)
                 total_edges += len(edges)
             except Exception as e:
-                logger.warning("topology_scan_failed", doc_id=doc["doc_id"], error=str(e))
+                logger.warning(
+                    "topology_scan_failed", doc_id=doc["doc_id"], error=str(e)
+                )
         logger.info(
             "topology_built",
-            docs_scanned=scanned, nodes=total_nodes, edges=total_edges,
+            docs_scanned=scanned,
+            nodes=total_nodes,
+            edges=total_edges,
         )
         return {
             "docs_scanned": scanned,
@@ -314,38 +329,46 @@ class TopologyBuilder:
         nodes = []
         for e in entities:
             if e.entity_type in NODE_TYPES:
-                nodes.append({
-                    "node_type": e.entity_type,
-                    "name": e.name,
-                })
+                nodes.append(
+                    {
+                        "node_type": e.entity_type,
+                        "name": e.name,
+                    }
+                )
         # 边：从抽取的 relations（DEPENDS_ON）+ 推断的 RUNS_ON/USES
         edges = []
         for r in relations:
-            edges.append({
-                "source": r.from_entity,
-                "target": r.to_entity,
-                "relation": r.relation_type,
-            })
+            edges.append(
+                {
+                    "source": r.from_entity,
+                    "target": r.to_entity,
+                    "relation": r.relation_type,
+                }
+            )
         # 推断 RUNS_ON：service → host（基于同文档抽取）
         # 简化：每个 Service 节点与同文档 Host 节点建立 RUNS_ON 关系
         hosts = [n for n in nodes if n["node_type"] == "Host"]
         services = [n for n in nodes if n["node_type"] == "Service"]
         for s in services:
             for h in hosts:
-                edges.append({
-                    "source": s["name"],
-                    "target": h["name"],
-                    "relation": "RUNS_ON",
-                })
+                edges.append(
+                    {
+                        "source": s["name"],
+                        "target": h["name"],
+                        "relation": "RUNS_ON",
+                    }
+                )
         # 推断 USES：service → component
         components = [n for n in nodes if n["node_type"] == "Component"]
         for s in services:
             for c in components:
-                edges.append({
-                    "source": s["name"],
-                    "target": c["name"],
-                    "relation": "USES",
-                })
+                edges.append(
+                    {
+                        "source": s["name"],
+                        "target": c["name"],
+                        "relation": "USES",
+                    }
+                )
         return nodes, edges
 
     def _merge_to_db(
@@ -378,8 +401,14 @@ class TopologyBuilder:
                        (node_id, node_type, name, occurrences, source_docs,
                         first_seen, last_seen)
                        VALUES (?, ?, ?, 1, ?, ?, ?)""",
-                    (node_id, n["node_type"], n["name"],
-                     json.dumps([doc_id]), now, now),
+                    (
+                        node_id,
+                        n["node_type"],
+                        n["name"],
+                        json.dumps([doc_id]),
+                        now,
+                        now,
+                    ),
                 )
 
         for e in edges:
@@ -401,7 +430,12 @@ class TopologyBuilder:
                     """UPDATE topology_edges
                        SET occurrences = ?, source_docs = ?, last_seen = ?
                        WHERE id = ?""",
-                    (existing["occurrences"] + 1, json.dumps(docs), now, existing["id"]),
+                    (
+                        existing["occurrences"] + 1,
+                        json.dumps(docs),
+                        now,
+                        existing["id"],
+                    ),
                 )
             else:
                 conn.execute(
@@ -409,8 +443,7 @@ class TopologyBuilder:
                        (source, target, relation, occurrences, source_docs,
                         first_seen, last_seen)
                        VALUES (?, ?, ?, 1, ?, ?, ?)""",
-                    (src_id, tgt_id, e["relation"],
-                     json.dumps([doc_id]), now, now),
+                    (src_id, tgt_id, e["relation"], json.dumps([doc_id]), now, now),
                 )
         conn.commit()
 

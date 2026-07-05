@@ -14,6 +14,7 @@
   4. 输出 change-incident 关联矩阵 + 风险评分
   5. 高风险关联建议回滚
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -21,24 +22,22 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any
 
 import structlog
 
-from app.aiops.event_correlator import DB_PATH, get_event_correlator
+from app.aiops.event_correlator import DB_PATH
 
 logger = structlog.get_logger()
 
 # 变更类型 → 风险权重（0-1）
 CHANGE_TYPE_WEIGHT = {
-    "deployment": 0.9,      # 部署新版本，高风险
-    "config_change": 0.7,   # 配置变更
-    "migration": 0.85,      # 数据迁移
-    "scaling": 0.5,         # 扩缩容
-    "restart": 0.6,         # 重启
-    "rollback": 0.4,        # 回滚（通常是修复动作）
-    "patch": 0.65,          # 补丁
+    "deployment": 0.9,  # 部署新版本，高风险
+    "config_change": 0.7,  # 配置变更
+    "migration": 0.85,  # 数据迁移
+    "scaling": 0.5,  # 扩缩容
+    "restart": 0.6,  # 重启
+    "rollback": 0.4,  # 回滚（通常是修复动作）
+    "patch": 0.65,  # 补丁
     "other": 0.3,
 }
 
@@ -94,6 +93,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
 @dataclass
 class Change:
     """变更事件"""
+
     id: str
     change_type: str
     timestamp: str
@@ -112,11 +112,12 @@ class Change:
 @dataclass
 class ChangeIncidentLink:
     """变更-incident 关联"""
+
     change_id: str
     incident_id: str
-    correlation_score: float       # 0-1
-    scope_overlap: int             # 共享 entity 数
-    time_lag_seconds: int          # incident 起始时间 - 变更时间（秒，负数=变更前告警）
+    correlation_score: float  # 0-1
+    scope_overlap: int  # 共享 entity 数
+    time_lag_seconds: int  # incident 起始时间 - 变更时间（秒，负数=变更前告警）
     reasoning: str
 
 
@@ -135,7 +136,9 @@ class ChangeCorrelator:
         skipped = 0
         for ch in changes:
             ch_id = ch.get("id") or self._gen_id(ch)
-            existing = conn.execute("SELECT id FROM changes WHERE id = ?", (ch_id,)).fetchone()
+            existing = conn.execute(
+                "SELECT id FROM changes WHERE id = ?", (ch_id,)
+            ).fetchone()
             if existing:
                 skipped += 1
                 continue
@@ -188,9 +191,15 @@ class ChangeCorrelator:
             return {"links": [], "stats": {"changes": 0, "incidents_linked": 0}}
 
         # 时间窗口可覆盖
-        window = timedelta(minutes=time_window_minutes) if time_window_minutes else self.time_window
+        window = (
+            timedelta(minutes=time_window_minutes)
+            if time_window_minutes
+            else self.time_window
+        )
         # 同时向前推足够时间，覆盖 incident 表
-        inc_cutoff = (datetime.now(timezone.utc) - timedelta(hours=since_hours) - window).isoformat()
+        inc_cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=since_hours) - window
+        ).isoformat()
         inc_rows = conn.execute(
             """SELECT * FROM incidents
                WHERE started_at >= ? OR status = 'open'
@@ -223,7 +232,9 @@ class ChangeCorrelator:
         }
 
     def list_changes(
-        self, service: str = "", limit: int = 50,
+        self,
+        service: str = "",
+        limit: int = 50,
     ) -> list[dict]:
         """列出变更"""
         conn = _get_db()
@@ -288,7 +299,10 @@ class ChangeCorrelator:
     # ────────── 关联算法 ──────────
 
     def _compute_link(
-        self, change: Change, inc_row: sqlite3.Row, window: timedelta,
+        self,
+        change: Change,
+        inc_row: sqlite3.Row,
+        window: timedelta,
     ) -> ChangeIncidentLink | None:
         """计算单个 change-incident 关联"""
         inc_started = self._parse_ts(inc_row["started_at"])
@@ -329,13 +343,13 @@ class ChangeCorrelator:
         #    变更后 5-30 分钟：0.3 → 0.1 线性衰减
         #    变更前：0.05（可能是变更触发的修复）
         abs_min = abs(time_lag) / 60.0
-        if 0 <= time_lag <= 300:       # 0-5 min after
+        if 0 <= time_lag <= 300:  # 0-5 min after
             time_score = 0.3
-        elif 300 < time_lag <= 1800:   # 5-30 min after
+        elif 300 < time_lag <= 1800:  # 5-30 min after
             time_score = 0.3 - 0.2 * (abs_min - 5) / 25
-        elif time_lag < 0:             # before
+        elif time_lag < 0:  # before
             time_score = 0.05
-        else:                          # >30 min after
+        else:  # >30 min after
             time_score = 0.05
 
         # 3. 变更类型权重（P2-3.1 修复：原 * 0.1 稀释为 0.03~0.09，几乎无影响）
@@ -351,7 +365,9 @@ class ChangeCorrelator:
         if time_lag >= 0:
             reasoning_parts.append(f"incident 发生在变更后 {int(time_lag)}s")
         else:
-            reasoning_parts.append(f"incident 发生在变更前 {int(-time_lag)}s（可能是触发原因）")
+            reasoning_parts.append(
+                f"incident 发生在变更前 {int(-time_lag)}s（可能是触发原因）"
+            )
         reasoning_parts.append(f"变更类型 {change.change_type} 权重 {type_weight}")
 
         return ChangeIncidentLink(
@@ -374,7 +390,8 @@ class ChangeCorrelator:
             }
         # 取相关度最高且非 rollback 类型的变更
         candidates = [
-            c for c in changes
+            c
+            for c in changes
             if c.get("change_type") != "rollback"
             and c.get("correlation_score", 0) >= 0.5
         ]
@@ -446,7 +463,9 @@ class ChangeCorrelator:
         raw = json.dumps(ch, sort_keys=True, ensure_ascii=False)
         return "chg-" + hashlib.sha1(raw.encode()).hexdigest()[:16]
 
-    def _persist_links(self, conn: sqlite3.Connection, links: list[ChangeIncidentLink]) -> None:
+    def _persist_links(
+        self, conn: sqlite3.Connection, links: list[ChangeIncidentLink]
+    ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         for l in links:
             conn.execute(
@@ -454,8 +473,15 @@ class ChangeCorrelator:
                    (change_id, incident_id, correlation_score, scope_overlap,
                     time_lag_seconds, reasoning, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (l.change_id, l.incident_id, l.correlation_score,
-                 l.scope_overlap, l.time_lag_seconds, l.reasoning, now),
+                (
+                    l.change_id,
+                    l.incident_id,
+                    l.correlation_score,
+                    l.scope_overlap,
+                    l.time_lag_seconds,
+                    l.reasoning,
+                    now,
+                ),
             )
         conn.commit()
 

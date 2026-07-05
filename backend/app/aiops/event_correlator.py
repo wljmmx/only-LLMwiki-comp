@@ -15,6 +15,7 @@
 
 事件持久化到 SQLite，便于查询历史。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -24,7 +25,6 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
 
 import structlog
 
@@ -32,7 +32,14 @@ logger = structlog.get_logger()
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "events.db"
 
-SEVERITY_RANK = {"info": 0, "low": 1, "warning": 2, "high": 3, "critical": 4, "fatal": 5}
+SEVERITY_RANK = {
+    "info": 0,
+    "low": 1,
+    "warning": 2,
+    "high": 3,
+    "critical": 4,
+    "fatal": 5,
+}
 
 
 def _get_db() -> sqlite3.Connection:
@@ -86,6 +93,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
 @dataclass
 class Event:
     """告警事件"""
+
     id: str
     timestamp: str
     host: str = ""
@@ -101,11 +109,12 @@ class Event:
 @dataclass
 class Incident:
     """关联后的故障"""
+
     incident_id: str
     started_at: str
     ended_at: str
     severity: str
-    scope: dict                      # {hosts, services, components}
+    scope: dict  # {hosts, services, components}
     suspected_root_cause: str
     runbook_hint: str
     alert_ids: list[str]
@@ -130,7 +139,9 @@ class EventCorrelator:
         skipped = 0
         for ev in events:
             ev_id = ev.get("id") or self._gen_id(ev)
-            existing = conn.execute("SELECT id FROM events WHERE id = ?", (ev_id,)).fetchone()
+            existing = conn.execute(
+                "SELECT id FROM events WHERE id = ?", (ev_id,)
+            ).fetchone()
             if existing:
                 skipped += 1
                 continue
@@ -170,7 +181,9 @@ class EventCorrelator:
             max_events: 最多处理的事件数
         """
         conn = _get_db()
-        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=since_minutes)).isoformat()
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
+        ).isoformat()
         rows = conn.execute(
             """SELECT * FROM events
                WHERE timestamp >= ? AND incident_id IS NULL
@@ -191,7 +204,9 @@ class EventCorrelator:
             "stats": {
                 "total_alerts": len(events),
                 "incidents": len(incidents),
-                "noise_filtered": max(0, len(events) - sum(len(i.alert_ids) for i in incidents)),
+                "noise_filtered": max(
+                    0, len(events) - sum(len(i.alert_ids) for i in incidents)
+                ),
             },
         }
 
@@ -378,12 +393,19 @@ class EventCorrelator:
         hosts = sorted({e.host for e in events if e.host})
         services = sorted({e.service for e in events if e.service})
         components = sorted({e.component for e in events if e.component})
-        severity = max((e.severity for e in events), key=lambda s: SEVERITY_RANK.get(s, 0))
+        severity = max(
+            (e.severity for e in events), key=lambda s: SEVERITY_RANK.get(s, 0)
+        )
         scope = {"hosts": hosts, "services": services, "components": components}
 
         # incident_id = hash(scope + 起始时间)
         scope_str = json.dumps(scope, sort_keys=True)
-        inc_id = "inc-" + hashlib.sha1(f"{scope_str}|{ts_sorted[0].timestamp}".encode()).hexdigest()[:12]
+        inc_id = (
+            "inc-"
+            + hashlib.sha1(
+                f"{scope_str}|{ts_sorted[0].timestamp}".encode()
+            ).hexdigest()[:12]
+        )
 
         return Incident(
             incident_id=inc_id,
@@ -410,7 +432,9 @@ class EventCorrelator:
                 m.alert_ids.extend(inc.alert_ids)
                 m.alerts.extend(inc.alerts)
                 m.ended_at = max(m.ended_at, inc.ended_at)
-                if SEVERITY_RANK.get(inc.severity, 0) > SEVERITY_RANK.get(m.severity, 0):
+                if SEVERITY_RANK.get(inc.severity, 0) > SEVERITY_RANK.get(
+                    m.severity, 0
+                ):
                     m.severity = inc.severity
             else:
                 merged[key] = inc
@@ -453,11 +477,16 @@ class EventCorrelator:
         # 取最高 severity 的事件作为 symptom
         ev = max(events, key=lambda e: SEVERITY_RANK.get(e.severity, 0))
         symptom = ev.message or ev.service or ev.host or "未知故障"
-        return json.dumps({
-            "symptom": symptom,
-            "service": scope.get("services", [""])[0] if scope.get("services") else "",
-            "host": scope.get("hosts", [""])[0] if scope.get("hosts") else "",
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "symptom": symptom,
+                "service": scope.get("services", [""])[0]
+                if scope.get("services")
+                else "",
+                "host": scope.get("hosts", [""])[0] if scope.get("hosts") else "",
+            },
+            ensure_ascii=False,
+        )
 
     # ────────── 工具方法 ──────────
 
@@ -493,10 +522,15 @@ class EventCorrelator:
     @staticmethod
     def _event_to_dict(e: Event) -> dict:
         return {
-            "id": e.id, "timestamp": e.timestamp, "host": e.host,
-            "service": e.service, "component": e.component,
-            "severity": e.severity, "message": e.message,
-            "tags": e.tags, "source": e.source,
+            "id": e.id,
+            "timestamp": e.timestamp,
+            "host": e.host,
+            "service": e.service,
+            "component": e.component,
+            "severity": e.severity,
+            "message": e.message,
+            "tags": e.tags,
+            "source": e.source,
         }
 
     @staticmethod
@@ -518,7 +552,9 @@ class EventCorrelator:
         raw = json.dumps(ev, sort_keys=True, ensure_ascii=False)
         return "evt-" + hashlib.sha1(raw.encode()).hexdigest()[:16]
 
-    def _persist_incidents(self, conn: sqlite3.Connection, incidents: list[Incident]) -> None:
+    def _persist_incidents(
+        self, conn: sqlite3.Connection, incidents: list[Incident]
+    ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         for inc in incidents:
             conn.execute(
@@ -527,10 +563,15 @@ class EventCorrelator:
                     suspected_root_cause, runbook_hint, alert_count, status, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)""",
                 (
-                    inc.incident_id, inc.started_at, inc.ended_at, inc.severity,
+                    inc.incident_id,
+                    inc.started_at,
+                    inc.ended_at,
+                    inc.severity,
                     json.dumps(inc.scope, ensure_ascii=False),
-                    inc.suspected_root_cause, inc.runbook_hint,
-                    len(inc.alert_ids), now,
+                    inc.suspected_root_cause,
+                    inc.runbook_hint,
+                    len(inc.alert_ids),
+                    now,
                 ),
             )
             for aid in inc.alert_ids:

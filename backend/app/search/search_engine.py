@@ -7,6 +7,7 @@
 
 支持对已解析文档的内容进行检索。
 """
+
 from __future__ import annotations
 
 import json
@@ -14,11 +15,9 @@ import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import structlog
 
-from app.config import get_settings
 
 logger = structlog.get_logger()
 
@@ -87,9 +86,13 @@ class SearchEngine:
             conn.execute(
                 """INSERT INTO doc_embeddings (doc_id, title, embedding, dim, created_at)
                    VALUES (?, ?, ?, ?, ?)""",
-                (doc_id, title or "",
-                 json.dumps(embedding), len(embedding),
-                 datetime.now(timezone.utc).isoformat()),
+                (
+                    doc_id,
+                    title or "",
+                    json.dumps(embedding),
+                    len(embedding),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
             )
         conn.commit()
         logger.info("search_indexed", doc_id=doc_id, has_embedding=bool(embedding))
@@ -120,7 +123,9 @@ class SearchEngine:
             weight_vector: 向量权重
         """
         keyword_results = self._keyword_search(query, limit * 2)
-        vector_results = self._vector_search(query_embedding, limit * 2) if query_embedding else {}
+        vector_results = (
+            self._vector_search(query_embedding, limit * 2) if query_embedding else {}
+        )
 
         # 合并 doc_id
         all_doc_ids = set(keyword_results.keys()) | set(vector_results.keys())
@@ -132,15 +137,17 @@ class SearchEngine:
 
             # 取元数据
             meta = keyword_results.get(doc_id) or vector_results.get(doc_id) or {}
-            merged.append({
-                "doc_id": doc_id,
-                "title": meta.get("title", ""),
-                "format": meta.get("format", ""),
-                "snippet": meta.get("snippet", ""),
-                "keyword_score": round(kw_score, 4),
-                "vector_score": round(vec_score, 4),
-                "combined_score": round(combined, 4),
-            })
+            merged.append(
+                {
+                    "doc_id": doc_id,
+                    "title": meta.get("title", ""),
+                    "format": meta.get("format", ""),
+                    "snippet": meta.get("snippet", ""),
+                    "keyword_score": round(kw_score, 4),
+                    "vector_score": round(vec_score, 4),
+                    "combined_score": round(combined, 4),
+                }
+            )
 
         merged.sort(key=lambda x: x["combined_score"], reverse=True)
         return merged[:limit]
@@ -183,7 +190,9 @@ class SearchEngine:
             }
         return results
 
-    def _vector_search(self, query_embedding: list[float] | None, limit: int) -> dict[str, dict]:
+    def _vector_search(
+        self, query_embedding: list[float] | None, limit: int
+    ) -> dict[str, dict]:
         """向量相似度检索（余弦相似度）"""
         if not query_embedding:
             return {}
@@ -207,7 +216,9 @@ class SearchEngine:
                 continue
 
         # 取 top limit
-        sorted_results = sorted(results.items(), key=lambda x: x[1]["score"], reverse=True)[:limit]
+        sorted_results = sorted(
+            results.items(), key=lambda x: x[1]["score"], reverse=True
+        )[:limit]
         return dict(sorted_results)
 
     @staticmethod
@@ -226,7 +237,9 @@ class SearchEngine:
         """索引统计"""
         conn = _get_db()
         fts_count = conn.execute("SELECT COUNT(*) as cnt FROM docs_fts").fetchone()
-        emb_count = conn.execute("SELECT COUNT(*) as cnt FROM doc_embeddings").fetchone()
+        emb_count = conn.execute(
+            "SELECT COUNT(*) as cnt FROM doc_embeddings"
+        ).fetchone()
         return {
             "indexed_docs": fts_count["cnt"] if fts_count else 0,
             "vectorized_docs": emb_count["cnt"] if emb_count else 0,

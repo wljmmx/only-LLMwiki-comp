@@ -7,14 +7,14 @@
 
 触发策略：event（事件驱动）/ batch（定时批量）/ manual（手动触发）
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import datetime
 
 import structlog
 
@@ -25,12 +25,12 @@ logger = structlog.get_logger()
 
 # 来源权重（文档类型 → 可信度）
 SOURCE_WEIGHTS = {
-    "incident_report": 1.0,   # 故障报告：最高权威
-    "sop": 0.9,               # 标准操作流程
-    "config_file": 0.85,      # 配置文件
-    "runbook": 0.8,           # 运维手册
-    "monitoring_log": 0.7,    # 监控日志
-    "chat_log": 0.4,          # 聊天记录：最低权威
+    "incident_report": 1.0,  # 故障报告：最高权威
+    "sop": 0.9,  # 标准操作流程
+    "config_file": 0.85,  # 配置文件
+    "runbook": 0.8,  # 运维手册
+    "monitoring_log": 0.7,  # 监控日志
+    "chat_log": 0.4,  # 聊天记录：最低权威
     "default": 0.6,
 }
 
@@ -38,6 +38,7 @@ SOURCE_WEIGHTS = {
 @dataclass
 class DedupResult:
     """去重结果"""
+
     duplicates_found: int = 0
     merged_count: int = 0
     groups: list[list[GraphEntity]] = field(default_factory=list)
@@ -47,6 +48,7 @@ class DedupResult:
 @dataclass
 class CompileResult:
     """编译结果"""
+
     input_entities: int = 0
     after_dedup: int = 0
     merged: int = 0
@@ -60,7 +62,9 @@ class KnowledgeCompiler:
     def __init__(self) -> None:
         self.settings = get_settings()
 
-    def compile(self, entities: list[GraphEntity], relations: list[GraphRelation]) -> CompileResult:
+    def compile(
+        self, entities: list[GraphEntity], relations: list[GraphRelation]
+    ) -> CompileResult:
         """完整编译流水线"""
         result = CompileResult(input_entities=len(entities))
 

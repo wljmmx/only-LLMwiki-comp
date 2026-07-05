@@ -2,12 +2,13 @@
 
 提取标题、段落、代码块、表格、列表，保留层级关系。
 """
+
 from __future__ import annotations
 
 import re
 import hashlib
 
-from app.parsers.base import DocumentParser, ElementType, ParsedDocument, ParsedElement
+from app.parsers.base import ElementType, ParsedDocument, ParsedElement
 
 
 class MarkdownParser:
@@ -22,8 +23,12 @@ class MarkdownParser:
         elements = self._parse_markdown(text)
 
         return ParsedDocument(
-            doc_id=doc_id, source_path=path, format="markdown",
-            checksum=checksum, title=title, elements=elements,
+            doc_id=doc_id,
+            source_path=path,
+            format="markdown",
+            checksum=checksum,
+            title=title,
+            elements=elements,
         )
 
     def _extract_title(self, text: str) -> str | None:
@@ -50,10 +55,13 @@ class MarkdownParser:
             if heading_match:
                 level = len(heading_match.group(1))
                 title = heading_match.group(2).strip()
-                elements.append(ParsedElement(
-                    type=ElementType.HEADING, content=title,
-                    metadata={"level": level},
-                ))
+                elements.append(
+                    ParsedElement(
+                        type=ElementType.HEADING,
+                        content=title,
+                        metadata={"level": level},
+                    )
+                )
                 if level <= 2:
                     current_section = title
                 i += 1
@@ -69,15 +77,22 @@ class MarkdownParser:
                     code_lines.append(lines[i])
                     i += 1
                 i += 1  # skip closing ```
-                elements.append(ParsedElement(
-                    type=ElementType.CODE, content="\n".join(code_lines),
-                    section=current_section,
-                    metadata={"language": lang},
-                ))
+                elements.append(
+                    ParsedElement(
+                        type=ElementType.CODE,
+                        content="\n".join(code_lines),
+                        section=current_section,
+                        metadata={"language": lang},
+                    )
+                )
                 continue
 
             # 表格
-            if "|" in line and i + 1 < len(lines) and re.match(r"^\|[\s\-:|]+\|$", lines[i + 1]):
+            if (
+                "|" in line
+                and i + 1 < len(lines)
+                and re.match(r"^\|[\s\-:|]+\|$", lines[i + 1])
+            ):
                 table_lines = [line]
                 i += 1
                 # 分隔行
@@ -86,10 +101,13 @@ class MarkdownParser:
                 while i < len(lines) and "|" in lines[i]:
                     table_lines.append(lines[i])
                     i += 1
-                elements.append(ParsedElement(
-                    type=ElementType.TABLE, content="\n".join(table_lines),
-                    section=current_section,
-                ))
+                elements.append(
+                    ParsedElement(
+                        type=ElementType.TABLE,
+                        content="\n".join(table_lines),
+                        section=current_section,
+                    )
+                )
                 continue
 
             # 列表（连续行）
@@ -100,10 +118,13 @@ class MarkdownParser:
                 while i < len(lines) and re.match(r"^(\s*)([-*+]|\d+\.)\s+", lines[i]):
                     list_lines.append(lines[i])
                     i += 1
-                elements.append(ParsedElement(
-                    type=ElementType.LIST, content="\n".join(list_lines),
-                    section=current_section,
-                ))
+                elements.append(
+                    ParsedElement(
+                        type=ElementType.LIST,
+                        content="\n".join(list_lines),
+                        section=current_section,
+                    )
+                )
                 continue
 
             # 空行跳过
@@ -114,17 +135,22 @@ class MarkdownParser:
             # 段落（连续非空行）
             para_lines = [line]
             i += 1
-            while i < len(lines) and lines[i].strip() and not self._is_special_line(lines[i]):
+            while (
+                i < len(lines)
+                and lines[i].strip()
+                and not self._is_special_line(lines[i])
+            ):
                 para_lines.append(lines[i])
                 i += 1
-            elements.append(ParsedElement(
-                type=ElementType.PARAGRAPH, content=" ".join(para_lines),
-                section=current_section,
-            ))
+            elements.append(
+                ParsedElement(
+                    type=ElementType.PARAGRAPH,
+                    content=" ".join(para_lines),
+                    section=current_section,
+                )
+            )
 
         return elements
 
     def _is_special_line(self, line: str) -> bool:
-        return bool(
-            re.match(r"^(#{1,6}\s|```|[-*+]\s|\d+\.\s|\|)", line)
-        )
+        return bool(re.match(r"^(#{1,6}\s|```|[-*+]\s|\d+\.\s|\|)", line))

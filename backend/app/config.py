@@ -1,4 +1,5 @@
 """应用配置驱动。LLM 后端由 LLM_BACKEND 切换：ollama | vllm | openai_compat"""
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -8,7 +9,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     env: str = "dev"
     log_level: str = "INFO"

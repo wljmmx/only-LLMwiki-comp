@@ -5,12 +5,12 @@
 - 未配置 Token 时认证关闭（开发模式）
 - Header: Authorization: Bearer <token>
 """
+
 from __future__ import annotations
 
-import os
 import secrets
 
-from fastapi import Depends, HTTPException, Request, Security
+from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_settings
@@ -34,7 +34,9 @@ async def verify_token(
         return "anonymous"
 
     if not credentials or credentials.scheme.lower() != "bearer":
-        raise HTTPException(401, "未提供认证凭证", headers={"WWW-Authenticate": "Bearer"})
+        raise HTTPException(
+            401, "未提供认证凭证", headers={"WWW-Authenticate": "Bearer"}
+        )
 
     if not secrets.compare_digest(credentials.credentials, expected_token):
         raise HTTPException(401, "认证失败：Token 无效")

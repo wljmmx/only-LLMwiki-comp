@@ -17,6 +17,7 @@
     KnowledgeExtractor   ──┼──► WikiCompiler ──► VersionControl (wiki:*)
     GraphStore (可选辅助) ──┘                   └─► update_backlinks / rebuild_index
 """
+
 from __future__ import annotations
 
 import re
@@ -59,13 +60,14 @@ ENTITY_TYPE_TO_PAGE_TYPE: dict[str, str] = {
 @dataclass
 class WikiPage:
     """编译产出的单个 wiki 页面（未持久化前）"""
+
     slug: str
     title: str
-    type: str                       # entity | concept | incident | runbook | service | host
+    type: str  # entity | concept | incident | runbook | service | host
     tags: list[str]
-    sources: list[dict]             # [{doc_id, title, checksum}]
-    body_md: str                    # 不含 frontmatter 的正文
-    review_status: str = "auto"     # auto | review_needed | approved
+    sources: list[dict]  # [{doc_id, title, checksum}]
+    body_md: str  # 不含 frontmatter 的正文
+    review_status: str = "auto"  # auto | review_needed | approved
     source_doc_id: str = ""
     stale_items: list[str] = field(default_factory=list)  # 与已有版本冲突的事实
 
@@ -73,6 +75,7 @@ class WikiPage:
 @dataclass
 class WikiCompileResult:
     """一次编译任务的汇总结果"""
+
     doc_id: str
     pages_created: int = 0
     pages_updated: int = 0
@@ -125,6 +128,7 @@ def make_slug(entity_type: str, name: str) -> str:
 
 
 # ────────── 编译器主体 ──────────
+
 
 class WikiCompiler:
     """把 raw 文档编译为 wiki 页面
@@ -217,7 +221,9 @@ class WikiCompiler:
             result.errors.append(f"抽取失败: {e}")
             return result
 
-        entities = list(extraction.auto_accepted_entities) + list(extraction.review_entities)
+        entities = list(extraction.auto_accepted_entities) + list(
+            extraction.review_entities
+        )
         if not entities:
             logger.info("wiki_compiler_no_entities", doc_id=doc_id)
             # 无实体也更新状态
@@ -309,7 +315,11 @@ class WikiCompiler:
         if not body_md:
             body_md = self._template_body(entity, page_type)
 
-        review_status = "review_needed" if entity.confidence < self.settings.confidence_review else "auto"
+        review_status = (
+            "review_needed"
+            if entity.confidence < self.settings.confidence_review
+            else "auto"
+        )
 
         return WikiPage(
             slug=slug,
@@ -394,13 +404,18 @@ class WikiCompiler:
     def _template_body(self, entity: ExtractedEntity, page_type: str) -> str:
         """LLM 不可用时的模板化兜底正文"""
         props = entity.properties or {}
-        props_lines = "\n".join(f"- **{k}**: {v}" for k, v in props.items() if v) or "- （暂无属性）"
+        props_lines = (
+            "\n".join(f"- **{k}**: {v}" for k, v in props.items() if v)
+            or "- （暂无属性）"
+        )
         evidence = (entity.evidence_span or "").strip()
 
         sections: list[str] = [f"# {entity.name}", ""]
         sections.append("## 概述")
-        sections.append(f"{entity.name} 是一个 {entity.entity_type.lower()} 实体，"
-                        f"由文档 `{entity.source_doc_id}` 编译而来。")
+        sections.append(
+            f"{entity.name} 是一个 {entity.entity_type.lower()} 实体，"
+            f"由文档 `{entity.source_doc_id}` 编译而来。"
+        )
         sections.append("")
 
         if page_type in ("entity", "service", "host", "concept"):
@@ -466,7 +481,9 @@ class WikiCompiler:
         update_backlinks(page.slug, md_to_save)
         return outcome
 
-    def _merge_existing(self, existing_md: str, new_page: WikiPage) -> tuple[str, list[str]]:
+    def _merge_existing(
+        self, existing_md: str, new_page: WikiPage
+    ) -> tuple[str, list[str]]:
         """把新事实合并到已有页面
 
         策略（保守合并，避免覆盖人工编辑）：
@@ -532,7 +549,9 @@ class WikiCompiler:
         for ln in lines:
             s = ln.strip()
             if s.startswith("## "):
-                in_section = s.lower().startswith("## 属性") or s.lower().startswith("## properties")
+                in_section = s.lower().startswith("## 属性") or s.lower().startswith(
+                    "## properties"
+                )
                 continue
             if in_section and s.startswith("- "):
                 out.append(s[2:])

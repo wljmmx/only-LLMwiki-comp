@@ -8,6 +8,7 @@
   - TXT → 自研（零依赖最快）
   - Unstructured → 备选 fallback
 """
+
 from __future__ import annotations
 
 from typing import Callable
@@ -39,17 +40,20 @@ def _register_builtin() -> None:
     # ── 自研（必须） ──
     try:
         from app.parsers.markdown_parser import MarkdownParser
+
         register_parser("markdown", lambda: MarkdownParser())
         register_parser("md", lambda: MarkdownParser())
     except ImportError:
         pass
     try:
         from app.parsers.sql_parser import SQLParser
+
         register_parser("sql", lambda: SQLParser())
     except ImportError:
         pass
     try:
         from app.parsers.text_parser import TextParser
+
         register_parser("txt", lambda: TextParser())
     except ImportError:
         pass
@@ -57,8 +61,20 @@ def _register_builtin() -> None:
     # ── MarkItDown（主力，MIT 许可） ──
     try:
         from app.parsers.markitdown_adapter import make_markitdown_factory
-        for fmt in ("word", "docx", "doc", "excel",
-                     "ppt", "pptx", "html", "htm", "epub", "csv", "json"):
+
+        for fmt in (
+            "word",
+            "docx",
+            "doc",
+            "excel",
+            "ppt",
+            "pptx",
+            "html",
+            "htm",
+            "epub",
+            "csv",
+            "json",
+        ):
             register_parser(fmt, make_markitdown_factory(fmt))
     except ImportError:
         pass
@@ -67,6 +83,7 @@ def _register_builtin() -> None:
     # 实测：Excel 合并单元格处理优于 MarkItDown（colspan 保留 vs Unnamed:X）
     try:
         from app.parsers.mineru_adapter import make_mineru_factory
+
         register_parser("pdf", make_mineru_factory("pdf"))
         register_parser("xlsx", make_mineru_factory("xlsx"))
         register_parser("xls", make_mineru_factory("xls"))
@@ -74,6 +91,7 @@ def _register_builtin() -> None:
         # MinerU 不可用时，降级为 MarkItDown
         try:
             from app.parsers.markitdown_adapter import make_markitdown_factory
+
             register_parser("pdf", make_markitdown_factory("pdf"))
             register_parser("xlsx", make_markitdown_factory("xlsx"))
             register_parser("xls", make_markitdown_factory("xls"))
@@ -81,6 +99,7 @@ def _register_builtin() -> None:
             pass
     try:
         from app.parsers.mineru_adapter import make_mineru_factory
+
         for fmt in ("png", "jpg", "jpeg", "gif", "bmp"):
             register_parser(fmt, make_mineru_factory(fmt))
     except ImportError:
@@ -89,6 +108,7 @@ def _register_builtin() -> None:
     # ── Unstructured（备选 fallback） ──
     try:
         from app.parsers.unstructured_adapter import make_unstructured_factory
+
         for fmt in ("rst", "xml", "odt", "msg", "eml"):
             register_parser(fmt, make_unstructured_factory(fmt))
     except ImportError:
