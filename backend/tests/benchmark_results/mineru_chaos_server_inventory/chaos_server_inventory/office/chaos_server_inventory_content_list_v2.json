@@ -1,0 +1,71 @@
+[
+    [
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "服务器清单"
+                    }
+                ],
+                "level": 1
+            }
+        },
+        {
+            "type": "table",
+            "content": {
+                "table_caption": [],
+                "html": "<table>\n  <tr>\n    <th colspan=\"6\"><p>生产环境服务器清单（截止 2026-06-30）</p></th>\n  </tr>\n  <tr>\n    <td colspan=\"6\"><p>设备信息</p></td>\n  </tr>\n  <tr>\n    <td><p>主机名</p></td>\n    <td><p>IP地址</p></td>\n    <td><p>角色</p></td>\n    <td><p>CPU</p></td>\n    <td><p>内存(GB)</p></td>\n    <td><p>状态</p></td>\n  </tr>\n  <tr>\n    <td><p>db-master-01</p></td>\n    <td><p>10.0.1.1</p></td>\n    <td><p>MySQL主库</p></td>\n    <td><p>32核</p></td>\n    <td><p>256</p></td>\n    <td><p>⚠️ 故障</p></td>\n  </tr>\n  <tr>\n    <td><p>db-slave-01</p></td>\n    <td><p>10.0.1.2</p></td>\n    <td><p>MySQL从库</p></td>\n    <td><p>16核</p></td>\n    <td><p>128</p></td>\n    <td><p>正常</p></td>\n  </tr>\n  <tr>\n    <td><p>web-01</p></td>\n    <td><p>10.0.0.1</p></td>\n    <td><p>Nginx</p></td>\n    <td><p>8核</p></td>\n    <td><p>64</p></td>\n    <td><p>正常</p></td>\n  </tr>\n  <tr>\n    <td><p>web-02</p></td>\n    <td><p>10.0.0.11</p></td>\n    <td><p>Nginx</p></td>\n    <td><p>8核</p></td>\n    <td><p>64</p></td>\n    <td><p>维护中</p></td>\n  </tr>\n  <tr>\n    <td><p>cache-01</p></td>\n    <td><p>10.0.2.1</p></td>\n    <td><p>Redis Cluster</p></td>\n    <td><p>16核</p></td>\n    <td><p>128</p></td>\n    <td><p>正常</p></td>\n  </tr>\n  <tr>\n    <td><p>cache-02</p></td>\n    <td><p>10.0.2.2</p></td>\n    <td><p>Redis Cluster</p></td>\n    <td><p>16核</p></td>\n    <td><p>128</p></td>\n    <td><p>正常</p></td>\n  </tr>\n  <tr>\n    <td><p>mq-01</p></td>\n    <td><p>10.0.3.1</p></td>\n    <td><p>Kafka</p></td>\n    <td><p>8核</p></td>\n    <td><p>64</p></td>\n    <td><p>正常</p></td>\n  </tr>\n  <tr>\n    <td><p>monitor-01</p></td>\n    <td><p>10.0.9.1</p></td>\n    <td><p>Prometheus</p></td>\n    <td><p>4核</p></td>\n    <td><p>32</p></td>\n    <td><p>正常</p></td>\n  </tr>\n</table>",
+                "table_type": "complex_table",
+                "table_nest_level": 1
+            }
+        }
+    ],
+    [
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "MySQL参数对比"
+                    }
+                ],
+                "level": 1
+            }
+        },
+        {
+            "type": "table",
+            "content": {
+                "table_caption": [],
+                "html": "<table>\n  <tr>\n    <th colspan=\"4\"><p>MySQL 8.0 参数调优对照表</p></th>\n  </tr>\n  <tr>\n    <td><p>参数名</p></td>\n    <td><p>默认值</p></td>\n    <td><p>当前值</p></td>\n    <td><p>建议值</p></td>\n  </tr>\n  <tr>\n    <td><p>innodb_buffer_pool_size</p></td>\n    <td><p>128M</p></td>\n    <td><p>64G</p></td>\n    <td><p>128G</p></td>\n  </tr>\n  <tr>\n    <td><p>innodb_log_file_size</p></td>\n    <td><p>48M</p></td>\n    <td><p>2G</p></td>\n    <td><p>4G</p></td>\n  </tr>\n  <tr>\n    <td><p>max_connections</p></td>\n    <td><p>151</p></td>\n    <td><p>2000</p></td>\n    <td><p>5000</p></td>\n  </tr>\n  <tr>\n    <td><p>innodb_flush_log_at_trx_commit</p></td>\n    <td><p>1</p></td>\n    <td><p>2</p></td>\n    <td><p>2</p></td>\n  </tr>\n  <tr>\n    <td><p>sync_binlog</p></td>\n    <td><p>1</p></td>\n    <td><p>0</p></td>\n    <td><p>1000</p></td>\n  </tr>\n  <tr>\n    <td><p>innodb_io_capacity</p></td>\n    <td><p>200</p></td>\n    <td><p>2000</p></td>\n    <td><p>4000</p></td>\n  </tr>\n  <tr>\n    <td><p>tmp_table_size</p></td>\n    <td><p>16M</p></td>\n    <td><p>256M</p></td>\n    <td><p>512M</p></td>\n  </tr>\n  <tr>\n    <td><p>max_heap_table_size</p></td>\n    <td><p>16M</p></td>\n    <td><p>256M</p></td>\n    <td><p>512M</p></td>\n  </tr>\n  <tr>\n    <td><p>innodb_thread_concurrency</p></td>\n    <td><p>0</p></td>\n    <td><p>0</p></td>\n    <td><p>32</p></td>\n  </tr>\n  <tr>\n    <td><p>innodb_read_io_threads</p></td>\n    <td><p>4</p></td>\n    <td><p>8</p></td>\n    <td><p>16</p></td>\n  </tr>\n  <tr>\n    <td><p>innodb_write_io_threads</p></td>\n    <td><p>4</p></td>\n    <td><p>8</p></td>\n    <td><p>16</p></td>\n  </tr>\n  <tr>\n    <td><p>query_cache_size</p></td>\n    <td><p>0</p></td>\n    <td><p>256M</p></td>\n    <td><p>❌ 8.0 已移除该参数</p></td>\n  </tr>\n  <tr>\n    <td><p>innodb_adaptive_hash_index</p></td>\n    <td><p>ON</p></td>\n    <td><p>OFF</p></td>\n    <td><p>ON（建议开启）</p></td>\n  </tr>\n</table>",
+                "table_type": "complex_table",
+                "table_nest_level": 1
+            }
+        }
+    ],
+    [
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "故障时间线"
+                    }
+                ],
+                "level": 1
+            }
+        },
+        {
+            "type": "table",
+            "content": {
+                "table_caption": [],
+                "html": "<table>\n  <tr>\n    <th><p>时间线（隐藏清理中）</p></th>\n  </tr>\n  <tr>\n    <td><p>隐藏行 2</p></td>\n  </tr>\n  <tr>\n    <td><p>隐藏行 3</p></td>\n  </tr>\n  <tr>\n    <td><p>隐藏行 4</p></td>\n  </tr>\n  <tr>\n    <td><p>隐藏行 5</p></td>\n  </tr>\n</table>",
+                "table_type": "simple_table",
+                "table_nest_level": 1
+            }
+        }
+    ]
+]

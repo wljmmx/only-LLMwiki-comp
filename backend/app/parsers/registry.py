@@ -57,21 +57,26 @@ def _register_builtin() -> None:
     # ── MarkItDown（主力，MIT 许可） ──
     try:
         from app.parsers.markitdown_adapter import make_markitdown_factory
-        for fmt in ("word", "docx", "doc", "excel", "xlsx", "xls",
+        for fmt in ("word", "docx", "doc", "excel",
                      "ppt", "pptx", "html", "htm", "epub", "csv", "json"):
             register_parser(fmt, make_markitdown_factory(fmt))
     except ImportError:
         pass
 
-    # ── MinerU（PDF 专项，Python 3.10-3.13，GPU 推荐） ──
+    # ── MinerU（PDF/Excel/图片 专项，Python 3.10-3.13，GPU 推荐） ──
+    # 实测：Excel 合并单元格处理优于 MarkItDown（colspan 保留 vs Unnamed:X）
     try:
         from app.parsers.mineru_adapter import make_mineru_factory
         register_parser("pdf", make_mineru_factory("pdf"))
+        register_parser("xlsx", make_mineru_factory("xlsx"))
+        register_parser("xls", make_mineru_factory("xls"))
     except ImportError:
-        # MinerU 不可用时，PDF 降级为 MarkItDown
+        # MinerU 不可用时，降级为 MarkItDown
         try:
             from app.parsers.markitdown_adapter import make_markitdown_factory
             register_parser("pdf", make_markitdown_factory("pdf"))
+            register_parser("xlsx", make_markitdown_factory("xlsx"))
+            register_parser("xls", make_markitdown_factory("xls"))
         except ImportError:
             pass
     try:

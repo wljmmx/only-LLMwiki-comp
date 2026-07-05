@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>Nginx 性能调优实战手册</title></head>
+<body>
+<div style="background:#1a1a2e;color:#eee;padding:20px;">
+  <h1 style="color:#e94560;text-align:center;">Nginx 性能调优实战手册</h1>
+  <p style="font-size:12px;color:#999;text-align:center;">版本 3.2 | 最后更新：2026-06-28 | 作者：基础架构组</p>
+</div>
+
+<div style="padding:10px;border-left:4px solid #e94560;margin:15px 0;">
+  <strong>⚠️ 警告：</strong>以下配置适用于 Nginx 1.24+，<em>不支持</em> 1.22 及以下版本。
+  <br/>生产环境修改前请务必在 staging 环境验证。
+</div>
+
+<h2>一、核心参数优化</h2>
+<table border="1" cellpadding="8" style="border-collapse:collapse;width:100%;">
+  <tr style="background:#2F5496;color:white;">
+    <th>参数</th><th>默认值</th><th>推荐值</th><th>说明</th>
+  </tr>
+  <tr>
+    <td><code>worker_processes</code></td>
+    <td>1</td>
+    <td style="color:green;font-weight:bold;">auto</td>
+    <td>自动匹配 CPU 核心数</td>
+  </tr>
+  <tr>
+    <td><code>worker_connections</code></td>
+    <td>512</td>
+    <td style="color:green;font-weight:bold;">4096</td>
+    <td>单 worker 最大连接数</td>
+  </tr>
+  <tr>
+    <td><code>keepalive_timeout</code></td>
+    <td>75s</td>
+    <td style="color:orange;">65s</td>
+    <td>过短增加握手开销，过长占用连接</td>
+  </tr>
+  <tr style="background:#fff3cd;">
+    <td><code>proxy_buffer_size</code></td>
+    <td>4k/8k</td>
+    <td style="color:red;font-weight:bold;">16k</td>
+    <td>⚠️ <strong>生产环境必须调大</strong>，否则大响应头被截断</td>
+  </tr>
+</table>
+
+<h2>二、完整配置示例</h2>
+<pre style="background:#1e1e1e;color:#d4d4d4;padding:15px;border-radius:4px;overflow-x:auto;">
+<code># Nginx 生产配置
+upstream backend {
+    <span style="color:#569cd6;">server</span> 10.0.0.1:8080 weight=5 max_fails=3;
+    <span style="color:#569cd6;">server</span> 10.0.0.2:8080 weight=3 <span style="color:#6a9955;"># 备机</span>;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name api.example.com;
+    <span style="color:#6a9955;"># 安全头</span>
+    add_header X-Frame-Options DENY;
+    add_header X-Content-Type-Options nosniff;
+
+    location / {
+        proxy_pass http://backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffer_size 16k;
+        proxy_buffers 4 64k;
+        proxy_busy_buffers_size 128k;
+    }
+}
+</code></pre>
+
+<h2>三、常见问题</h2>
+<ul>
+  <li><strong>502 Bad Gateway</strong>：检查后端服务是否存活，<code>proxy_connect_timeout</code> 是否过短</li>
+  <li><strong>504 Gateway Timeout</strong>：后端处理时间过长，增大 <code>proxy_read_timeout</code></li>
+  <li><strong>413 Request Entity Too Large</strong>：文件上传超过 <code>client_max_body_size</code> 限制</li>
+  <li style="color:red;">⚠️ 特别注意：<code>proxy_set_header Host $host;</code> 必须配置，否则后端无法识别域名</li>
+</ul>
+
+<h2>四、性能基准测试（ab 压测）</h2>
+<table border="1">
+  <tr><th>并发数</th><th>QPS</th><th>P99延迟</th><th>CPU</th></tr>
+  <tr><td>100</td><td>12,450</td><td>45ms</td><td>35%</td></tr>
+  <tr><td>500</td><td>11,200</td><td>120ms</td><td>62%</td></tr>
+  <tr><td>1000</td><td>9,800</td><td>380ms</td><td>88%</td></tr>
+  <tr style="background:#ffe0e0;"><td>2000</td><td>5,200</td><td>1,250ms</td><td>99%</td></tr>
+</table>
+
+<div style="margin-top:30px;padding:10px;background:#f0f0f0;font-size:12px;">
+  <p>参考资料：<a href="https://nginx.org/en/docs/">Nginx 官方文档</a> | <a href="https://www.nginx.com/blog/">Nginx Blog</a></p>
+  <p>⚠️ 本文档仅供内部使用，禁止外传</p>
+</div>
+</body></html>

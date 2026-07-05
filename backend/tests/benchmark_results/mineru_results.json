@@ -1,0 +1,32 @@
+[
+  {
+    "tool": "MinerU",
+    "file": "chaos_incident_report.docx",
+    "time_ms": 14978.4,
+    "lines": 63,
+    "chars": 2085,
+    "status": "OK",
+    "output_path": "backend/tests/benchmark_results/mineru_chaos_incident_report.docx.md"
+  },
+  {
+    "tool": "MinerU",
+    "file": "chaos_server_inventory.xlsx",
+    "time_ms": 14819.2,
+    "lines": 194,
+    "chars": 3800,
+    "status": "OK",
+    "output_path": "backend/tests/benchmark_results/mineru_chaos_server_inventory.xlsx.md"
+  },
+  {
+    "tool": "MinerU",
+    "file": "chaos_nginx_guide.html",
+    "time_ms": 4749.4,
+    "status": "FAILED: Error: No supported documents found under backend/tests/fixtures/benchmark/chaos_nginx_guide.html"
+  },
+  {
+    "tool": "MinerU",
+    "file": "chaos_ops_scripts.md",
+    "time_ms": 5165.7,
+    "status": "FAILED: Error: No supported documents found under backend/tests/fixtures/benchmark/chaos_ops_scripts.md"
+  }
+]
