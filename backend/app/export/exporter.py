@@ -6,6 +6,7 @@ PDF 导出需要额外依赖（wkhtmltopdf），可选。
 from __future__ import annotations
 
 import html
+import re
 from pathlib import Path
 
 import structlog
