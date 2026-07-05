@@ -799,6 +799,104 @@ class TopologyBuilder:
             "details": merge_details,
         }
 
+    # ────────── P2-4.4 Mermaid/Cytoscape 导出 ──────────
+
+    def export(self, fmt: str = "mermaid") -> str:
+        """P2-4.4 导出拓扑为 Mermaid 或 Cytoscape 格式
+
+        Args:
+            fmt: "mermaid" | "cytoscape"
+
+        Returns:
+            格式化字符串（Mermaid graph 语法 / Cytoscape JSON）
+        """
+        topo = self.get_topology()
+        nodes = topo["nodes"]
+        edges = topo["edges"]
+        if fmt == "mermaid":
+            return self._export_mermaid(nodes, edges)
+        elif fmt == "cytoscape":
+            return self._export_cytoscape(nodes, edges)
+        raise ValueError(f"不支持的导出格式: {fmt}（支持 mermaid | cytoscape）")
+
+    @staticmethod
+    def _export_mermaid(nodes: list[dict], edges: list[dict]) -> str:
+        """导出为 Mermaid flowchart 语法
+
+        节点按类型着色：Host=蓝、Service=绿、Component=橙
+        边按 relation 标注：RUNS_ON/DEPENDS_ON/USES
+        推断边用虚线（-->），显式边用实线（-->）
+        """
+        # node_id 在 Mermaid 中需合法（去掉冒号）
+        def safe_id(node_id: str) -> str:
+            return node_id.replace(":", "_")
+
+        type_style = {
+            "Host": "fill:#4a90d9,color:#fff",
+            "Service": "fill:#5cb85c,color:#fff",
+            "Component": "fill:#f0ad4e,color:#fff",
+        }
+        lines = ["graph TD"]
+        # 节点定义
+        for n in nodes:
+            nid = safe_id(n["node_id"])
+            label = n["name"]
+            style = type_style.get(n["node_type"], "fill:#999,color:#fff")
+            inferred_tag = ""
+            lines.append(f'    {nid}["{label}"]:::nodeStyle')
+        # 边
+        for e in edges:
+            src = safe_id(e["source"])
+            tgt = safe_id(e["target"])
+            rel = e["relation"]
+            inferred = e.get("inferred", 0) == 1
+            arrow = "-.->" if inferred else "-->"
+            lines.append(f"    {src} {arrow}|{rel}| {tgt}")
+        # 样式定义
+        lines.append("    classDef nodeStyle fill:#999,color:#fff,stroke:#333")
+        for ntype, style in type_style.items():
+            lines.append(f"    classDef {ntype.lower()}Style {style}")
+        # 按类型应用样式
+        for ntype in ("Host", "Service", "Component"):
+            ids = [safe_id(n["node_id"]) for n in nodes if n["node_type"] == ntype]
+            if ids:
+                lines.append(f"    class {','.join(ids)} {ntype.lower()}Style")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _export_cytoscape(nodes: list[dict], edges: list[dict]) -> str:
+        """导出为 Cytoscape JSON 格式（elements: {nodes, edges}）"""
+        def safe_id(node_id: str) -> str:
+            return node_id.replace(":", "_")
+
+        cy_nodes = []
+        for n in nodes:
+            cy_nodes.append({
+                "data": {
+                    "id": safe_id(n["node_id"]),
+                    "name": n["name"],
+                    "node_type": n["node_type"],
+                    "occurrences": n.get("occurrences", 0),
+                }
+            })
+        cy_edges = []
+        for i, e in enumerate(edges):
+            cy_edges.append({
+                "data": {
+                    "id": f"e{i}",
+                    "source": safe_id(e["source"]),
+                    "target": safe_id(e["target"]),
+                    "relation": e["relation"],
+                    "inferred": e.get("inferred", 0),
+                    "confidence": e.get("confidence", 1.0),
+                }
+            })
+        return json.dumps(
+            {"elements": {"nodes": cy_nodes, "edges": cy_edges}},
+            ensure_ascii=False,
+            indent=2,
+        )
+
     @staticmethod
     def _infer_relation(type_a: str, type_b: str) -> str | None:
         """根据两个节点的类型推断 relation，无法推断则返回 None"""

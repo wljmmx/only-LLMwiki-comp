@@ -1,17 +1,19 @@
-"""服务拓扑 API（P2-4 + P2-4.1 + P2-4.2）。
+"""服务拓扑 API（P2-4 + P2-4.1 + P2-4.2 + P2-4.4）。
 
 端点：
 - POST /topology/rebuild
-- POST /topology/infer        (P2-4.1) 共现推断
+- POST /topology/infer         (P2-4.1) 共现推断
 - POST /topology/merge-aliases (P2-4.2) 节点别名合并
 - GET  /topology
+- GET  /topology/export        (P2-4.4) Mermaid/Cytoscape 导出
 - GET  /topology/nodes/{node_name}
 - GET  /topology/impact/{node_name}
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import PlainTextResponse
 
 from app.aiops import get_topology_builder
 from app.auth import verify_token
@@ -68,6 +70,26 @@ async def topology_get(
     """
     builder = get_topology_builder()
     return builder.get_topology(node_type=node_type, relation=relation)
+
+
+@router.get("/topology/export")
+async def topology_export(fmt: str = "mermaid"):
+    """P2-4.4 导出拓扑为 Mermaid 或 Cytoscape 格式
+
+    Query:
+        fmt: mermaid | cytoscape（默认 mermaid）
+    """
+    builder = get_topology_builder()
+    try:
+        content = builder.export(fmt=fmt)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if fmt == "cytoscape":
+        from fastapi.responses import JSONResponse
+        import json
+        return JSONResponse(content=json.loads(content))
+    # mermaid 返回纯文本
+    return PlainTextResponse(content=content, media_type="text/plain")
 
 
 @router.get("/topology/nodes/{node_name}")
