@@ -1,8 +1,9 @@
-"""服务拓扑 API（P2-4 + P2-4.1）。
+"""服务拓扑 API（P2-4 + P2-4.1 + P2-4.2）。
 
 端点：
 - POST /topology/rebuild
 - POST /topology/infer        (P2-4.1) 共现推断
+- POST /topology/merge-aliases (P2-4.2) 节点别名合并
 - GET  /topology
 - GET  /topology/nodes/{node_name}
 - GET  /topology/impact/{node_name}
@@ -41,6 +42,17 @@ async def topology_infer(
         min_cooccurrence=min_cooccurrence,
         min_confidence=min_confidence,
     )
+
+
+@router.post("/topology/merge-aliases", dependencies=[Depends(verify_token)])
+async def topology_merge_aliases() -> dict:
+    """P2-4.2 合并别名节点（db1.example.com ↔ db1）
+
+    检测同类型节点中 FQDN 与短名配对，保留短名为 canonical，
+    合并 source_docs/occurrences，重定向边，删除别名节点。
+    """
+    builder = get_topology_builder()
+    return builder.merge_aliases()
 
 
 @router.get("/topology")

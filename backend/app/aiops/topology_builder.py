@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import defaultdict
 from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
@@ -622,6 +623,180 @@ class TopologyBuilder:
             "inferred_edges": len(inferred_edges),
             "skipped_existing": skipped,
             "edges": inferred_edges,
+        }
+
+    # ────────── P2-4.2 节点别名合并 ──────────
+
+    def merge_aliases(self) -> dict:
+        """P2-4.2 合并别名节点（db1.example.com ↔ db1）
+
+        策略：
+        1. 同类型节点中，检测 FQDN 与短名配对：
+           - db1.example.com 的短名 db1 若也存在于同类型节点 → 视为别名
+        2. 合并方向：保留短名为 canonical，FQDN 节点合并入短名节点
+        3. 合并内容：
+           - source_docs 取并集
+           - occurrences 取和
+           - first_seen 取较早，last_seen 取较晚
+        4. 边迁移：所有指向/来自 FQDN 节点的边重定向到 canonical 节点
+        5. 删除被合并的 FQDN 节点
+
+        Returns:
+            {
+                "merged_pairs": int,        # 合并的节点对数
+                "removed_nodes": int,       # 删除的别名节点数
+                "redirected_edges": int,    # 重定向的边数
+                "details": [...]            # 合并详情
+            }
+        """
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT node_id, node_type, name, occurrences, source_docs, "
+            "first_seen, last_seen FROM topology_nodes"
+        ).fetchall()
+
+        # 按 (node_type, short_name) 分组
+        # short_name = name.split('.')[0].lower()
+        groups: dict[tuple[str, str], list[sqlite3.Row]] = defaultdict(list)
+        for r in rows:
+            short = (r["name"] or "").split(".")[0].lower()
+            if not short:
+                continue
+            groups[(r["node_type"], short)].append(r)
+
+        # 找出有多个节点的组（别名候选）
+        merge_details: list[dict] = []
+        removed_nodes = 0
+        redirected_edges = 0
+        now = datetime.now(timezone.utc).isoformat()
+
+        for (node_type, short_name), group in groups.items():
+            if len(group) < 2:
+                continue
+            # canonical = 名称最短的（短名优先，无点优先）
+            canonical = min(group, key=lambda r: len(r["name"]))
+            canonical_id = canonical["node_id"]
+            # 别名 = 其余节点
+            aliases = [r for r in group if r["node_id"] != canonical_id]
+            if not aliases:
+                continue
+
+            # 合并 source_docs 和 occurrences
+            canon_docs = set(json.loads(canonical["source_docs"] or "[]"))
+            canon_occ = canonical["occurrences"] or 0
+            canon_first = canonical["first_seen"]
+            canon_last = canonical["last_seen"]
+
+            for alias in aliases:
+                alias_docs = set(json.loads(alias["source_docs"] or "[]"))
+                canon_docs |= alias_docs
+                canon_occ += alias["occurrences"] or 0
+                # 取最早/最晚时间
+                if alias["first_seen"] and (
+                    not canon_first or alias["first_seen"] < canon_first
+                ):
+                    canon_first = alias["first_seen"]
+                if alias["last_seen"] and (
+                    not canon_last or alias["last_seen"] > canon_last
+                ):
+                    canon_last = alias["last_seen"]
+
+                # 迁移边：alias 作为 source 或 target 的边重定向到 canonical
+                # 注意 UNIQUE(source, target, relation) 约束 → 用 INSERT OR REPLACE 合并
+                alias_id = alias["node_id"]
+                edges_to_redirect = conn.execute(
+                    "SELECT source, target, relation, occurrences, source_docs, "
+                    "first_seen, last_seen, inferred, confidence "
+                    "FROM topology_edges WHERE source = ? OR target = ?",
+                    (alias_id, alias_id),
+                ).fetchall()
+                for e in edges_to_redirect:
+                    new_source = canonical_id if e["source"] == alias_id else e["source"]
+                    new_target = canonical_id if e["target"] == alias_id else e["target"]
+                    # 跳过自环（alias→canonical 重定向后可能变成 canonical→canonical）
+                    if new_source == new_target:
+                        continue
+                    # 合并到已有边或插入新边
+                    existing_edge = conn.execute(
+                        "SELECT id, occurrences, source_docs FROM topology_edges "
+                        "WHERE source = ? AND target = ? AND relation = ?",
+                        (new_source, new_target, e["relation"]),
+                    ).fetchone()
+                    if existing_edge:
+                        merged_docs = set(json.loads(existing_edge["source_docs"] or "[]"))
+                        merged_docs |= set(json.loads(e["source_docs"] or "[]"))
+                        conn.execute(
+                            "UPDATE topology_edges SET occurrences = ?, source_docs = ?, "
+                            "last_seen = ? WHERE id = ?",
+                            (
+                                (existing_edge["occurrences"] or 0) + (e["occurrences"] or 0),
+                                json.dumps(sorted(merged_docs)),
+                                now,
+                                existing_edge["id"],
+                            ),
+                        )
+                    else:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO topology_edges "
+                            "(source, target, relation, occurrences, source_docs, "
+                            " first_seen, last_seen, inferred, confidence) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                new_source,
+                                new_target,
+                                e["relation"],
+                                e["occurrences"],
+                                e["source_docs"],
+                                e["first_seen"],
+                                now,
+                                e["inferred"],
+                                e["confidence"],
+                            ),
+                        )
+                    redirected_edges += 1
+                # 删除旧边
+                conn.execute(
+                    "DELETE FROM topology_edges WHERE source = ? OR target = ?",
+                    (alias_id, alias_id),
+                )
+                # 删除别名节点
+                conn.execute(
+                    "DELETE FROM topology_nodes WHERE node_id = ?", (alias_id,)
+                )
+                removed_nodes += 1
+                merge_details.append({
+                    "canonical": canonical_id,
+                    "alias": alias_id,
+                    "alias_name": alias["name"],
+                    "canonical_name": canonical["name"],
+                    "node_type": node_type,
+                })
+
+            # 更新 canonical 节点
+            conn.execute(
+                "UPDATE topology_nodes SET occurrences = ?, source_docs = ?, "
+                "first_seen = ?, last_seen = ? WHERE node_id = ?",
+                (
+                    canon_occ,
+                    json.dumps(sorted(canon_docs)),
+                    canon_first,
+                    canon_last,
+                    canonical_id,
+                ),
+            )
+
+        conn.commit()
+        logger.info(
+            "topology_aliases_merged",
+            merged_pairs=len(merge_details),
+            removed_nodes=removed_nodes,
+            redirected_edges=redirected_edges,
+        )
+        return {
+            "merged_pairs": len(merge_details),
+            "removed_nodes": removed_nodes,
+            "redirected_edges": redirected_edges,
+            "details": merge_details,
         }
 
     @staticmethod

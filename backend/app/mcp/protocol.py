@@ -14,6 +14,7 @@
 - suggest_rollback: 基于 incident 给出回滚建议
 - get_topology: 获取服务拓扑
 - infer_topology: 基于共现强度推断缺失的拓扑边（P2-4.1）
+- merge_topology_aliases: 合并别名节点（P2-4.2）
 - impact_analysis: 影响分析
 - list_documents: 列出已上传文档
 
@@ -221,6 +222,18 @@ TOOLS: list[dict] = [
         },
     },
     {
+        "name": "merge_topology_aliases",
+        "description": (
+            "P2-4.2 合并拓扑别名节点。检测同类型节点中 FQDN 与短名配对"
+            "（如 db1.example.com ↔ db1），保留短名为 canonical，合并 source_docs/occurrences，"
+            "重定向边到 canonical 节点，删除别名节点。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
         "name": "impact_analysis",
         "description": "影响分析：给定节点故障，分析受影响的上下游服务。",
         "inputSchema": {
@@ -422,6 +435,20 @@ def _tool_infer_topology(args: dict) -> str:
     )
 
 
+def _tool_merge_topology_aliases(args: dict) -> str:
+    result = get_topology_builder().merge_aliases()
+    return json.dumps(
+        {
+            "merged_pairs": result["merged_pairs"],
+            "removed_nodes": result["removed_nodes"],
+            "redirected_edges": result["redirected_edges"],
+            "details": result["details"][:50],  # 精简输出
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 def _tool_impact_analysis(args: dict) -> str:
     node_name = args.get("node_name", "")
     if not node_name:
@@ -477,6 +504,7 @@ TOOL_HANDLERS = {
     "suggest_rollback": _tool_suggest_rollback,
     "get_topology": _tool_get_topology,
     "infer_topology": _tool_infer_topology,
+    "merge_topology_aliases": _tool_merge_topology_aliases,
     "impact_analysis": _tool_impact_analysis,
     "list_documents": _tool_list_documents,
 }
