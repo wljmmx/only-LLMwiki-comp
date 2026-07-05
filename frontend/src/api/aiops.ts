@@ -68,7 +68,45 @@ export interface Incident {
   services?: string[]
   components?: string[]
   event_samples?: AIOpsEvent[]
+  acknowledged_at?: string | null
+  resolved_at?: string | null
+  ended_at?: string | null
+  assignee?: string
+  transition_history?: IncidentTransition[]
+  scope?: { hosts?: string[]; services?: string[]; components?: string[] }
+  alerts?: AIOpsEvent[]
   [key: string]: any
+}
+
+// P2-2.2 incident 状态机
+export type IncidentState =
+  | 'open'
+  | 'ack'
+  | 'investigating'
+  | 'mitigated'
+  | 'resolved'
+  | 'closed' // legacy alias for resolved
+  | 'all'
+
+export interface IncidentTransition {
+  from: string
+  to: string
+  at: string
+  by: string
+  note: string
+}
+
+export interface IncidentStateMachine {
+  states: string[]
+  transitions: Record<string, string[]>
+  terminal_states: string[]
+  legacy_aliases: Record<string, string>
+}
+
+export interface TransitionResult {
+  incident_id: string
+  status: string
+  transition_history: IncidentTransition[]
 }
 
 export interface IngestResult {
@@ -88,7 +126,7 @@ export function correlateEvents(sinceMinutes = 60, maxEvents = 500) {
   })
 }
 
-export function listIncidents(status = 'open', limit = 50) {
+export function listIncidents(status: IncidentState | string = 'open', limit = 50) {
   return api.get<any, { incidents: Incident[]; count: number }>(
     '/events/incidents',
     { params: { status, limit } },
@@ -99,6 +137,71 @@ export function getIncident(incidentId: string) {
   return api.get<any, Incident>(`/events/incidents/${incidentId}`)
 }
 
+export function getIncidentStates() {
+  return api.get<any, IncidentStateMachine>('/events/incidents/states')
+}
+
+/**
+ * 通用状态迁移端点（P2-2.2）
+ * 推荐使用具体状态端点 ackIncident/investigateIncident/mitigateIncident/resolveIncident
+ */
+export function transitionIncident(
+  incidentId: string,
+  targetState: IncidentState | string,
+  options: { note?: string; by?: string; assignee?: string } = {},
+) {
+  return api.post<any, TransitionResult>(
+    `/events/incidents/${incidentId}/transition`,
+    {
+      target_state: targetState,
+      note: options.note ?? '',
+      by: options.by ?? '',
+      assignee: options.assignee,
+    },
+  )
+}
+
+export function ackIncident(
+  incidentId: string,
+  options: { note?: string; by?: string; assignee?: string } = {},
+) {
+  return api.post<any, TransitionResult>(
+    `/events/incidents/${incidentId}/ack`,
+    options,
+  )
+}
+
+export function investigateIncident(
+  incidentId: string,
+  options: { note?: string; by?: string; assignee?: string } = {},
+) {
+  return api.post<any, TransitionResult>(
+    `/events/incidents/${incidentId}/investigate`,
+    options,
+  )
+}
+
+export function mitigateIncident(
+  incidentId: string,
+  options: { note?: string; by?: string; assignee?: string } = {},
+) {
+  return api.post<any, TransitionResult>(
+    `/events/incidents/${incidentId}/mitigate`,
+    options,
+  )
+}
+
+export function resolveIncident(
+  incidentId: string,
+  options: { note?: string; by?: string; assignee?: string } = {},
+) {
+  return api.post<any, TransitionResult>(
+    `/events/incidents/${incidentId}/resolve`,
+    options,
+  )
+}
+
+/** Legacy close 端点（等价于 resolve） */
 export function closeIncident(incidentId: string, note = '') {
   return api.post<any, any>(
     `/events/incidents/${incidentId}/close`,

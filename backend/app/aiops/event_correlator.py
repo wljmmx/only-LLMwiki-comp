@@ -41,6 +41,62 @@ SEVERITY_RANK = {
     "fatal": 5,
 }
 
+# ────────── Incident 状态机（P2-2.2）──────────
+# 状态序列：open → ack → investigating → mitigated → resolved
+# - 允许前向跳跃（如 open → resolved 处理误报）
+# - 允许 reopen（非 open 状态可回退到 open）
+# - resolved 为终态，仅允许 reopen
+# - closed 为历史遗留别名（等价于 resolved），向后兼容
+INCIDENT_STATES: list[str] = [
+    "open",
+    "ack",
+    "investigating",
+    "mitigated",
+    "resolved",
+]
+
+# 合法迁移表：当前状态 → 允许的目标状态集合
+INCIDENT_TRANSITIONS: dict[str, set[str]] = {
+    "open": {"ack", "investigating", "mitigated", "resolved"},
+    "ack": {"investigating", "mitigated", "resolved", "open"},
+    "investigating": {"mitigated", "resolved", "open"},
+    "mitigated": {"resolved", "investigating", "open"},
+    "resolved": {"open"},  # reopen
+    "closed": {"open"},  # legacy alias
+}
+
+# 终态集合（不可再前向迁移，仅可 reopen）
+TERMINAL_STATES = {"resolved", "closed"}
+
+# 状态对应的 timestamp 字段（用于状态机时间戳记录）
+STATE_TIMESTAMP_FIELD: dict[str, str] = {
+    "ack": "acknowledged_at",
+    "resolved": "resolved_at",
+    "closed": "resolved_at",  # legacy
+}
+
+
+def is_valid_state(state: str) -> bool:
+    return state in INCIDENT_TRANSITIONS
+
+
+def can_transition(from_state: str, to_state: str) -> bool:
+    """检查状态迁移是否合法"""
+    allowed = INCIDENT_TRANSITIONS.get(from_state, set())
+    return to_state in allowed
+
+
+class InvalidTransitionError(ValueError):
+    """非法状态迁移"""
+
+    def __init__(self, from_state: str, to_state: str) -> None:
+        self.from_state = from_state
+        self.to_state = to_state
+        super().__init__(
+            f"非法状态迁移: {from_state} → {to_state}。"
+            f"允许的目标: {sorted(INCIDENT_TRANSITIONS.get(from_state, set()))}"
+        )
+
 
 def _get_db() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -83,11 +139,32 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             runbook_hint TEXT,
             alert_count INTEGER DEFAULT 0,
             status TEXT DEFAULT 'open',
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            -- P2-2.2 状态机字段
+            acknowledged_at TEXT,
+            resolved_at TEXT,
+            assignee TEXT DEFAULT '',
+            transition_history TEXT DEFAULT '[]'
         );
         CREATE INDEX IF NOT EXISTS idx_inc_status ON incidents(status);
         CREATE INDEX IF NOT EXISTS idx_inc_started ON incidents(started_at);
     """)
+    # 旧库迁移：补齐新增列（SQLite 不支持 ADD COLUMN IF NOT EXISTS）
+    _migrate_incidents_columns(conn)
+
+
+def _migrate_incidents_columns(conn: sqlite3.Connection) -> None:
+    """对历史 incidents 表补齐 P2-2.2 新增列"""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(incidents)")}
+    migrations = [
+        ("acknowledged_at", "TEXT"),
+        ("resolved_at", "TEXT"),
+        ("assignee", "TEXT DEFAULT ''"),
+        ("transition_history", "TEXT DEFAULT '[]'"),
+    ]
+    for col, decl in migrations:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE incidents ADD COLUMN {col} {decl}")
 
 
 @dataclass
@@ -210,19 +287,35 @@ class EventCorrelator:
             },
         }
 
-    def list_incidents(self, status: str = "open", limit: int = 50) -> list[dict]:
-        """列出 incident"""
+    def list_incidents(
+        self, status: str = "open", limit: int = 50
+    ) -> list[dict]:
+        """列出 incident
+
+        Args:
+            status: 状态过滤，支持 "all" 或 "" 表示不过滤
+            limit: 返回数量上限
+        """
         conn = _get_db()
-        rows = conn.execute(
-            """SELECT * FROM incidents WHERE status = ?
-               ORDER BY started_at DESC LIMIT ?""",
-            (status, limit),
-        ).fetchall()
+        if status in ("", "all", "*"):
+            rows = conn.execute(
+                "SELECT * FROM incidents ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM incidents WHERE status = ?
+                   ORDER BY started_at DESC LIMIT ?""",
+                (status, limit),
+            ).fetchall()
         result = []
         for r in rows:
             inc = dict(r)
             scope = json.loads(inc.get("scope") or "{}")
             inc["scope"] = scope
+            inc["transition_history"] = json.loads(
+                inc.get("transition_history") or "[]"
+            )
             # 加载关联事件
             ev_rows = conn.execute(
                 "SELECT id, timestamp, host, service, severity, message FROM events WHERE incident_id = ?",
@@ -241,6 +334,9 @@ class EventCorrelator:
             return None
         inc = dict(r)
         inc["scope"] = json.loads(inc.get("scope") or "{}")
+        inc["transition_history"] = json.loads(
+            inc.get("transition_history") or "[]"
+        )
         ev_rows = conn.execute(
             "SELECT id, timestamp, host, service, component, severity, message, tags FROM events WHERE incident_id = ?",
             (inc["incident_id"],),
@@ -253,15 +349,120 @@ class EventCorrelator:
         inc["alerts"] = alerts
         return inc
 
-    def close_incident(self, incident_id: str, note: str = "") -> bool:
+    # ────────── P2-2.2 状态机 ──────────
+
+    def transition_incident(
+        self,
+        incident_id: str,
+        target_state: str,
+        *,
+        note: str = "",
+        by: str = "",
+    ) -> dict:
+        """执行状态迁移
+
+        Args:
+            incident_id: incident ID
+            target_state: 目标状态（open/ack/investigating/mitigated/resolved）
+            note: 迁移备注（写入 transition_history）
+            by: 操作人（写入 transition_history）
+
+        Returns:
+            更新后的 incident dict
+
+        Raises:
+            KeyError: incident 不存在
+            InvalidTransitionError: 非法迁移
+        """
+        if not is_valid_state(target_state):
+            raise InvalidTransitionError("?", target_state)
+
         conn = _get_db()
+        r = conn.execute(
+            "SELECT status FROM incidents WHERE incident_id = ?",
+            (incident_id,),
+        ).fetchone()
+        if not r:
+            raise KeyError(incident_id)
+
+        current = r["status"]
+        # legacy: closed 等价于 resolved
+        effective_current = "resolved" if current == "closed" else current
+        effective_target = "resolved" if target_state == "closed" else target_state
+
+        # 已在目标状态：幂等返回
+        if effective_current == effective_target:
+            return self.get_incident(incident_id)  # type: ignore[return-value]
+
+        if not can_transition(effective_current, effective_target):
+            raise InvalidTransitionError(current, target_state)
+
         now = datetime.now(timezone.utc).isoformat()
-        cur = conn.execute(
-            "UPDATE incidents SET status = 'closed', ended_at = ? WHERE incident_id = ? AND status = 'open'",
-            (now, incident_id),
+
+        # 构造 UPDATE 字段
+        updates: dict[str, str | None] = {"status": target_state}
+        ts_field = STATE_TIMESTAMP_FIELD.get(effective_target)
+        if ts_field:
+            updates[ts_field] = now
+        # 进入 resolved/closed 时同时设置 ended_at
+        if effective_target in ("resolved", "closed"):
+            updates["ended_at"] = now
+        # reopen（target=open）时清空 ended_at/resolved_at
+        if effective_target == "open":
+            updates["ended_at"] = None
+            updates["resolved_at"] = None
+
+        # 追加 transition_history
+        history_entry = {
+            "from": current,
+            "to": target_state,
+            "at": now,
+            "by": by,
+            "note": note,
+        }
+        # 取当前 history
+        cur_hist = conn.execute(
+            "SELECT transition_history FROM incidents WHERE incident_id = ?",
+            (incident_id,),
+        ).fetchone()
+        try:
+            hist_list = json.loads(cur_hist["transition_history"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            hist_list = []
+        hist_list.append(history_entry)
+        updates["transition_history"] = json.dumps(
+            hist_list, ensure_ascii=False
+        )
+
+        # 执行 UPDATE
+        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+        params: list = list(updates.values()) + [incident_id]
+        conn.execute(
+            f"UPDATE incidents SET {set_clause} WHERE incident_id = ?",
+            params,
         )
         conn.commit()
-        return cur.rowcount > 0
+        logger.info(
+            "incident_transitioned",
+            incident_id=incident_id,
+            from_state=current,
+            to_state=target_state,
+            by=by,
+        )
+        return self.get_incident(incident_id)  # type: ignore[return-value]
+
+    def close_incident(self, incident_id: str, note: str = "") -> bool:
+        """关闭 incident（向后兼容包装）
+
+        内部调用 transition_incident 走 resolved 状态。
+        """
+        try:
+            self.transition_incident(
+                incident_id, "resolved", note=note, by="legacy-close"
+            )
+            return True
+        except (KeyError, InvalidTransitionError):
+            return False
 
     # ────────── 关联核心算法 ──────────
 
@@ -555,25 +756,55 @@ class EventCorrelator:
     def _persist_incidents(
         self, conn: sqlite3.Connection, incidents: list[Incident]
     ) -> None:
+        """持久化 incident + 关联事件
+
+        重要（P2-2.2）：已存在的 incident 不覆盖 status / ended_at /
+        acknowledged_at / resolved_at / assignee / transition_history，
+        只更新关联引擎产出的元信息（severity / scope / 根因 / runbook_hint /
+        alert_count）。新 incident 才以 status='open' 入库。
+        """
         now = datetime.now(timezone.utc).isoformat()
         for inc in incidents:
-            conn.execute(
-                """INSERT OR REPLACE INTO incidents
-                   (incident_id, started_at, ended_at, severity, scope,
-                    suspected_root_cause, runbook_hint, alert_count, status, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)""",
-                (
-                    inc.incident_id,
-                    inc.started_at,
-                    inc.ended_at,
-                    inc.severity,
-                    json.dumps(inc.scope, ensure_ascii=False),
-                    inc.suspected_root_cause,
-                    inc.runbook_hint,
-                    len(inc.alert_ids),
-                    now,
-                ),
-            )
+            existing = conn.execute(
+                "SELECT incident_id FROM incidents WHERE incident_id = ?",
+                (inc.incident_id,),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE incidents SET
+                       started_at = ?, severity = ?, scope = ?,
+                       suspected_root_cause = ?, runbook_hint = ?, alert_count = ?
+                       WHERE incident_id = ?""",
+                    (
+                        inc.started_at,
+                        inc.severity,
+                        json.dumps(inc.scope, ensure_ascii=False),
+                        inc.suspected_root_cause,
+                        inc.runbook_hint,
+                        len(inc.alert_ids),
+                        inc.incident_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO incidents
+                       (incident_id, started_at, ended_at, severity, scope,
+                        suspected_root_cause, runbook_hint, alert_count, status,
+                        created_at, acknowledged_at, resolved_at, assignee,
+                        transition_history)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, NULL, NULL, '', '[]')""",
+                    (
+                        inc.incident_id,
+                        inc.started_at,
+                        inc.ended_at,
+                        inc.severity,
+                        json.dumps(inc.scope, ensure_ascii=False),
+                        inc.suspected_root_cause,
+                        inc.runbook_hint,
+                        len(inc.alert_ids),
+                        now,
+                    ),
+                )
             for aid in inc.alert_ids:
                 conn.execute(
                     "UPDATE events SET incident_id = ? WHERE id = ?",

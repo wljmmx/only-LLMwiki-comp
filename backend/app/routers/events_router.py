@@ -1,11 +1,17 @@
-"""事件关联 API（P2-2）。
+"""事件关联 API（P2-2 + P2-2.2 incident 状态机）。
 
 端点：
 - POST /events/ingest
 - POST /events/correlate
 - GET  /events/incidents
 - GET  /events/incidents/{incident_id}
-- POST /events/incidents/{incident_id}/close
+- POST /events/incidents/{incident_id}/close        （legacy，等价于 /resolve）
+- POST /events/incidents/{incident_id}/ack
+- POST /events/incidents/{incident_id}/investigate
+- POST /events/incidents/{incident_id}/mitigate
+- POST /events/incidents/{incident_id}/resolve
+- POST /events/incidents/{incident_id}/transition    （通用迁移端点）
+- GET  /events/incidents/states                      （查询状态机定义）
 - POST /events/incidents/{incident_id}/runbook
 - GET  /events/incidents/{incident_id}/changes
 - GET  /events/incidents/{incident_id}/rollback-suggestion
@@ -17,7 +23,15 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.aiops import get_change_correlator, get_event_correlator
+from app.aiops import (
+    get_change_correlator,
+    get_event_correlator,
+    INCIDENT_STATES,
+    INCIDENT_TRANSITIONS,
+    TERMINAL_STATES,
+    InvalidTransitionError,
+    is_valid_state,
+)
 from app.auth import verify_token
 from app.search import get_search_engine
 from app.storage import get_version_control
@@ -60,12 +74,34 @@ async def events_correlate(payload: dict = None) -> dict:
     return corr.correlate(since_minutes=since, max_events=max_ev)
 
 
+@router.get("/events/incidents/states")
+async def events_list_incident_states() -> dict:
+    """查询 incident 状态机定义（P2-2.2）
+
+    供前端渲染状态切换按钮、状态徽标颜色映射使用。
+    """
+    return {
+        "states": INCIDENT_STATES,
+        "transitions": {
+            s: sorted(targets) for s, targets in INCIDENT_TRANSITIONS.items()
+        },
+        "terminal_states": sorted(TERMINAL_STATES),
+        "legacy_aliases": {"closed": "resolved"},
+    }
+
+
 @router.get("/events/incidents")
 async def events_list_incidents(
     status: str = "open",
     limit: int = 50,
 ) -> dict:
-    """列出 incident"""
+    """列出 incident
+
+    Args:
+        status: 状态过滤；支持 open/ack/investigating/mitigated/resolved/closed，
+                传 "all" 或空串则不过滤
+        limit: 返回数量上限
+    """
     corr = get_event_correlator()
     items = corr.list_incidents(status, limit)
     return {"incidents": items, "count": len(items)}
@@ -81,16 +117,137 @@ async def events_get_incident(incident_id: str) -> dict:
     return inc
 
 
+# ────────── P2-2.2 状态机端点 ──────────
+
+
+def _do_transition(
+    incident_id: str, target_state: str, payload: dict | None
+) -> dict:
+    """通用迁移逻辑，被各具体状态端点复用"""
+    payload = payload or {}
+    note = str(payload.get("note", ""))
+    by = str(payload.get("by", "")) or "api"
+    assignee = payload.get("assignee")
+    corr = get_event_correlator()
+    try:
+        updated = corr.transition_incident(
+            incident_id, target_state, note=note, by=by
+        )
+    except KeyError:
+        raise HTTPException(404, f"incident 不存在: {incident_id}")
+    except InvalidTransitionError as e:
+        raise HTTPException(409, str(e))
+
+    # 可选：同时更新 assignee
+    if assignee:
+        from app.aiops.event_correlator import _get_db
+
+        conn = _get_db()
+        conn.execute(
+            "UPDATE incidents SET assignee = ? WHERE incident_id = ?",
+            (str(assignee), incident_id),
+        )
+        conn.commit()
+        updated = corr.get_incident(incident_id)  # type: ignore[assignment]
+
+    return {  # type: ignore[return-value]
+        "incident_id": incident_id,
+        "status": updated.get("status") if isinstance(updated, dict) else target_state,
+        "transition_history": (
+            updated.get("transition_history") if isinstance(updated, dict) else []
+        ),
+    }
+
+
+@router.post(
+    "/events/incidents/{incident_id}/transition",
+    dependencies=[Depends(verify_token)],
+)
+async def events_transition_incident(
+    incident_id: str, payload: dict = None
+) -> dict:
+    """通用状态迁移端点（P2-2.2）
+
+    Body:
+        target_state: 目标状态（必填，open/ack/investigating/mitigated/resolved）
+        note: 迁移备注（可选）
+        by: 操作人（可选，默认 "api"）
+        assignee: 指派处理人（可选，同时更新 assignee 字段）
+    """
+    payload = payload or {}
+    target = str(payload.get("target_state", "")).strip()
+    if not target:
+        raise HTTPException(400, "target_state 不能为空")
+    if not is_valid_state(target) and target != "closed":
+        raise HTTPException(
+            400,
+            f"非法目标状态: {target}。合法状态: {INCIDENT_STATES} (closed 为 legacy)",
+        )
+    return _do_transition(incident_id, target, payload)
+
+
+@router.post(
+    "/events/incidents/{incident_id}/ack",
+    dependencies=[Depends(verify_token)],
+)
+async def events_ack_incident(
+    incident_id: str, payload: dict = None
+) -> dict:
+    """Acknowledge incident：open → ack"""
+    return _do_transition(incident_id, "ack", payload)
+
+
+@router.post(
+    "/events/incidents/{incident_id}/investigate",
+    dependencies=[Depends(verify_token)],
+)
+async def events_investigate_incident(
+    incident_id: str, payload: dict = None
+) -> dict:
+    """开始调查：→ investigating"""
+    return _do_transition(incident_id, "investigating", payload)
+
+
+@router.post(
+    "/events/incidents/{incident_id}/mitigate",
+    dependencies=[Depends(verify_token)],
+)
+async def events_mitigate_incident(
+    incident_id: str, payload: dict = None
+) -> dict:
+    """已缓解：→ mitigated"""
+    return _do_transition(incident_id, "mitigated", payload)
+
+
+@router.post(
+    "/events/incidents/{incident_id}/resolve",
+    dependencies=[Depends(verify_token)],
+)
+async def events_resolve_incident(
+    incident_id: str, payload: dict = None
+) -> dict:
+    """已解决：→ resolved（终态）"""
+    return _do_transition(incident_id, "resolved", payload)
+
+
 @router.post(
     "/events/incidents/{incident_id}/close", dependencies=[Depends(verify_token)]
 )
 async def events_close_incident(incident_id: str, note: str = "") -> dict:
-    """关闭 incident"""
+    """关闭 incident（legacy 端点，等价于 /resolve）
+
+    向后兼容：保留 note 作为 query 参数。
+    """
     corr = get_event_correlator()
-    ok = corr.close_incident(incident_id, note)
-    if not ok:
-        raise HTTPException(404, f"incident 不存在或已关闭: {incident_id}")
-    return {"incident_id": incident_id, "status": "closed"}
+    try:
+        corr.transition_incident(
+            incident_id, "resolved", note=note, by="legacy-close"
+        )
+    except KeyError:
+        raise HTTPException(404, f"incident 不存在: {incident_id}")
+    except InvalidTransitionError as e:
+        raise HTTPException(409, str(e))
+    return {"incident_id": incident_id, "status": "resolved"}
 
 
 @router.post(

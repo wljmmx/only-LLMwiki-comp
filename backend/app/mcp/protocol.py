@@ -10,6 +10,7 @@
 - generate_runbook: 基于知识库生成 Runbook
 - list_incidents: 列出最近 incident
 - get_incident: 获取 incident 详情
+- transition_incident: 迁移 incident 状态机（P2-2.2）
 - suggest_rollback: 基于 incident 给出回滚建议
 - get_topology: 获取服务拓扑
 - impact_analysis: 影响分析
@@ -86,8 +87,17 @@ TOOLS: list[dict] = [
             "properties": {
                 "status": {
                     "type": "string",
-                    "enum": ["open", "closed"],
+                    "enum": [
+                        "open",
+                        "ack",
+                        "investigating",
+                        "mitigated",
+                        "resolved",
+                        "closed",
+                        "all",
+                    ],
                     "default": "open",
+                    "description": "状态过滤；all 表示不过滤",
                 },
                 "limit": {"type": "integer", "default": 10},
             },
@@ -102,6 +112,44 @@ TOOLS: list[dict] = [
                 "incident_id": {"type": "string", "description": "incident ID"},
             },
             "required": ["incident_id"],
+        },
+    },
+    {
+        "name": "transition_incident",
+        "description": (
+            "迁移 incident 状态机。合法状态：open → ack → investigating → "
+            "mitigated → resolved。允许前向跳跃与 reopen（resolved → open）。"
+            "closed 为历史别名，等价于 resolved。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "incident_id": {
+                    "type": "string",
+                    "description": "incident ID",
+                },
+                "target_state": {
+                    "type": "string",
+                    "enum": [
+                        "open",
+                        "ack",
+                        "investigating",
+                        "mitigated",
+                        "resolved",
+                        "closed",
+                    ],
+                    "description": "目标状态",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "迁移备注（写入 transition_history）",
+                },
+                "by": {
+                    "type": "string",
+                    "description": "操作人（默认 mcp）",
+                },
+            },
+            "required": ["incident_id", "target_state"],
         },
     },
     {
@@ -219,12 +267,48 @@ def _tool_list_incidents(args: dict) -> str:
                     "incident_id": i["incident_id"],
                     "started_at": i["started_at"],
                     "severity": i["severity"],
+                    "status": i.get("status", "open"),
                     "alert_count": i.get("alert_count", 0),
                     "suspected_root_cause": i.get("suspected_root_cause", ""),
                     "scope": i.get("scope", {}),
+                    "assignee": i.get("assignee", ""),
                 }
                 for i in items
             ],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _tool_transition_incident(args: dict) -> str:
+    inc_id = args.get("incident_id", "")
+    target = args.get("target_state", "")
+    if not inc_id:
+        return json.dumps({"error": "incident_id 不能为空"}, ensure_ascii=False)
+    if not target:
+        return json.dumps({"error": "target_state 不能为空"}, ensure_ascii=False)
+    note = str(args.get("note", ""))
+    by = str(args.get("by", "")) or "mcp"
+    try:
+        updated = get_event_correlator().transition_incident(
+            inc_id, target, note=note, by=by
+        )
+    except KeyError:
+        return json.dumps(
+            {"error": f"incident 不存在: {inc_id}"}, ensure_ascii=False
+        )
+    except ValueError as e:
+        # InvalidTransitionError 是 ValueError 子类
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    return json.dumps(
+        {
+            "incident_id": inc_id,
+            "status": updated.get("status"),
+            "acknowledged_at": updated.get("acknowledged_at"),
+            "resolved_at": updated.get("resolved_at"),
+            "ended_at": updated.get("ended_at"),
+            "transition_history": updated.get("transition_history", []),
         },
         ensure_ascii=False,
         indent=2,
@@ -330,6 +414,7 @@ TOOL_HANDLERS = {
     "generate_runbook": _tool_generate_runbook,
     "list_incidents": _tool_list_incidents,
     "get_incident": _tool_get_incident,
+    "transition_incident": _tool_transition_incident,
     "suggest_rollback": _tool_suggest_rollback,
     "get_topology": _tool_get_topology,
     "impact_analysis": _tool_impact_analysis,
