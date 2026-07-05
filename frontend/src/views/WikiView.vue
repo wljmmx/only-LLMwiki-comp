@@ -12,6 +12,7 @@ import {
 } from 'naive-ui'
 import type { TreeOption } from 'naive-ui'
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
+import { renderWikiMarkdown, parseSlugFromHash } from '@/utils/wikiRender'
 import type { WikiPage, BacklinkItem } from '@/types/api'
 
 const treeLoading = ref(true)
@@ -62,23 +63,7 @@ const treeData = computed<TreeOption[]>(() => {
 })
 
 function renderSimpleMarkdown(text: string): string {
-  if (!text) return ''
-  let html = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-  html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>')
-  html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>')
-  html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>')
-  html = html.replace(/\*\*(.*)\*\*/gim, '<strong>$1</strong>')
-  html = html.replace(/\*(.*)\*/gim, '<em>$1</em>')
-  html = html.replace(/`([^`]+)`/gim, '<code>$1</code>')
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/gim, '<a href="$2" target="_blank">$1</a>')
-  html = html.replace(/^- (.*$)/gim, '<li>$1</li>')
-  html = html.replace(/(<li>.*<\/li>\n?)+/gim, '<ul>$&</ul>')
-  html = html.replace(/\n\n/gim, '</p><p>')
-  html = html.replace(/\n/gim, '<br>')
-  return `<p>${html}</p>`
+  return renderWikiMarkdown(text)
 }
 
 const renderedContent = computed(() => {
@@ -127,6 +112,19 @@ function handleBacklinkClick(slug: string) {
   loadPage(slug)
 }
 
+function handleContentClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (target.tagName === 'A') {
+    const href = target.getAttribute('href') || ''
+    const slug = parseSlugFromHash(href)
+    if (slug) {
+      e.preventDefault()
+      selectedKey.value = slug
+      loadPage(slug)
+    }
+  }
+}
+
 onMounted(() => {
   loadPages()
 })
@@ -172,7 +170,7 @@ onMounted(() => {
                 </template>
               </NSpace>
             </div>
-            <div class="page-content" v-html="renderedContent"></div>
+            <div class="page-content" v-html="renderedContent" @click="handleContentClick"></div>
             <div v-if="backlinks.length > 0" class="backlinks-section">
               <div class="backlinks-title">反向链接</div>
               <div class="backlinks-list">

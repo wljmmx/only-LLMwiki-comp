@@ -33,11 +33,21 @@ const menuItems: MenuOption[] = [
         key: '/wiki',
         icon: () => h('span', { style: 'font-size: 16px' }, '📖'),
       },
+      {
+        label: 'Wiki Q&A',
+        key: '/wiki-query',
+        icon: () => h('span', { style: 'font-size: 16px' }, '💬'),
+      },
+      {
+        label: '健康检查',
+        key: '/wiki-health',
+        icon: () => h('span', { style: 'font-size: 16px' }, '🩺'),
+      },
     ],
   },
   {
-    label: '故障响应',
-    key: 'response',
+    label: '系统治理',
+    key: 'governance',
     children: [
       {
         label: '审查队列',

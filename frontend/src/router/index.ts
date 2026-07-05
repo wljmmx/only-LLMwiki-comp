@@ -37,6 +37,18 @@ const routes = [
         component: () => import('@/views/WikiView.vue'),
         meta: { title: 'Wiki 浏览', icon: 'wiki' },
       },
+      {
+        path: 'wiki-query',
+        name: 'wiki-query',
+        component: () => import('@/views/WikiQueryView.vue'),
+        meta: { title: 'Wiki Q&A', icon: 'query' },
+      },
+      {
+        path: 'wiki-health',
+        name: 'wiki-health',
+        component: () => import('@/views/WikiHealthView.vue'),
+        meta: { title: '健康检查', icon: 'health' },
+      },
     ],
   },
 ]

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NConfigProvider, darkTheme, zhCN, dateZhCN } from 'naive-ui'
+import { NConfigProvider, NMessageProvider, NDialogProvider, darkTheme, zhCN, dateZhCN } from 'naive-ui'
 import { computed } from 'vue'
 import { useAppStore } from '@/stores/app'
 
@@ -9,6 +9,10 @@ const theme = computed(() => (appStore.darkMode ? darkTheme : null))
 
 <template>
   <NConfigProvider :theme="theme" :locale="zhCN" :date-locale="dateZhCN">
-    <router-view />
+    <NMessageProvider>
+      <NDialogProvider>
+        <router-view />
+      </NDialogProvider>
+    </NMessageProvider>
   </NConfigProvider>
 </template>
