@@ -182,7 +182,7 @@
 | Sprint 3 | P2-2.3 noise_filtered 恒 0 修复 / P2-3.1 type_weight 权重稀释修复 | ✅ 完成 | event_correlator.py / change_correlator.py bug 修复 |
 | Sprint 5 | 全流程审计复盘 + bug 修复 + 功能验收 | ✅ 完成 | smoke_e2e 38/38、smoke_llm_wiki 40/40（共 78/78）全通过 |
 | Sprint 4 | P2 工程化完善（P2-1/2/3/4/5 各子项） | ⏳ 待启动 | — |
-| Sprint 6 | 前端 | ⏳ 暂缓 | — |
+| Sprint 6 | 前端（Vue 3 + Naive UI + 14 模块 | ⏳ 待启动 | — |
 
 ### 审计结论（Sprint 5）
 
@@ -191,3 +191,29 @@
 - **防漂移机制生效**：checksum 变化触发 stale，重编译产生 diff 并入队 ReviewQueue，stale 自动清空
 - **Lint 6 类检查生效**：contradiction / stale / orphan / missing_concept / missing_type_section / empty_section 全部产出
 - **回归无破坏**：P2-2.3 / P2-3.1 修复后，原有 38 步 e2e 测试无回归
+
+---
+
+## 六、Backlog（待办任务池）
+
+### Sprint 4：P2 工程化完善（后端）
+| 子任务 | 模块 | 优先级 | 依赖 |
+|--------|------|--------|------|
+| P2-1 Runbook 生成器（向量检索+缓存+持久化+LLM 编译 | runbook_generator.py | P1 | P1-1 |
+| P2-2 事件关联引擎（指纹去重+状态机+根因推断 | event_correlator.py | P1 | P1-1 |
+| P2-3 变更关联引擎（索引预过滤+diff 分析 | change_correlator.py | P2 | P2-2 |
+| P2-4 服务拓扑（上下文共现+别名合并+diff 检测+导出 | topology_builder.py | P2 | — |
+| P2-5 MCP 协议（升级+token auth+resources+prompts | mcp/ | P2 | P0-2 |
+
+### Sprint 6：前端（Vue 3 + Naive UI）
+| 批次 | 模块 | 优先级 | 说明 |
+|------|------|--------|------|
+| 第一批 MVP | F1 仪表盘 / F2 文档管理 / F3 知识搜索 / F4 审查队列 / F5 Wiki 浏览 | P0 | 核心闭环 5 模块 |
+| 第二批 AIOps | F6 Runbook 工作台 / F7 Incident 管理 / F8 变更关联 / F9 服务拓扑 | P1 | 运维场景 4 模块 |
+| 第三批增强 | F10 模板管理 / F11 版本控制 / F12 导出中心 / F13 MCP 工具浏览器 / F14 知识图谱可视化 | P2 | 增强能力 5 模块 |
+
+### Sprint 8 遗留（前端体验优化
+| 任务 | 优先级 | 说明 |
+|------|--------|------|
+| S8-3 Onboarding 引导（5 步 tour） | P2 | 新用户首次使用引导 |
+| S8-5 前端 Vitest 基础测试（30+ 用例） | P2 | 组件/工具函数单元测试 |

@@ -1,0 +1,66 @@
+<script setup lang="ts">
+import { computed, h, type Component, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { NIcon, NMenu, NPopover, type MenuOption } from 'naive-ui'
+import { useAppStore } from '@/stores/app'
+
+const router = useRouter()
+const route = useRoute()
+const appStore = useAppStore()
+
+const menuItems: MenuOption[] = [
+  {
+    label: '仪表盘',
+    key: '/dashboard',
+    icon: () => h('span', { style: 'font-size: 16px' }, '📊'),
+  },
+  {
+    label: '知识管理',
+    key: 'knowledge',
+    children: [
+      {
+        label: '文档管理',
+        key: '/documents',
+        icon: () => h('span', { style: 'font-size: 16px' }, '📄'),
+      },
+      {
+        label: '知识搜索',
+        key: '/search',
+        icon: () => h('span', { style: 'font-size: 16px' }, '🔍'),
+      },
+      {
+        label: 'Wiki 浏览',
+        key: '/wiki',
+        icon: () => h('span', { style: 'font-size: 16px' }, '📖'),
+      },
+    ],
+  },
+  {
+    label: '故障响应',
+    key: 'response',
+    children: [
+      {
+        label: '审查队列',
+        key: '/review',
+        icon: () => h('span', { style: 'font-size: 16px' }, '✅'),
+      },
+    ],
+  },
+]
+
+function handleSelect(key: string) {
+  router.push(key)
+}
+</script>
+
+<template>
+  <NMenu
+    :collapsed="appStore.sidebarCollapsed"
+    :collapsed-width="64"
+    :collapsed-icon-size="20"
+    :options="menuItems"
+    :value="route.path"
+    :indent="18"
+    @update:value="handleSelect"
+  />
+</template>

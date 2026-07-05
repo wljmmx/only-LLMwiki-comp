@@ -1,0 +1,53 @@
+import { createRouter, createWebHistory } from 'vue-router'
+import AppLayout from '@/components/layout/AppLayout.vue'
+
+const routes = [
+  {
+    path: '/',
+    component: AppLayout,
+    redirect: '/dashboard',
+    children: [
+      {
+        path: 'dashboard',
+        name: 'dashboard',
+        component: () => import('@/views/DashboardView.vue'),
+        meta: { title: '仪表盘', icon: 'dashboard' },
+      },
+      {
+        path: 'documents',
+        name: 'documents',
+        component: () => import('@/views/DocumentsView.vue'),
+        meta: { title: '文档管理', icon: 'documents' },
+      },
+      {
+        path: 'search',
+        name: 'search',
+        component: () => import('@/views/SearchView.vue'),
+        meta: { title: '知识搜索', icon: 'search' },
+      },
+      {
+        path: 'review',
+        name: 'review',
+        component: () => import('@/views/ReviewView.vue'),
+        meta: { title: '审查队列', icon: 'review' },
+      },
+      {
+        path: 'wiki',
+        name: 'wiki',
+        component: () => import('@/views/WikiView.vue'),
+        meta: { title: 'Wiki 浏览', icon: 'wiki' },
+      },
+    ],
+  },
+]
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes,
+})
+
+router.beforeEach((to) => {
+  document.title = `${to.meta.title || 'OpsKG'} · LLM Wiki Console`
+})
+
+export default router
