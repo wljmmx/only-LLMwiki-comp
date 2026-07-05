@@ -15,6 +15,21 @@
 - get_topology: 获取服务拓扑
 - impact_analysis: 影响分析
 - list_documents: 列出已上传文档
+
+暴露的资源（resources，P2-5.1）：
+- wiki://index              — Wiki 索引页
+- wiki://{slug}             — Wiki 单页（动态列出）
+- topology://graph          — 服务拓扑全图
+- documents://list          — 已上传文档列表
+- incidents://open          — open 状态 incident 列表
+- incidents://{id}          — 单个 incident 详情
+
+暴露的 Prompt 模板（prompts，P2-5.1）：
+- summarize_incident            — 总结 incident
+- generate_runbook_from_symptom — 基于症状生成 Runbook
+- wiki_qa                       — wiki 问答
+- root_cause_analysis           — 根因分析
+- review_change_impact          — 变更影响评审
 """
 
 from __future__ import annotations
@@ -39,7 +54,7 @@ logger = structlog.get_logger()
 # MCP 协议版本
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "opskg-mcp-server"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"  # P2-5.1：升级，新增 resources/prompts 支持
 
 
 # ────────── 工具定义 ──────────
@@ -422,6 +437,435 @@ TOOL_HANDLERS = {
 }
 
 
+# ────────── 资源（P2-5.1）──────────
+#
+# MCP resources 暴露 OpsKG 内部知识为 AI 客户端可读的 URI：
+# - wiki://index              — Wiki 索引页
+# - wiki://{slug}             — Wiki 单页（动态列出，从 wiki_index 拉取）
+# - topology://graph          — 服务拓扑全图（JSON）
+# - documents://list          — 已上传文档列表（JSON）
+# - incidents://open          — 当前 open 状态 incident 列表（JSON）
+# - incidents://{id}          — 单个 incident 详情（含状态机历史）
+
+
+def _list_static_resources() -> list[dict]:
+    """系统级静态资源"""
+    return [
+        {
+            "uri": "wiki://index",
+            "name": "Wiki Index",
+            "description": "Wiki 索引页，列出所有 wiki 页面与孤岛候选",
+            "mimeType": "text/markdown",
+        },
+        {
+            "uri": "topology://graph",
+            "name": "Service Topology",
+            "description": "服务拓扑全图（Host/Service/Component 节点与依赖边）",
+            "mimeType": "application/json",
+        },
+        {
+            "uri": "documents://list",
+            "name": "Document List",
+            "description": "已上传到知识库的文档元信息列表",
+            "mimeType": "application/json",
+        },
+        {
+            "uri": "incidents://open",
+            "name": "Open Incidents",
+            "description": "当前所有 open 状态的 incident",
+            "mimeType": "application/json",
+        },
+    ]
+
+
+def _list_wiki_resources(limit: int = 200) -> list[dict]:
+    """动态列出 wiki 页面作为资源"""
+    try:
+        from app.knowledge.wiki_index import list_wiki_pages
+
+        pages = list_wiki_pages(limit=limit)
+        return [
+            {
+                "uri": f"wiki://{p['slug']}",
+                "name": p.get("title") or p["slug"],
+                "description": f"Wiki 页面（type={p.get('type', 'concept')}）",
+                "mimeType": "text/markdown",
+            }
+            for p in pages
+            if p.get("slug") != "index"
+        ]
+    except Exception as e:
+        logger.warning("mcp_list_wiki_resources_failed", error=str(e))
+        return []
+
+
+def list_resources() -> list[dict]:
+    """列出所有可用资源（静态 + 动态 wiki 页面）"""
+    return _list_static_resources() + _list_wiki_resources()
+
+
+def _read_resource(uri: str) -> dict:
+    """读取资源内容，返回 MCP resources/read 响应结构"""
+    # wiki://index
+    if uri == "wiki://index":
+        from app.knowledge.wiki_index import get_index
+
+        idx = get_index()
+        text = idx["content"] if idx else "# Wiki Index (空)"
+        return {
+            "contents": [
+                {"uri": uri, "mimeType": "text/markdown", "text": text}
+            ]
+        }
+
+    # wiki://{slug}
+    if uri.startswith("wiki://"):
+        slug = uri[len("wiki://") :]
+        if not slug:
+            raise ValueError("wiki:// URI 缺少 slug")
+        from app.knowledge.wiki_index import _key_from_slug
+        from app.storage.version_control import get_version_control
+
+        vc = get_version_control()
+        latest = vc.get_latest(_key_from_slug(slug))
+        if not latest:
+            raise ValueError(f"未找到 wiki 页面: {slug}")
+        return {
+            "contents": [
+                {
+                    "uri": uri,
+                    "mimeType": "text/markdown",
+                    "text": latest["content"],
+                }
+            ]
+        }
+
+    # topology://graph
+    if uri == "topology://graph":
+        result = get_topology_builder().get_topology()
+        text = json.dumps(
+            {
+                "stats": result["stats"],
+                "nodes": result["nodes"][:100],
+                "edges": result["edges"][:100],
+            },
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+        return {
+            "contents": [
+                {
+                    "uri": uri,
+                    "mimeType": "application/json",
+                    "text": text,
+                }
+            ]
+        }
+
+    # documents://list
+    if uri == "documents://list":
+        docs = get_document_store().list(limit=200)
+        text = json.dumps(
+            [
+                {
+                    "doc_id": d["doc_id"],
+                    "filename": d.get("filename"),
+                    "title": d.get("title"),
+                    "format": d.get("format"),
+                    "status": d.get("status"),
+                    "size_bytes": d.get("size_bytes"),
+                }
+                for d in docs
+            ],
+            ensure_ascii=False,
+            indent=2,
+        )
+        return {
+            "contents": [
+                {
+                    "uri": uri,
+                    "mimeType": "application/json",
+                    "text": text,
+                }
+            ]
+        }
+
+    # incidents://open 或 incidents://{id}
+    if uri.startswith("incidents://"):
+        target = uri[len("incidents://") :]
+        if target in ("", "open"):
+            items = get_event_correlator().list_incidents("open", 100)
+            text = json.dumps(items, ensure_ascii=False, indent=2, default=str)
+            return {
+                "contents": [
+                    {
+                        "uri": uri,
+                        "mimeType": "application/json",
+                        "text": text,
+                    }
+                ]
+            }
+        # 单个 incident
+        inc = get_event_correlator().get_incident(target)
+        if not inc:
+            raise ValueError(f"未找到 incident: {target}")
+        text = json.dumps(inc, ensure_ascii=False, indent=2, default=str)
+        return {
+            "contents": [
+                {"uri": uri, "mimeType": "application/json", "text": text}
+            ]
+        }
+
+    raise ValueError(f"未知资源 URI: {uri}")
+
+
+# ────────── Prompt 模板（P2-5.1）──────────
+#
+# MCP prompts 暴露 OpsKG 内部能力为预定义的 prompt 模板，AI 客户端
+# 调用 prompts/get 后拿到已渲染的 messages，直接喂给本地 LLM 即可。
+
+
+PROMPTS: list[dict] = [
+    {
+        "name": "summarize_incident",
+        "description": "总结 incident 的根因、影响范围、处置过程与改进建议",
+        "arguments": [
+            {
+                "name": "incident_id",
+                "description": "incident ID",
+                "required": True,
+            },
+        ],
+    },
+    {
+        "name": "generate_runbook_from_symptom",
+        "description": "基于故障现象从知识库召回相关文档并生成 Runbook",
+        "arguments": [
+            {
+                "name": "symptom",
+                "description": "故障现象描述",
+                "required": True,
+            },
+            {"name": "service", "description": "受影响服务（可选）"},
+            {"name": "host", "description": "受影响主机（可选）"},
+        ],
+    },
+    {
+        "name": "wiki_qa",
+        "description": "基于 wiki 知识库回答问题（Karpathy LLM Wiki 范式）",
+        "arguments": [
+            {"name": "question", "description": "用户问题", "required": True},
+        ],
+    },
+    {
+        "name": "root_cause_analysis",
+        "description": "基于 incident 关联事件与拓扑影响，做根因分析",
+        "arguments": [
+            {
+                "name": "incident_id",
+                "description": "incident ID",
+                "required": True,
+            },
+        ],
+    },
+    {
+        "name": "review_change_impact",
+        "description": "评审变更可能造成的影响，给出风险等级与回滚建议",
+        "arguments": [
+            {"name": "change_id", "description": "变更 ID", "required": True},
+        ],
+    },
+]
+
+
+def _get_prompt(name: str, arguments: dict) -> dict:
+    """渲染 prompt 模板，返回 MCP prompts/get 响应结构"""
+    args = arguments or {}
+
+    if name == "summarize_incident":
+        inc_id = args.get("incident_id", "")
+        if not inc_id:
+            raise ValueError("incident_id 不能为空")
+        inc = get_event_correlator().get_incident(inc_id)
+        if not inc:
+            raise ValueError(f"incident 不存在: {inc_id}")
+        changes = get_change_correlator().get_incident_changes(inc_id)
+        prompt_text = (
+            "请总结以下 incident 的根因、影响范围、处置过程与改进建议：\n\n"
+            f"## Incident\n```json\n{json.dumps(inc, ensure_ascii=False, indent=2, default=str)}\n```\n\n"
+            f"## 关联变更\n```json\n{json.dumps(changes, ensure_ascii=False, indent=2, default=str)}\n```\n\n"
+            "## 输出要求\n"
+            "1. 根因分析（一段话）\n"
+            "2. 影响范围（列表）\n"
+            "3. 处置时间线（按 transition_history）\n"
+            "4. 改进建议（3-5 条）\n"
+        )
+        return {
+            "description": f"总结 incident {inc_id}",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": {"type": "text", "text": prompt_text},
+                }
+            ],
+        }
+
+    if name == "generate_runbook_from_symptom":
+        symptom = args.get("symptom", "")
+        if not symptom:
+            raise ValueError("symptom 不能为空")
+        service = args.get("service", "")
+        host = args.get("host", "")
+        gen = get_runbook_generator()
+        result = gen.generate(symptom, service, host, max_docs=5)
+        prompt_text = (
+            "基于以下召回的 Runbook 草稿，请润色并补全：\n\n"
+            f"## 故障现象\n{symptom}\n服务: {service} 主机: {host}\n\n"
+            f"## 召回的 Runbook 草稿\n{result.get('runbook_md', '')}\n\n"
+            "## 输出要求\n请输出最终版 Runbook，包含：概述、排查步骤、处置方案、关键配置参数、来源"
+        )
+        return {
+            "description": f"生成 Runbook: {symptom[:60]}",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": {"type": "text", "text": prompt_text},
+                }
+            ],
+        }
+
+    if name == "wiki_qa":
+        import asyncio
+
+        question = args.get("question", "")
+        if not question:
+            raise ValueError("question 不能为空")
+        # recall_pages 是 async，MCP handler 是 sync，用临时事件循环驱动
+        hits: list = []
+        try:
+            from app.knowledge.wiki_query import recall_pages
+
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # 已在事件循环中（罕见），降级为空召回
+                    hits = []
+                else:
+                    hits = loop.run_until_complete(
+                        recall_pages(question, limit=5)
+                    )
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                try:
+                    hits = loop.run_until_complete(
+                        recall_pages(question, limit=5)
+                    )
+                finally:
+                    loop.close()
+        except Exception as e:
+            logger.warning("mcp_wiki_qa_recall_failed", error=str(e))
+            hits = []
+        hits_text = (
+            "\n".join(
+                f"- [[{h.slug}]] {h.title} (score={h.score:.4f})\n  {h.snippet[:200]}"
+                for h in hits
+            )
+            or "(无召回)"
+        )
+        prompt_text = (
+            "你是 OpsKG Wiki 管理员。基于已编译的 wiki 页面回答问题。\n\n"
+            f"## 用户问题\n{question}\n\n"
+            f"## 召回的 wiki 页面\n{hits_text}\n\n"
+            "## 输出要求\n"
+            "1. 直接回答问题\n"
+            "2. 引用相关页面时用 [[slug]] 标注\n"
+            "3. 若 wiki 不足，明确指出缺口"
+        )
+        return {
+            "description": f"Wiki Q&A: {question[:60]}",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": {"type": "text", "text": prompt_text},
+                }
+            ],
+        }
+
+    if name == "root_cause_analysis":
+        inc_id = args.get("incident_id", "")
+        if not inc_id:
+            raise ValueError("incident_id 不能为空")
+        inc = get_event_correlator().get_incident(inc_id)
+        if not inc:
+            raise ValueError(f"incident 不存在: {inc_id}")
+        scope = inc.get("scope") or {}
+        hosts = scope.get("hosts", [])
+        services = scope.get("services", [])
+        topo_analyses = []
+        for n in (hosts + services)[:5]:
+            try:
+                ana = get_topology_builder().impact_analysis(n)
+                topo_analyses.append({"node": n, "analysis": ana})
+            except Exception as e:
+                logger.warning(
+                    "mcp_rca_topo_failed", node=n, error=str(e)
+                )
+        prompt_text = (
+            "请基于 incident 与拓扑影响分析，推断根因：\n\n"
+            f"## Incident\n```json\n{json.dumps(inc, ensure_ascii=False, indent=2, default=str)}\n```\n\n"
+            f"## 拓扑影响分析\n```json\n{json.dumps(topo_analyses, ensure_ascii=False, indent=2, default=str)}\n```\n\n"
+            "## 输出要求\n"
+            "1. 候选根因列表（按可能性排序）\n"
+            "2. 每个候选的依据\n"
+            "3. 推荐的进一步排查步骤"
+        )
+        return {
+            "description": f"根因分析: {inc_id}",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": {"type": "text", "text": prompt_text},
+                }
+            ],
+        }
+
+    if name == "review_change_impact":
+        change_id = args.get("change_id", "")
+        if not change_id:
+            raise ValueError("change_id 不能为空")
+        ch_corr = get_change_correlator()
+        change = ch_corr.get_change(change_id)
+        if not change:
+            # 兜底：从 list 里找
+            for c in ch_corr.list_changes(limit=1000):
+                if c.get("id") == change_id:
+                    change = c
+                    break
+        if not change:
+            raise ValueError(f"变更不存在: {change_id}")
+        prompt_text = (
+            "请评审以下变更可能造成的影响：\n\n"
+            f"## 变更\n```json\n{json.dumps(change, ensure_ascii=False, indent=2, default=str)}\n```\n\n"
+            "## 输出要求\n"
+            "1. 风险等级（low/medium/high/critical）\n"
+            "2. 影响范围\n"
+            "3. 回滚建议（具体命令或步骤）\n"
+            "4. 监控指标建议"
+        )
+        return {
+            "description": f"变更影响评审: {change_id}",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": {"type": "text", "text": prompt_text},
+                }
+            ],
+        }
+
+    raise ValueError(f"未知 prompt: {name}")
+
+
 # ────────── JSON-RPC 处理 ──────────
 
 
@@ -444,6 +888,8 @@ def handle_request(request: dict) -> dict | None:
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {
                     "tools": {},
+                    "resources": {"listChanged": False},
+                    "prompts": {"listChanged": False},
                 },
                 "serverInfo": {
                     "name": SERVER_NAME,
@@ -473,10 +919,28 @@ def handle_request(request: dict) -> dict | None:
         elif method == "ping":
             result = {}
         elif method == "resources/list":
-            # 暂不支持 resources
-            result = {"resources": []}
+            # P2-5.1：列出资源（静态 + 动态 wiki 页面）
+            result = {"resources": list_resources()}
+        elif method == "resources/read":
+            # P2-5.1：读取资源内容
+            uri = params.get("uri", "")
+            if not uri:
+                return _error_response(req_id, -32602, "uri 不能为空")
+            try:
+                result = _read_resource(uri)
+            except ValueError as e:
+                return _error_response(req_id, -32602, str(e))
         elif method == "prompts/list":
-            result = {"prompts": []}
+            # P2-5.1：列出 prompt 模板
+            result = {"prompts": PROMPTS}
+        elif method == "prompts/get":
+            # P2-5.1：渲染 prompt 模板
+            prompt_name = params.get("name", "")
+            prompt_args = params.get("arguments", {})
+            try:
+                result = _get_prompt(prompt_name, prompt_args)
+            except ValueError as e:
+                return _error_response(req_id, -32602, str(e))
         else:
             return _error_response(req_id, -32601, f"未知方法: {method}")
 
@@ -507,3 +971,8 @@ def _error_response(req_id: Any, code: int, message: str) -> dict:
 def list_tools() -> list[dict]:
     """供外部 introspection 使用"""
     return TOOLS
+
+
+def list_prompts() -> list[dict]:
+    """供外部 introspection 使用（P2-5.1）"""
+    return PROMPTS
