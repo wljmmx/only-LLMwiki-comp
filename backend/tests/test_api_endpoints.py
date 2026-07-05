@@ -166,3 +166,176 @@ class TestAuth:
         """读操作不需要认证（Token 为空时）"""
         r = client.get("/documents")
         assert r.status_code == 200
+
+
+# ────────── 搜索 API（P1-1） ──────────
+
+class TestSearchAPI:
+    def test_search_empty(self):
+        r = client.get("/search", params={"q": "nonexistent"})
+        assert r.status_code == 200
+        assert "results" in r.json()
+
+    def test_search_stats(self):
+        r = client.get("/search/stats")
+        assert r.status_code == 200
+        assert "indexed_docs" in r.json()
+
+    def test_search_after_parse(self):
+        """解析文档后应可搜索"""
+        content = "# Kubernetes 部署指南\n\n部署 K8s 集群的详细步骤".encode("utf-8")
+        client.post(
+            "/parsers/parse/markdown",
+            files={"file": ("k8s.md", io.BytesIO(content), "text/markdown")},
+        )
+        r = client.get("/search", params={"q": "Kubernetes"})
+        assert r.status_code == 200
+        results = r.json()["results"]
+        assert len(results) > 0
+
+
+# ────────── 版本控制 API（P1-2） ──────────
+
+class TestVersionAPI:
+    def test_save_and_list(self):
+        # 保存版本
+        client.post(
+            "/versions/test-doc/save",
+            params={"title": "测试", "content": "版本1内容", "change_summary": "初始"},
+        )
+        client.post(
+            "/versions/test-doc/save",
+            params={"title": "测试", "content": "版本2内容", "change_summary": "修改"},
+        )
+        r = client.get("/versions/test-doc")
+        assert r.status_code == 200
+        assert r.json()["count"] >= 2
+
+    def test_get_version(self):
+        client.post(
+            "/versions/vtest/save",
+            params={"title": "T", "content": "Hello"},
+        )
+        r = client.get("/versions/vtest/1")
+        assert r.status_code == 200
+        assert r.json()["content"] == "Hello"
+
+    def test_diff(self):
+        client.post(
+            "/versions/difftest/save",
+            params={"title": "T", "content": "line1\nline2"},
+        )
+        client.post(
+            "/versions/difftest/save",
+            params={"title": "T", "content": "line1\nline2\nline3"},
+        )
+        r = client.get("/versions/difftest/diff/1/2")
+        assert r.status_code == 200
+        assert r.json()["added_lines"] >= 1
+
+
+# ────────── 模板 API（P1-3） ──────────
+
+class TestTemplateAPI:
+    def test_list_builtin(self):
+        r = client.get("/templates")
+        assert r.status_code == 200
+        assert r.json()["count"] >= 5
+
+    def test_get_runbook(self):
+        r = client.get("/templates/runbook")
+        assert r.status_code == 200
+        assert "Runbook" in r.json()["name"]
+
+    def test_render(self):
+        r = client.post(
+            "/templates/runbook/render",
+            json={"title": "部署服务", "description": "部署说明", "steps": [
+                {"step_num": 1, "step_name": "拉取镜像", "step_command": "docker pull", "expected_output": "OK"}
+            ]},
+        )
+        assert r.status_code == 200
+        assert "部署服务" in r.json()["rendered"]
+
+    def test_create_custom(self):
+        # 清理可能残留的同 slug 模板（保证测试隔离）
+        client.delete("/templates/my-tpl")
+        r = client.post(
+            "/templates",
+            params={"slug": "my-tpl", "name": "我的模板", "content": "# {{title}}"},
+        )
+        assert r.status_code == 200
+
+    def test_delete_builtin_fails(self):
+        r = client.delete("/templates/runbook")
+        assert r.status_code == 403
+
+
+# ────────── 导出 API（P1-4） ──────────
+
+class TestExportAPI:
+    def test_export_markdown(self):
+        r = client.post(
+            "/export",
+            json={"title": "测试", "content": "Hello world", "format": "markdown"},
+        )
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "text/markdown; charset=utf-8"
+
+    def test_export_html(self):
+        r = client.post(
+            "/export",
+            json={"title": "测试", "content": "# 标题\n段落", "format": "html"},
+        )
+        assert r.status_code == 200
+        assert b"<html" in r.content
+
+    def test_export_text(self):
+        r = client.post(
+            "/export",
+            json={"title": "测试", "content": "**粗体**", "format": "text"},
+        )
+        assert r.status_code == 200
+        assert "粗体" in r.content.decode("utf-8")
+
+
+# ────────── Wiki API（P1-5） ──────────
+
+class TestWikiAPI:
+    def test_publish_and_get(self):
+        # 发布
+        client.post(
+            "/wiki/test-page",
+            params={"title": "测试页面", "content": "这是内容", "change_summary": "初始"},
+        )
+        # 获取
+        r = client.get("/wiki/test-page")
+        assert r.status_code == 200
+        assert r.json()["title"] == "测试页面"
+        assert r.json()["content"] == "这是内容"
+
+    def test_list(self):
+        client.post(
+            "/wiki/list-test",
+            params={"title": "列表测试", "content": "内容"},
+        )
+        r = client.get("/wiki")
+        assert r.status_code == 200
+        assert r.json()["count"] >= 1
+
+    def test_version_increment(self):
+        client.post(
+            "/wiki/ver-test",
+            params={"title": "V1", "content": "content1"},
+        )
+        client.post(
+            "/wiki/ver-test",
+            params={"title": "V2", "content": "content2", "change_summary": "更新"},
+        )
+        r = client.get("/wiki/ver-test")
+        assert r.json()["version"] >= 2
+
+    def test_delete(self):
+        client.post("/wiki/del-test", params={"title": "T", "content": "C"})
+        r = client.delete("/wiki/del-test")
+        assert r.status_code == 200

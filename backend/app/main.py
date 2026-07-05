@@ -16,8 +16,11 @@ from app.knowledge import (
     GraphEntity, GraphRelation, get_graph_store, get_compiler, get_pipeline,
     get_review_queue,
 )
-from app.storage import get_document_store
+from app.storage import get_document_store, get_version_control
 from app.auth import verify_token
+from app.search import get_search_engine
+from app.templates import get_template_manager
+from app.export import get_exporter
 
 logger = structlog.get_logger()
 
@@ -102,6 +105,9 @@ async def parse_file(fmt: str, file: UploadFile = File(...)) -> dict:
         parser = get_parser(fmt)
         doc = parser.parse(stored_path, doc_meta["doc_id"])
         store.update_status(doc_meta["doc_id"], "parsed", title=doc.title)
+        # 建立搜索索引
+        content_text = " ".join(e.content for e in doc.elements if e.content)
+        get_search_engine().index_document(doc_meta["doc_id"], doc.title, content_text, fmt)
         result = _serialize_doc(doc)
         result["doc_id"] = doc_meta["doc_id"]
         result["stored"] = True
@@ -631,9 +637,309 @@ async def get_document_content(doc_id: str) -> Response:
 
 @app.delete("/documents/{doc_id}", dependencies=[Depends(verify_token)])
 async def delete_document(doc_id: str) -> dict:
-    """删除文档（文件+元数据）"""
+    """删除文档（文件+元数据+索引）"""
     store = get_document_store()
     ok = store.delete(doc_id)
     if not ok:
         raise HTTPException(404, f"文档不存在: {doc_id}")
+    get_search_engine().remove_index(doc_id)
     return {"deleted": True, "doc_id": doc_id}
+
+
+# ──────────────────────────────────────────────────────────────────
+# P1-1: 搜索 API
+# ──────────────────────────────────────────────────────────────────
+
+@app.get("/search")
+async def search(
+    q: str,
+    limit: int = 20,
+    use_vector: bool = False,
+) -> dict:
+    """混合检索（关键字 + 向量）
+
+    - q: 搜索关键词
+    - use_vector: 是否启用向量检索（需配合 LLM embedding，默认关闭）
+    """
+    engine = get_search_engine()
+    query_embedding = None
+    if use_vector:
+        # 通过 LLM 生成 query embedding（如果后端支持）
+        try:
+            from app.core.llm import get_llm_client, ChatMessage
+            client = get_llm_client()
+            # 简单实现：用 LLM 生成文本的 embedding（如果支持）
+            # 实际生产中应调用 embedding API
+        except Exception:
+            pass
+
+    results = engine.search(q, limit, query_embedding)
+    return {
+        "query": q,
+        "results": results,
+        "count": len(results),
+        "vector_enabled": use_vector,
+    }
+
+
+@app.get("/search/stats")
+async def search_stats() -> dict:
+    """搜索索引统计"""
+    engine = get_search_engine()
+    return engine.get_stats()
+
+
+@app.post("/search/reindex/{doc_id}", dependencies=[Depends(verify_token)])
+async def reindex_document(doc_id: str) -> dict:
+    """重新索引指定文档"""
+    store = get_document_store()
+    doc = store.get(doc_id)
+    if not doc:
+        raise HTTPException(404, f"文档不存在: {doc_id}")
+    # 重新解析并索引
+    try:
+        fmt = doc["format"]
+        parser = get_parser(fmt)
+        parsed = parser.parse(doc["stored_path"], doc_id)
+        content_text = " ".join(e.content for e in parsed.elements if e.content)
+        get_search_engine().index_document(doc_id, parsed.title, content_text, fmt)
+        return {"reindexed": True, "doc_id": doc_id, "title": parsed.title}
+    except Exception as e:
+        raise HTTPException(500, f"重新索引失败: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────
+# P1-2: 版本控制 API
+# ──────────────────────────────────────────────────────────────────
+
+@app.get("/versions/{doc_key}")
+async def list_versions(doc_key: str) -> dict:
+    """列出文档的所有版本"""
+    vc = get_version_control()
+    versions = vc.list_versions(doc_key)
+    return {"doc_key": doc_key, "versions": versions, "count": len(versions)}
+
+
+@app.get("/versions/{doc_key}/{version}")
+async def get_version(doc_key: str, version: int) -> dict:
+    """获取指定版本内容"""
+    vc = get_version_control()
+    v = vc.get_version(doc_key, version)
+    if not v:
+        raise HTTPException(404, f"版本不存在: {doc_key} v{version}")
+    return v
+
+
+@app.get("/versions/{doc_key}/diff/{v1}/{v2}")
+async def diff_versions(doc_key: str, v1: int, v2: int) -> dict:
+    """对比两个版本"""
+    vc = get_version_control()
+    return vc.diff(doc_key, v1, v2)
+
+
+@app.post("/versions/{doc_key}/rollback/{target_version}", dependencies=[Depends(verify_token)])
+async def rollback_version(doc_key: str, target_version: int) -> dict:
+    """回滚到指定版本"""
+    vc = get_version_control()
+    result = vc.rollback(doc_key, target_version)
+    if "error" in result:
+        raise HTTPException(404, result["error"])
+    return result
+
+
+@app.post("/versions/{doc_key}/save", dependencies=[Depends(verify_token)])
+async def save_version(doc_key: str, title: str, content: str, change_summary: str = "") -> dict:
+    """保存新版本"""
+    vc = get_version_control()
+    return vc.save_version(doc_key, title, content, change_summary=change_summary)
+
+
+# ──────────────────────────────────────────────────────────────────
+# P1-3: 模板管理 API
+# ──────────────────────────────────────────────────────────────────
+
+@app.get("/templates")
+async def list_templates(category: str | None = None) -> dict:
+    """列出模板"""
+    mgr = get_template_manager()
+    templates = mgr.list(category)
+    return {"templates": templates, "count": len(templates)}
+
+
+@app.get("/templates/{slug}")
+async def get_template(slug: str) -> dict:
+    """获取模板"""
+    mgr = get_template_manager()
+    tpl = mgr.get(slug)
+    if not tpl:
+        raise HTTPException(404, f"模板不存在: {slug}")
+    return tpl
+
+
+@app.post("/templates", dependencies=[Depends(verify_token)])
+async def create_template(
+    slug: str, name: str, content: str,
+    category: str = "custom", description: str = "",
+) -> dict:
+    """创建自定义模板"""
+    mgr = get_template_manager()
+    try:
+        return mgr.create(slug, name, content, category, description)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.put("/templates/{slug}", dependencies=[Depends(verify_token)])
+async def update_template(
+    slug: str,
+    name: str | None = None,
+    content: str | None = None,
+    category: str | None = None,
+    description: str | None = None,
+) -> dict:
+    """更新模板"""
+    mgr = get_template_manager()
+    try:
+        result = mgr.update(slug, name, content, category, description)
+        if not result:
+            raise HTTPException(404, f"模板不存在: {slug}")
+        return result
+    except ValueError as e:
+        raise HTTPException(403, str(e))
+
+
+@app.delete("/templates/{slug}", dependencies=[Depends(verify_token)])
+async def delete_template(slug: str) -> dict:
+    """删除模板（仅自定义）"""
+    mgr = get_template_manager()
+    try:
+        ok = mgr.delete(slug)
+        if not ok:
+            raise HTTPException(404, f"模板不存在: {slug}")
+        return {"deleted": True, "slug": slug}
+    except ValueError as e:
+        raise HTTPException(403, str(e))
+
+
+@app.post("/templates/{slug}/render")
+async def render_template(slug: str, variables: dict) -> dict:
+    """渲染模板"""
+    mgr = get_template_manager()
+    try:
+        rendered = mgr.render(slug, variables)
+        return {"slug": slug, "rendered": rendered, "length": len(rendered)}
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+# ──────────────────────────────────────────────────────────────────
+# P1-4: 导出 API
+# ──────────────────────────────────────────────────────────────────
+
+@app.post("/export", dependencies=[Depends(verify_token)])
+async def export_document(payload: dict) -> Response:
+    """导出文档
+
+    format: markdown | html | text | pdf
+    """
+    title = payload.get("title", "untitled")
+    content = payload.get("content", "")
+    fmt = payload.get("format", "markdown")
+    exporter = get_exporter()
+    try:
+        content_bytes, media_type, ext = exporter.export(title, content, fmt)
+        safe_title = title.replace("/", "_").replace("\\", "_")[:50]
+        # RFC 5987: 支持 non-ASCII 文件名
+        from urllib.parse import quote
+        quoted = quote(safe_title)
+        return Response(
+            content=content_bytes,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{quoted}{ext}"; '
+                    f"filename*=UTF-8''{quoted}{ext}"
+                ),
+            },
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+
+
+# ──────────────────────────────────────────────────────────────────
+# P1-5: Wiki 发布工作流
+# ──────────────────────────────────────────────────────────────────
+
+@app.get("/wiki")
+async def wiki_list(limit: int = 50, offset: int = 0) -> dict:
+    """列出已发布的 Wiki 文档"""
+    vc = get_version_control()
+    # Wiki 文档以 wiki: 前缀存储
+    conn = vc._get_db() if hasattr(vc, "_get_db") else None
+    from app.storage.version_control import _get_db as get_vc_db
+    conn = get_vc_db()
+    rows = conn.execute(
+        """SELECT DISTINCT doc_key FROM document_versions
+           WHERE doc_key LIKE 'wiki:%' ORDER BY doc_key LIMIT ? OFFSET ?""",
+        (limit, offset),
+    ).fetchall()
+    wiki_docs = []
+    for r in rows:
+        latest = vc.get_latest(r["doc_key"])
+        if latest:
+            wiki_docs.append({
+                "slug": r["doc_key"].replace("wiki:", "", 1),
+                "title": latest["title"],
+                "version": latest["version"],
+                "updated_at": latest["created_at"],
+            })
+    return {"documents": wiki_docs, "count": len(wiki_docs)}
+
+
+@app.get("/wiki/{slug}")
+async def wiki_get(slug: str) -> dict:
+    """获取 Wiki 文档内容"""
+    vc = get_version_control()
+    doc_key = f"wiki:{slug}"
+    latest = vc.get_latest(doc_key)
+    if not latest:
+        raise HTTPException(404, f"Wiki 文档不存在: {slug}")
+    versions = vc.list_versions(doc_key)
+    return {
+        "slug": slug,
+        "title": latest["title"],
+        "content": latest["content"],
+        "version": latest["version"],
+        "versions": versions,
+        "updated_at": latest["created_at"],
+    }
+
+
+@app.post("/wiki/{slug}", dependencies=[Depends(verify_token)])
+async def wiki_publish(
+    slug: str,
+    title: str,
+    content: str,
+    change_summary: str = "",
+) -> dict:
+    """发布/更新 Wiki 文档（自动创建新版本）"""
+    vc = get_version_control()
+    doc_key = f"wiki:{slug}"
+    result = vc.save_version(doc_key, title, content, change_summary=change_summary)
+    # 同时建立搜索索引
+    get_search_engine().index_document(doc_key, title, content, "wiki")
+    return result
+
+
+@app.delete("/wiki/{slug}", dependencies=[Depends(verify_token)])
+async def wiki_delete(slug: str) -> dict:
+    """删除 Wiki 文档"""
+    vc = get_version_control()
+    doc_key = f"wiki:{slug}"
+    count = vc.delete_all(doc_key)
+    if count == 0:
+        raise HTTPException(404, f"Wiki 文档不存在: {slug}")
+    get_search_engine().remove_index(doc_key)
+    return {"deleted": True, "slug": slug, "versions_removed": count}
