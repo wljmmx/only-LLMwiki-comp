@@ -10,3 +10,5 @@ unstructured>=0.16
 langgraph>=1.0
 langgraph-checkpoint>=4.0
 pyyaml>=6.0
+sqlparse>=0.5
+python-multipart>=0.0.20

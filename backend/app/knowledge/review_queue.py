@@ -13,6 +13,7 @@ from typing import Any
 import structlog
 
 from app.config import get_settings
+from app.knowledge.graph_store import GraphEntity, GraphRelation
 
 logger = structlog.get_logger()
 
@@ -144,7 +145,11 @@ class ReviewQueue:
         return dict(row) if row else None
 
     def approve(self, item_id: int, note: str = "") -> bool:
-        """批准"""
+        """批准并回写知识图谱"""
+        item = self.get_by_id(item_id)
+        if not item:
+            return False
+
         conn = _get_db()
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(
@@ -152,10 +157,13 @@ class ReviewQueue:
             (note, now, item_id),
         )
         conn.commit()
-        return conn.total_changes > 0
+
+        # 回写知识图谱
+        self._writeback_to_graph(item)
+        return True
 
     def reject(self, item_id: int, note: str = "") -> bool:
-        """驳回"""
+        """驳回（不写入图谱）"""
         conn = _get_db()
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(
@@ -166,7 +174,11 @@ class ReviewQueue:
         return conn.total_changes > 0
 
     def modify(self, item_id: int, modified_data: dict, note: str = "") -> bool:
-        """修改后批准"""
+        """修改后批准并回写图谱"""
+        item = self.get_by_id(item_id)
+        if not item:
+            return False
+
         conn = _get_db()
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(
@@ -176,7 +188,47 @@ class ReviewQueue:
             (json.dumps(modified_data, ensure_ascii=False), note, now, item_id),
         )
         conn.commit()
-        return conn.total_changes > 0
+
+        # 合并修改数据后回写图谱
+        merged = {**item, **modified_data}
+        self._writeback_to_graph(merged)
+        return True
+
+    def _writeback_to_graph(self, item: dict) -> None:
+        """将审查项回写知识图谱"""
+        try:
+            from app.knowledge.graph_store import get_graph_store
+            store = get_graph_store()
+
+            props = json.loads(item.get("properties", "{}"))
+            props["review_status"] = "approved"
+            props["reviewer_note"] = item.get("reviewer_note", "")
+            props["source_type"] = "review_approved"
+
+            if item["item_type"] == "entity":
+                entity = GraphEntity(
+                    entity_type=item.get("entity_type", "Concept"),
+                    name=item.get("name", ""),
+                    properties=props,
+                    source_doc_id=item.get("source_doc_id", ""),
+                    confidence=item.get("confidence", 0.0),
+                )
+                store.upsert_entity(entity)
+                logger.info("review_writeback_entity", name=entity.name)
+            elif item["item_type"] == "relation":
+                rel = GraphRelation(
+                    relation_type=item.get("relation_type", "RELATED_TO"),
+                    from_entity=item.get("from_entity", ""),
+                    to_entity=item.get("to_entity", ""),
+                    properties=props,
+                    source_doc_id=item.get("source_doc_id", ""),
+                    confidence=item.get("confidence", 0.0),
+                )
+                store.upsert_relation(rel)
+                logger.info("review_writeback_relation",
+                            from_=rel.from_entity, to=rel.to_entity)
+        except Exception as e:
+            logger.error("review_writeback_failed", item_id=item.get("id"), error=str(e))
 
     def batch_approve(self, item_ids: list[int]) -> int:
         """批量批准"""
