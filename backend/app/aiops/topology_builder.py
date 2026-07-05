@@ -1,12 +1,18 @@
-"""服务拓扑自动构建（P2-4）
+"""服务拓扑自动构建（P2-4 + P2-4.1 共现推断）
 
 从已上传文档中扫描抽取 Host/Service/Component 实体和它们之间的关系
 （RUNS_ON / DEPENDS_ON / USES），聚合形成服务拓扑图。
 
 输出：
 - nodes: 节点列表（type, name, occurrences, source_docs）
-- edges: 边列表（source, target, relation, occurrences, source_docs）
+- edges: 边列表（source, target, relation, occurrences, source_docs, inferred, confidence）
 - 邻接关系 + 影响分析（给定服务，找上下游依赖链）
+
+P2-4.1 共现推断：
+- 基于节点 source_docs 计算两两共现强度（overlap coefficient）
+- 对共现强度超过阈值的节点对，若不存在显式边，则按节点类型推断 relation
+- 推断边标记 inferred=1 并附带 confidence（0~1）
+- 显式抽取的边 inferred=0, confidence=1.0
 
 持久化到 SQLite（topology_nodes / topology_edges 表），支持增量更新。
 """
@@ -16,6 +22,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timezone
+from itertools import combinations
 from pathlib import Path
 
 import structlog
@@ -61,12 +68,42 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             source_docs TEXT DEFAULT '[]',
             first_seen TEXT,
             last_seen TEXT,
+            -- P2-4.1 共现推断字段
+            inferred INTEGER DEFAULT 0,         -- 0=显式抽取, 1=共现推断
+            confidence REAL DEFAULT 1.0,        -- 0~1
             UNIQUE(source, target, relation)
         );
         CREATE INDEX IF NOT EXISTS idx_edge_source ON topology_edges(source);
         CREATE INDEX IF NOT EXISTS idx_edge_target ON topology_edges(target);
         CREATE INDEX IF NOT EXISTS idx_edge_relation ON topology_edges(relation);
     """)
+    # 旧库迁移：补齐 P2-4.1 新增列（必须在 idx_edge_inferred 之前）
+    _migrate_topology_columns(conn)
+    # idx_edge_inferred 依赖 inferred 列，迁移后再创建
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_edge_inferred ON topology_edges(inferred)"
+    )
+
+
+def _migrate_topology_columns(conn: sqlite3.Connection) -> None:
+    """对历史 topology_edges 表补齐 P2-4.1 新增列"""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(topology_edges)")}
+    migrations = [
+        ("inferred", "INTEGER DEFAULT 0"),
+        ("confidence", "REAL DEFAULT 1.0"),
+    ]
+    for col, decl in migrations:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE topology_edges ADD COLUMN {col} {decl}")
+            # 已有边默认标记为显式抽取
+            if col == "inferred":
+                conn.execute(
+                    "UPDATE topology_edges SET inferred = 0 WHERE inferred IS NULL"
+                )
+            elif col == "confidence":
+                conn.execute(
+                    "UPDATE topology_edges SET confidence = 1.0 WHERE confidence IS NULL"
+                )
 
 
 NODE_TYPES = ("Host", "Service", "Component")
@@ -441,11 +478,165 @@ class TopologyBuilder:
                 conn.execute(
                     """INSERT INTO topology_edges
                        (source, target, relation, occurrences, source_docs,
-                        first_seen, last_seen)
-                       VALUES (?, ?, ?, 1, ?, ?, ?)""",
+                        first_seen, last_seen, inferred, confidence)
+                       VALUES (?, ?, ?, 1, ?, ?, ?, 0, 1.0)""",
                     (src_id, tgt_id, e["relation"], json.dumps([doc_id]), now, now),
                 )
         conn.commit()
+
+    # ────────── P2-4.1 共现推断 ──────────
+
+    def infer_cooccurrence_edges(
+        self,
+        min_cooccurrence: int = 2,
+        min_confidence: float = 0.3,
+    ) -> dict:
+        """基于节点 source_docs 共现强度推断缺失的拓扑边（P2-4.1）
+
+        算法：
+        1. 从 DB 读取所有 topology_nodes 的 (node_id, node_type, source_docs)
+        2. 对节点两两组合计算共现文档数 |A∩B| 与 overlap coefficient
+           overlap = |A∩B| / min(|A|, |B|)   # 对小集合敏感
+        3. 共现文档数 >= min_cooccurrence 且 overlap >= min_confidence 的节点对：
+           - 若不存在显式边（inferred=0），按节点类型推断 relation：
+             Service → Host        : RUNS_ON
+             Service → Component   : USES
+             同类型节点对           : DEPENDS_ON
+           - 插入 inferred=1, confidence=overlap 的边
+        4. 返回推断结果统计
+
+        Args:
+            min_cooccurrence: 共现文档数下限（默认 2）
+            min_confidence: overlap coefficient 下限（默认 0.3）
+
+        Returns:
+            {
+                "considered_pairs": int,  # 评估的节点对数
+                "inferred_edges": int,    # 实际新增的推断边数
+                "skipped_existing": int,  # 已存在显式边被跳过的对数
+                "edges": [...]            # 新增的边列表
+            }
+        """
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT node_id, node_type, source_docs FROM topology_nodes"
+        ).fetchall()
+        if len(rows) < 2:
+            return {
+                "considered_pairs": 0,
+                "inferred_edges": 0,
+                "skipped_existing": 0,
+                "edges": [],
+            }
+
+        # 解析每个节点的 source_docs 为 set
+        nodes_info: list[tuple[str, str, set[str]]] = []
+        for r in rows:
+            docs = set(json.loads(r["source_docs"] or "[]"))
+            nodes_info.append((r["node_id"], r["node_type"], docs))
+
+        # 收集已存在的显式边集合（按 (source, target) 无向去重判断）
+        existing_edges = set()
+        for er in conn.execute("SELECT source, target FROM topology_edges").fetchall():
+            existing_edges.add((er["source"], er["target"]))
+            existing_edges.add((er["target"], er["source"]))  # 双向都视为已存在
+
+        now = datetime.now(timezone.utc).isoformat()
+        inferred_edges: list[dict] = []
+        skipped = 0
+        considered = 0
+
+        for (id_a, type_a, docs_a), (id_b, type_b, docs_b) in combinations(
+            nodes_info, 2
+        ):
+            intersection = docs_a & docs_b
+            cooccur = len(intersection)
+            if cooccur < min_cooccurrence:
+                continue
+            considered += 1
+            min_size = min(len(docs_a), len(docs_b))
+            if min_size == 0:
+                continue
+            overlap = cooccur / min_size
+            if overlap < min_confidence:
+                continue
+            # 已存在显式边则跳过
+            if (id_a, id_b) in existing_edges:
+                skipped += 1
+                continue
+
+            relation = self._infer_relation(type_a, type_b)
+            if relation is None:
+                continue
+            # 约定方向：source 为 Service/主动方，target 为 Host/Component/被动方
+            source_id, target_id = id_a, id_b
+            if relation == "RUNS_ON":
+                # Service → Host
+                if type_b == "Service" and type_a == "Host":
+                    source_id, target_id = id_b, id_a
+            elif relation == "USES":
+                # Service → Component
+                if type_b == "Service" and type_a == "Component":
+                    source_id, target_id = id_b, id_a
+
+            edge_doc = {
+                "source": source_id,
+                "target": target_id,
+                "relation": relation,
+                "inferred": 1,
+                "confidence": round(overlap, 4),
+                "cooccurrence": cooccur,
+                "source_docs": sorted(intersection),
+            }
+            inferred_edges.append(edge_doc)
+
+            conn.execute(
+                """INSERT OR IGNORE INTO topology_edges
+                   (source, target, relation, occurrences, source_docs,
+                    first_seen, last_seen, inferred, confidence)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+                (
+                    source_id,
+                    target_id,
+                    relation,
+                    cooccur,
+                    json.dumps(sorted(intersection)),
+                    now,
+                    now,
+                    round(overlap, 4),
+                ),
+            )
+            # 标记已存在以避免本批次重复推断
+            existing_edges.add((source_id, target_id))
+            existing_edges.add((target_id, source_id))
+
+        conn.commit()
+        logger.info(
+            "topology_inferred",
+            considered_pairs=considered,
+            inferred_edges=len(inferred_edges),
+            skipped_existing=skipped,
+        )
+        return {
+            "considered_pairs": considered,
+            "inferred_edges": len(inferred_edges),
+            "skipped_existing": skipped,
+            "edges": inferred_edges,
+        }
+
+    @staticmethod
+    def _infer_relation(type_a: str, type_b: str) -> str | None:
+        """根据两个节点的类型推断 relation，无法推断则返回 None"""
+        pair = {type_a, type_b}
+        if pair == {"Service", "Host"}:
+            return "RUNS_ON"
+        if pair == {"Service", "Component"}:
+            return "USES"
+        if type_a == type_b:
+            # 同类型节点（Host-Host / Service-Service / Component-Component）
+            return "DEPENDS_ON"
+        # Host-Component 等组合不推断
+        return None
 
     @staticmethod
     def _find_node_id(conn: sqlite3.Connection, name: str) -> str | None:

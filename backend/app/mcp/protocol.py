@@ -13,6 +13,7 @@
 - transition_incident: 迁移 incident 状态机（P2-2.2）
 - suggest_rollback: 基于 incident 给出回滚建议
 - get_topology: 获取服务拓扑
+- infer_topology: 基于共现强度推断缺失的拓扑边（P2-4.1）
 - impact_analysis: 影响分析
 - list_documents: 列出已上传文档
 
@@ -191,6 +192,30 @@ TOOLS: list[dict] = [
                 "relation": {
                     "type": "string",
                     "enum": ["RUNS_ON", "DEPENDS_ON", "USES"],
+                },
+            },
+        },
+    },
+    {
+        "name": "infer_topology",
+        "description": (
+            "P2-4.1 基于节点 source_docs 共现强度推断缺失的拓扑边。"
+            "对共现文档数 >= min_cooccurrence 且 overlap coefficient >= min_confidence "
+            "的节点对，若不存在显式边，则按节点类型推断 relation（Service→Host=RUNS_ON, "
+            "Service→Component=USES, 同类型=DEPENDS_ON），插入 inferred=1 的边并返回。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "min_cooccurrence": {
+                    "type": "integer",
+                    "description": "共现文档数下限（默认 2）",
+                    "default": 2,
+                },
+                "min_confidence": {
+                    "type": "number",
+                    "description": "overlap coefficient 下限（默认 0.3）",
+                    "default": 0.3,
                 },
             },
         },
@@ -378,6 +403,25 @@ def _tool_get_topology(args: dict) -> str:
     )
 
 
+def _tool_infer_topology(args: dict) -> str:
+    min_cooccur = int(args.get("min_cooccurrence", 2))
+    min_conf = float(args.get("min_confidence", 0.3))
+    result = get_topology_builder().infer_cooccurrence_edges(
+        min_cooccurrence=min_cooccur,
+        min_confidence=min_conf,
+    )
+    return json.dumps(
+        {
+            "considered_pairs": result["considered_pairs"],
+            "inferred_edges": result["inferred_edges"],
+            "skipped_existing": result["skipped_existing"],
+            "edges": result["edges"][:50],  # 精简输出
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 def _tool_impact_analysis(args: dict) -> str:
     node_name = args.get("node_name", "")
     if not node_name:
@@ -432,6 +476,7 @@ TOOL_HANDLERS = {
     "transition_incident": _tool_transition_incident,
     "suggest_rollback": _tool_suggest_rollback,
     "get_topology": _tool_get_topology,
+    "infer_topology": _tool_infer_topology,
     "impact_analysis": _tool_impact_analysis,
     "list_documents": _tool_list_documents,
 }

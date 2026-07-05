@@ -1,7 +1,8 @@
-"""服务拓扑 API（P2-4）。
+"""服务拓扑 API（P2-4 + P2-4.1）。
 
 端点：
 - POST /topology/rebuild
+- POST /topology/infer        (P2-4.1) 共现推断
 - GET  /topology
 - GET  /topology/nodes/{node_name}
 - GET  /topology/impact/{node_name}
@@ -22,6 +23,24 @@ async def topology_rebuild(max_docs: int = 100) -> dict:
     """全量重建服务拓扑（扫描所有已上传文档）"""
     builder = get_topology_builder()
     return builder.rebuild(max_docs)
+
+
+@router.post("/topology/infer", dependencies=[Depends(verify_token)])
+async def topology_infer(
+    min_cooccurrence: int = 2,
+    min_confidence: float = 0.3,
+) -> dict:
+    """P2-4.1 基于节点 source_docs 共现强度推断缺失的拓扑边
+
+    Query:
+        min_cooccurrence: 共现文档数下限（默认 2）
+        min_confidence: overlap coefficient 下限（默认 0.3）
+    """
+    builder = get_topology_builder()
+    return builder.infer_cooccurrence_edges(
+        min_cooccurrence=min_cooccurrence,
+        min_confidence=min_confidence,
+    )
 
 
 @router.get("/topology")
