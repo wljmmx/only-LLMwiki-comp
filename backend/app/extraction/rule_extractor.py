@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
+from collections import OrderedDict
 
 import structlog
 
@@ -25,6 +27,9 @@ from app.extraction.types import (
 )
 
 logger = structlog.get_logger()
+
+# P2-1.2 抽取结果缓存上限（LRU 淘汰）
+_EXTRACTION_CACHE_MAX = 500
 
 # 已知组件词典（用于 Component 实体识别）
 COMPONENT_KEYWORDS = {
@@ -101,11 +106,31 @@ class RuleBasedExtractor:
         self._hostnames: dict[str, ExtractedEntity] = {}
         self._services: dict[str, ExtractedEntity] = {}
         self._components: dict[str, ExtractedEntity] = {}
+        # P2-1.2 抽取结果缓存：key=(doc_id, content_hash) → (entities, relations)
+        # 进程级共享缓存（所有实例共用），LRU 淘汰
+        self._cache: OrderedDict[tuple[str, str], tuple[list[ExtractedEntity], list[ExtractedRelation]]] = (
+            OrderedDict()
+        )
 
     def extract(
         self, doc: ParsedDocument
     ) -> tuple[list[ExtractedEntity], list[ExtractedRelation]]:
-        """抽取实体和关系"""
+        """抽取实体和关系（P2-1.2 带内容哈希缓存）"""
+        # P2-1.2 计算内容指纹，命中缓存直接返回
+        cache_key = self._cache_key(doc)
+        if cache_key is not None:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                # LRU: 命中时移到末尾（最近使用）
+                self._cache.move_to_end(cache_key)
+                logger.info(
+                    "rule_extraction_cache_hit",
+                    doc_id=doc.doc_id,
+                    entities=len(cached[0]),
+                    relations=len(cached[1]),
+                )
+                return cached
+
         entities: list[ExtractedEntity] = []
         relations: list[ExtractedRelation] = []
 
@@ -120,6 +145,13 @@ class RuleBasedExtractor:
         # 去重（同名实体保留最高置信度）
         entities = self._dedup(entities)
 
+        # P2-1.2 写入缓存
+        if cache_key is not None:
+            self._cache[cache_key] = (entities, relations)
+            # LRU 淘汰
+            while len(self._cache) > _EXTRACTION_CACHE_MAX:
+                self._cache.popitem(last=False)
+
         logger.info(
             "rule_extraction_done",
             doc_id=doc.doc_id,
@@ -127,6 +159,24 @@ class RuleBasedExtractor:
             relations=len(relations),
         )
         return entities, relations
+
+    @staticmethod
+    def _cache_key(doc: ParsedDocument) -> tuple[str, str] | None:
+        """P2-1.2 生成缓存键：(doc_id, content_hash)
+
+        content_hash 基于所有 element 的 content 拼接计算，
+        文档内容变化时自动失效。
+        """
+        if not doc.doc_id:
+            return None
+        parts = [doc.title or ""]
+        for e in doc.elements:
+            parts.append(e.content or "")
+        content = "\n".join(parts)
+        if not content.strip():
+            return None
+        h = hashlib.sha1(content.encode("utf-8")).hexdigest()[:16]
+        return (doc.doc_id, h)
 
     def _extract_from_element(
         self, elem: ParsedElement, doc_id: str
