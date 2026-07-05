@@ -33,8 +33,8 @@ const total = ref(0)
 const limit = ref(10)
 const offset = ref(0)
 const searchText = ref('')
-const formatFilter = ref<string | null>(null)
-const statusFilter = ref<string | null>(null)
+const formatFilter = ref<string>('')
+const statusFilter = ref<string>('')
 
 const drawerVisible = ref(false)
 const currentDoc = ref<DocumentMeta | null>(null)
@@ -42,7 +42,7 @@ const docContent = ref('')
 const docContentLoading = ref(false)
 
 const formatOptions = [
-  { label: '全部格式', value: null },
+  { label: '全部格式', value: '' },
   { label: 'Markdown', value: 'md' },
   { label: 'Word', value: 'docx' },
   { label: 'Excel', value: 'xlsx' },
@@ -53,7 +53,7 @@ const formatOptions = [
 ]
 
 const statusOptions = [
-  { label: '全部状态', value: null },
+  { label: '全部状态', value: '' },
   { label: '已上传', value: 'uploaded' },
   { label: '解析中', value: 'parsing' },
   { label: '已解析', value: 'parsed' },
@@ -173,7 +173,7 @@ async function fetchDocuments() {
   }
 }
 
-function handleUpload({ file, options }: UploadCustomRequestOptions) {
+function handleUpload({ file, onFinish, onError }: UploadCustomRequestOptions) {
   const fileName = file.name
   const ext = fileName.split('.').pop()?.toLowerCase() || ''
   const fmt = ext === 'md' ? 'markdown' : ext
@@ -184,13 +184,13 @@ function handleUpload({ file, options }: UploadCustomRequestOptions) {
   parseDocument(fmt, formData)
     .then(() => {
       message.success('上传成功，正在解析...')
-      options.onFinish()
+      onFinish()
       fetchDocuments()
     })
     .catch((err) => {
       message.error('上传失败')
       console.error(err)
-      options.onError()
+      onError()
     })
 }
 

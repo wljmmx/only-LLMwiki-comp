@@ -133,7 +133,7 @@ onMounted(() => {
 <template>
   <div class="wiki-view">
     <NSplit :default-size="280" :min-size="200" :max-size="400">
-      <template #first>
+      <template #1>
         <NCard class="tree-panel" size="small">
           <div class="tree-header">
             <span class="tree-title">Wiki 页面</span>
@@ -151,7 +151,7 @@ onMounted(() => {
           <NEmpty v-if="!treeLoading && pages.length === 0" description="暂无页面" />
         </NCard>
       </template>
-      <template #second>
+      <template #2>
         <NCard class="content-panel" size="large">
           <div v-if="contentLoading" class="content-loading">
             <NSpin size="large" />

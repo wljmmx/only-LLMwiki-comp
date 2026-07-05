@@ -33,7 +33,7 @@ const items = ref<ReviewItem[]>([])
 const total = ref(0)
 const limit = ref(10)
 const offset = ref(0)
-const statusFilter = ref<string | null>(null)
+const statusFilter = ref<string>('')
 
 const reviewStats = ref<ReviewStats | null>(null)
 
@@ -44,7 +44,7 @@ const currentRejectItem = ref<ReviewItem | null>(null)
 const rejectReason = ref('')
 
 const statusOptions = [
-  { label: '全部', value: null },
+  { label: '全部', value: '' },
   { label: '待审', value: 'pending' },
   { label: '已批准', value: 'approved' },
   { label: '已拒绝', value: 'rejected' },
@@ -269,7 +269,7 @@ onMounted(() => {
         :row-key="(row: ReviewItem) => row.id"
         v-model:checked-row-keys="checkedRowKeys"
         :pagination="{
-          total,
+          itemCount: total,
           pageSize: limit,
           showSizePicker: true,
           pageSizes: [10, 20, 50],

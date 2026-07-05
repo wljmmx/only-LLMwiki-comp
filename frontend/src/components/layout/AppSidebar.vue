@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, h, type Component, ref } from 'vue'
+import { h } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NIcon, NMenu, NPopover, type MenuOption } from 'naive-ui'
+import { NMenu, type MenuOption } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 
 const router = useRouter()
@@ -53,6 +53,32 @@ const menuItems: MenuOption[] = [
         label: '审查队列',
         key: '/review',
         icon: () => h('span', { style: 'font-size: 16px' }, '✅'),
+      },
+    ],
+  },
+  {
+    label: 'AIOps',
+    key: 'aiops',
+    children: [
+      {
+        label: 'Incident 管理',
+        key: '/incidents',
+        icon: () => h('span', { style: 'font-size: 16px' }, '🚨'),
+      },
+      {
+        label: '变更关联',
+        key: '/changes',
+        icon: () => h('span', { style: 'font-size: 16px' }, '🔄'),
+      },
+      {
+        label: '服务拓扑',
+        key: '/topology',
+        icon: () => h('span', { style: 'font-size: 16px' }, '🕸️'),
+      },
+      {
+        label: 'Runbook 工作台',
+        key: '/runbook',
+        icon: () => h('span', { style: 'font-size: 16px' }, '🛠️'),
       },
     ],
   },

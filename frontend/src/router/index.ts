@@ -49,6 +49,30 @@ const routes = [
         component: () => import('@/views/WikiHealthView.vue'),
         meta: { title: '健康检查', icon: 'health' },
       },
+      {
+        path: 'runbook',
+        name: 'runbook',
+        component: () => import('@/views/RunbookView.vue'),
+        meta: { title: 'Runbook 工作台', icon: 'runbook' },
+      },
+      {
+        path: 'incidents',
+        name: 'incidents',
+        component: () => import('@/views/IncidentsView.vue'),
+        meta: { title: 'Incident 管理', icon: 'incidents' },
+      },
+      {
+        path: 'changes',
+        name: 'changes',
+        component: () => import('@/views/ChangesView.vue'),
+        meta: { title: '变更关联', icon: 'changes' },
+      },
+      {
+        path: 'topology',
+        name: 'topology',
+        component: () => import('@/views/TopologyView.vue'),
+        meta: { title: '服务拓扑', icon: 'topology' },
+      },
     ],
   },
 ]

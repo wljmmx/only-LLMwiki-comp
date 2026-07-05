@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import { NLayout, NLayoutSider, NLayoutHeader, NLayoutContent } from 'naive-ui'
 import AppSidebar from './AppSidebar.vue'
 import { useAppStore } from '@/stores/app'
