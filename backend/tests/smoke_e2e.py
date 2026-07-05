@@ -269,13 +269,15 @@ def s21():
 
 @step("22. events ingest (5 alerts)")
 def s22():
+    # 用唯一后缀避免重复 ingest 被去重
+    suffix = int(time.time())
     events = [
-        {"id": f"smoke-a-{i}", "timestamp": f"2026-07-05T11:0{i}:00Z",
+        {"id": f"smoke-a-{suffix}-{i}", "timestamp": f"2026-07-05T11:0{i}:00Z",
          "host": "web-prod-01", "service": "nginx", "severity": "critical" if i == 0 else "warning",
          "message": f"smoke alert {i}"}
         for i in range(3)
     ] + [
-        {"id": f"smoke-b-{i}", "timestamp": f"2026-07-05T11:1{i}:00Z",
+        {"id": f"smoke-b-{suffix}-{i}", "timestamp": f"2026-07-05T11:1{i}:00Z",
          "host": "db-01", "service": "mysql", "severity": "high",
          "message": f"db alert {i}"}
         for i in range(2)
@@ -329,6 +331,201 @@ def s25():
     return f"closed={s23.first_incident}"
 
 
+@step("26. changes ingest (deployment)")
+def s26():
+    # 取一个未关闭的 incident，倒推变更时间
+    r_list = requests.get(f"{BASE}/events/incidents?status=open", timeout=TIMEOUT)
+    open_incs = r_list.json()["incidents"]
+    if not open_incs:
+        return "no open incidents to test change correlation"
+    s26.target_inc = open_incs[0]
+    inc_start = s26.target_inc["started_at"]
+    # 变更时间 = incident 前 2 分钟
+    from datetime import datetime, timedelta, timezone
+    inc_ts = datetime.fromisoformat(inc_start.replace("Z", "+00:00"))
+    ch_ts = (inc_ts - timedelta(minutes=2)).isoformat()
+    # 唯一 ID 避免去重
+    s26.change_id = f"smoke-chg-{int(time.time())}"
+
+    changes = [
+        {
+            "id": s26.change_id,
+            "change_type": "deployment",
+            "timestamp": ch_ts,
+            "host": s26.target_inc["scope"].get("hosts", [""])[0] if s26.target_inc["scope"].get("hosts") else "",
+            "service": s26.target_inc["scope"].get("services", [""])[0] if s26.target_inc["scope"].get("services") else "",
+            "author": "smoke-tester",
+            "ticket_id": "SMOKE-1",
+            "description": "smoke test deployment",
+        },
+    ]
+    r = requests.post(f"{BASE}/changes/ingest", json={"changes": changes}, timeout=TIMEOUT)
+    assert r.status_code == 200, r.text
+    assert r.json()["ingested"] == 1
+    return f"ingested=1 target_inc={s26.target_inc['incident_id']}"
+
+
+@step("27. changes correlate")
+def s27():
+    r = requests.post(
+        f"{BASE}/changes/correlate",
+        json={"since_hours": 12, "time_window_minutes": 30},
+        timeout=TIMEOUT,
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    # 至少应有 1 个关联
+    assert data["stats"]["links"] >= 1, f"expected >=1 link, got {data['stats']}"
+    # 找到对应 incident 的 link
+    target = s26.target_inc["incident_id"]
+    matched = [l for l in data["links"] if l["incident_id"] == target and l["change_id"] == s26.change_id]
+    assert matched, f"未找到 incident {target} 的变更关联 (change_id={s26.change_id})"
+    s27.link = matched[0]
+    return f"links={data['stats']['links']} top_score={matched[0]['correlation_score']}"
+
+
+@step("28. incident → changes (reverse query)")
+def s28():
+    target = s26.target_inc["incident_id"]
+    r = requests.get(f"{BASE}/events/incidents/{target}/changes", timeout=TIMEOUT)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["count"] >= 1
+    assert any(c["id"] == s26.change_id for c in data["changes"])
+    return f"count={data['count']}"
+
+
+@step("29. rollback suggestion")
+def s29():
+    target = s26.target_inc["incident_id"]
+    r = requests.get(f"{BASE}/events/incidents/{target}/rollback-suggestion", timeout=TIMEOUT)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["suggested"] is True
+    # 建议的 change_id 可能是任意一个高分变更，验证它确实在 linked 列表中
+    all_changes = data.get("all_linked_changes", [])
+    assert any(c["id"] == s26.change_id for c in all_changes), \
+        f"smoke change {s26.change_id} 未出现在关联列表中"
+    return f"suggested=True change_id={data['change_id']} score={data['correlation_score']}"
+
+
+@step("30. topology rebuild")
+def s30():
+    r = requests.post(f"{BASE}/topology/rebuild", params={"max_docs": 20}, timeout=TIMEOUT)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["docs_scanned"] >= 1
+    return f"docs={data['docs_scanned']} nodes={data['nodes_extracted']} edges={data['edges_extracted']}"
+
+
+@step("31. topology get")
+def s31():
+    r = requests.get(f"{BASE}/topology", timeout=TIMEOUT)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["stats"]["nodes"] > 0, "拓扑无节点"
+    s31.node_name = data["nodes"][0]["name"]
+    return f"nodes={data['stats']['nodes']} edges={data['stats']['edges']} by_type={data['stats']['by_type']}"
+
+
+@step("32. topology impact analysis")
+def s32():
+    # 用 nginx 这个 component 节点测试
+    r = requests.get(f"{BASE}/topology/impact/nginx", timeout=TIMEOUT)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["node"] is not None, "未找到节点 nginx"
+    # 验证 summary 字段存在
+    assert "summary" in data
+    return f"node={data['node']['name']} impacted={data['summary']['impacted_count']} root_causes={data['summary']['root_cause_candidates']}"
+
+
+@step("33. MCP initialize")
+def s33():
+    r = requests.post(f"{BASE}/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+    }, timeout=TIMEOUT)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["result"]["serverInfo"]["name"] == "opskg-mcp-server"
+    return f"protocol={data['result']['protocolVersion']}"
+
+
+@step("34. MCP tools/list")
+def s34():
+    r = requests.post(f"{BASE}/mcp", json={
+        "jsonrpc": "2.0", "id": 2, "method": "tools/list",
+    }, timeout=TIMEOUT)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    tools = data["result"]["tools"]
+    assert len(tools) >= 8, f"expected >=8 tools, got {len(tools)}"
+    s34.tool_names = [t["name"] for t in tools]
+    return f"tools={len(tools)} names={s34.tool_names}"
+
+
+@step("35. MCP tools/call: search_knowledge")
+def s35():
+    r = requests.post(f"{BASE}/mcp", json={
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "search_knowledge", "arguments": {"query": "nginx", "limit": 2}},
+    }, timeout=TIMEOUT)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    content = data["result"]["content"]
+    assert content[0]["type"] == "text"
+    parsed = json.loads(content[0]["text"])
+    assert parsed["count"] >= 0
+    return f"results={parsed['count']}"
+
+
+@step("36. MCP tools/call: generate_runbook")
+def s36():
+    r = requests.post(f"{BASE}/mcp", json={
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "generate_runbook", "arguments": {"symptom": "nginx 502"}},
+    }, timeout=TIMEOUT)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    content = data["result"]["content"]
+    parsed = json.loads(content[0]["text"])
+    assert "runbook_md" in parsed
+    assert "故障处理 Runbook" in parsed["runbook_md"]
+    return f"runbook_len={len(parsed['runbook_md'])}"
+
+
+@step("37. MCP tools/call: impact_analysis")
+def s37():
+    r = requests.post(f"{BASE}/mcp", json={
+        "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+        "params": {"name": "impact_analysis", "arguments": {"node_name": "nginx"}},
+    }, timeout=TIMEOUT)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    content = data["result"]["content"]
+    parsed = json.loads(content[0]["text"])
+    assert parsed["node"] is not None
+    return f"impacted={parsed['summary']['impacted_count']}"
+
+
+@step("38. MCP batch request")
+def s38():
+    # 批量请求
+    r = requests.post(f"{BASE}/mcp", json=[
+        {"jsonrpc": "2.0", "id": "a", "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": "b", "method": "tools/call",
+         "params": {"name": "list_documents", "arguments": {"limit": 3}}},
+    ], timeout=TIMEOUT)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert isinstance(data, list)
+    assert len(data) == 2
+    # 第二个响应应有 content
+    docs_resp = data[1]
+    assert "content" in docs_resp["result"]
+    return f"batch_size={len(data)}"
+
+
 def main():
     print("=" * 60)
     print("OpsKG 端到端冒烟测试")
@@ -336,7 +533,8 @@ def main():
     t0 = time.time()
 
     for fn in [s1, s2, s3, s4, s5, s6, s7, s8, s9, s10,
-               s11, s12, s13, s14, s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s25]:
+               s11, s12, s13, s14, s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s25,
+               s26, s27, s28, s29, s30, s31, s32, s33, s34, s35, s36, s37, s38]:
         fn()
 
     elapsed = time.time() - t0

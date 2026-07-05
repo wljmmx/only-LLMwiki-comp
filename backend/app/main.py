@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import structlog
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from app.config import get_settings
@@ -22,7 +22,8 @@ from app.auth import verify_token
 from app.search import get_search_engine
 from app.templates import get_template_manager
 from app.export import get_exporter
-from app.aiops import get_event_correlator
+from app.aiops import get_event_correlator, get_change_correlator, get_topology_builder
+from app.mcp import handle_request as mcp_handle_request
 
 logger = structlog.get_logger()
 
@@ -1136,3 +1137,161 @@ async def events_incident_to_runbook(incident_id: str, publish: bool = False) ->
         result["wiki_published"] = True
 
     return result
+
+
+# ────────── P2-3 变更关联 API ──────────
+
+@app.post("/changes/ingest", dependencies=[Depends(verify_token)])
+async def changes_ingest(payload: dict) -> dict:
+    """接收变更事件流
+
+    Body:
+        changes: [Change]  变更事件列表
+            - id (可选)
+            - change_type: deployment|config_change|migration|scaling|restart|rollback|patch|other
+            - timestamp (可选)
+            - host, service, component (可选)
+            - severity: normal|warning|high
+            - author, ticket_id, description
+            - attributes (dict)
+            - status: completed|failed|in_progress
+            - rollback_of (可选，标记为某 change 的回滚)
+    """
+    changes = payload.get("changes") or []
+    if not isinstance(changes, list) or not changes:
+        raise HTTPException(400, "changes 必须是非空数组")
+    corr = get_change_correlator()
+    return corr.ingest(changes)
+
+
+@app.post("/changes/correlate", dependencies=[Depends(verify_token)])
+async def changes_correlate(payload: dict = None) -> dict:
+    """关联最近变更与 incident
+
+    Body (可选):
+        since_hours: 变更时间范围（默认 24）
+        time_window_minutes: 变更-incident 时间窗口（默认 30）
+    """
+    payload = payload or {}
+    since = int(payload.get("since_hours", 24))
+    win = payload.get("time_window_minutes")
+    win = int(win) if win is not None else None
+    corr = get_change_correlator()
+    return corr.correlate(since_hours=since, time_window_minutes=win)
+
+
+@app.get("/changes")
+async def changes_list(
+    service: str = "",
+    limit: int = 50,
+) -> dict:
+    """列出变更"""
+    corr = get_change_correlator()
+    items = corr.list_changes(service, limit)
+    return {"changes": items, "count": len(items)}
+
+
+@app.get("/changes/{change_id}")
+async def changes_get(change_id: str) -> dict:
+    """获取变更详情（含关联 incident）"""
+    corr = get_change_correlator()
+    ch = corr.get_change(change_id)
+    if not ch:
+        raise HTTPException(404, f"变更不存在: {change_id}")
+    return ch
+
+
+@app.get("/events/incidents/{incident_id}/changes")
+async def incident_changes(incident_id: str) -> dict:
+    """查询 incident 关联的变更（反向查询）"""
+    corr = get_change_correlator()
+    items = corr.get_incident_changes(incident_id)
+    return {"incident_id": incident_id, "changes": items, "count": len(items)}
+
+
+@app.get("/events/incidents/{incident_id}/rollback-suggestion")
+async def incident_rollback_suggestion(incident_id: str) -> dict:
+    """基于 incident 关联变更，给出回滚建议"""
+    corr = get_change_correlator()
+    return corr.suggest_rollback(incident_id)
+
+
+# ────────── P2-4 服务拓扑 API ──────────
+
+@app.post("/topology/rebuild", dependencies=[Depends(verify_token)])
+async def topology_rebuild(max_docs: int = 100) -> dict:
+    """全量重建服务拓扑（扫描所有已上传文档）"""
+    builder = get_topology_builder()
+    return builder.rebuild(max_docs)
+
+
+@app.get("/topology")
+async def topology_get(
+    node_type: str | None = None,
+    relation: str | None = None,
+) -> dict:
+    """获取服务拓扑数据
+
+    Query:
+        node_type: Host|Service|Component
+        relation: RUNS_ON|DEPENDS_ON|USES
+    """
+    builder = get_topology_builder()
+    return builder.get_topology(node_type=node_type, relation=relation)
+
+
+@app.get("/topology/nodes/{node_name}")
+async def topology_node_neighbors(
+    node_name: str,
+    depth: int = 1,
+) -> dict:
+    """获取节点的邻居（上下游依赖）"""
+    builder = get_topology_builder()
+    return builder.get_neighbors(node_name, depth=depth)
+
+
+@app.get("/topology/impact/{node_name}")
+async def topology_impact(node_name: str) -> dict:
+    """影响分析：给定节点故障，分析受影响的上下游"""
+    builder = get_topology_builder()
+    return builder.impact_analysis(node_name)
+
+
+# ────────── P2-5 MCP 协议 API ──────────
+
+@app.post("/mcp")
+async def mcp_endpoint(request: Request) -> dict | list:
+    """MCP (Model Context Protocol) HTTP 端点
+
+    接收 JSON-RPC 2.0 请求，支持：
+    - initialize: 握手
+    - tools/list: 列出可用工具
+    - tools/call: 调用工具
+
+    可用工具：
+    - search_knowledge: 搜索知识库
+    - generate_runbook: 生成 Runbook
+    - list_incidents / get_incident: 事件查询
+    - suggest_rollback: 回滚建议
+    - get_topology / impact_analysis: 拓扑查询
+    - list_documents: 文档列表
+    """
+    body = await request.json()
+    if isinstance(body, list):
+        # 批量请求
+        responses = []
+        for req in body:
+            resp = mcp_handle_request(req)
+            if resp is not None:
+                responses.append(resp)
+        return responses
+    else:
+        response = mcp_handle_request(body)
+        return response if response is not None else {}
+
+
+@app.get("/mcp/tools")
+async def mcp_tools_list() -> dict:
+    """列出 MCP 工具（便捷查询，非 JSON-RPC）"""
+    from app.mcp import list_tools
+    return {"tools": list_tools()}
