@@ -259,6 +259,29 @@ TOOLS: list[dict] = [
     },
 ]
 
+# ────────── P2-5.7 工具 annotations ──────────
+# MCP 2025-06-18 规范：annotations 提示工具的副作用特征
+# - readOnlyHint: 工具不修改状态（纯查询）
+# - destructiveHint: 工具可能破坏性修改状态（删除/覆盖）
+# - idempotentHint: 重复调用效果相同（幂等）
+_TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
+    "search_knowledge":        {"readOnlyHint": True},
+    "generate_runbook":        {"readOnlyHint": True},   # 生成内容不修改状态
+    "list_incidents":          {"readOnlyHint": True},
+    "get_incident":            {"readOnlyHint": True},
+    "transition_incident":     {"destructiveHint": True, "idempotentHint": True},  # 改状态但幂等
+    "suggest_rollback":        {"readOnlyHint": True},
+    "get_topology":            {"readOnlyHint": True},
+    "infer_topology":          {"idempotentHint": True},  # INSERT OR IGNORE 幂等
+    "merge_topology_aliases":  {"destructiveHint": True, "idempotentHint": True},  # 删节点但幂等
+    "impact_analysis":         {"readOnlyHint": True},
+    "list_documents":          {"readOnlyHint": True},
+}
+
+# 应用 annotations 到 TOOLS
+for _tool in TOOLS:
+    _tool["annotations"] = _TOOL_ANNOTATIONS.get(_tool["name"], {})
+
 
 # ────────── 工具实现 ──────────
 
