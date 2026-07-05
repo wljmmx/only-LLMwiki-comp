@@ -135,6 +135,95 @@ class TopologyBuilder:
         conn = _get_db()
         return self._scan_doc_and_merge(conn, doc_id)
 
+    def remove_doc(self, doc_id: str) -> dict:
+        """P2-4.5 文档删除时清理拓扑
+
+        - 从所有节点的 source_docs 中移除 doc_id
+        - 节点 occurrences 递减（按该文档贡献次数）
+        - source_docs 为空的节点删除
+        - 边同理：移除 doc_id，occurrences 递减，空则删除
+
+        Returns:
+            {"doc_id": str, "nodes_removed": int, "edges_removed": int,
+             "nodes_updated": int, "edges_updated": int}
+        """
+        conn = _get_db()
+        nodes_removed = 0
+        nodes_updated = 0
+        edges_removed = 0
+        edges_updated = 0
+
+        # 处理节点
+        node_rows = conn.execute(
+            "SELECT node_id, occurrences, source_docs FROM topology_nodes"
+        ).fetchall()
+        for r in node_rows:
+            docs = json.loads(r["source_docs"] or "[]")
+            if doc_id not in docs:
+                continue
+            docs.remove(doc_id)
+            # occurrences 减 1（该文档对此节点的贡献），但不低于 0
+            new_occ = max(0, (r["occurrences"] or 0) - 1)
+            if not docs:
+                # 无剩余来源文档 → 删除节点
+                conn.execute(
+                    "DELETE FROM topology_nodes WHERE node_id = ?", (r["node_id"],)
+                )
+                nodes_removed += 1
+            else:
+                conn.execute(
+                    "UPDATE topology_nodes SET occurrences = ?, source_docs = ? "
+                    "WHERE node_id = ?",
+                    (new_occ, json.dumps(docs), r["node_id"]),
+                )
+                nodes_updated += 1
+
+        # 处理边
+        edge_rows = conn.execute(
+            "SELECT id, occurrences, source_docs FROM topology_edges"
+        ).fetchall()
+        for r in edge_rows:
+            docs = json.loads(r["source_docs"] or "[]")
+            if doc_id not in docs:
+                continue
+            docs.remove(doc_id)
+            new_occ = max(0, (r["occurrences"] or 0) - 1)
+            if not docs:
+                conn.execute("DELETE FROM topology_edges WHERE id = ?", (r["id"],))
+                edges_removed += 1
+            else:
+                conn.execute(
+                    "UPDATE topology_edges SET occurrences = ?, source_docs = ? "
+                    "WHERE id = ?",
+                    (new_occ, json.dumps(docs), r["id"]),
+                )
+                edges_updated += 1
+
+        # 清理孤立边：source 或 target 节点已删除的边也要删除
+        conn.execute(
+            "DELETE FROM topology_edges "
+            "WHERE source NOT IN (SELECT node_id FROM topology_nodes) "
+            "OR target NOT IN (SELECT node_id FROM topology_nodes)"
+        )
+        orphan_edges = conn.total_changes  # 粗略计数
+
+        conn.commit()
+        logger.info(
+            "topology_doc_removed",
+            doc_id=doc_id,
+            nodes_removed=nodes_removed,
+            edges_removed=edges_removed,
+            nodes_updated=nodes_updated,
+            edges_updated=edges_updated,
+        )
+        return {
+            "doc_id": doc_id,
+            "nodes_removed": nodes_removed,
+            "edges_removed": edges_removed,
+            "nodes_updated": nodes_updated,
+            "edges_updated": edges_updated,
+        }
+
     def get_topology(
         self,
         node_type: str | None = None,

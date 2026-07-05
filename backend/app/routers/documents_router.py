@@ -14,6 +14,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
+from app.aiops import get_topology_builder
 from app.auth import verify_token
 from app.search import get_search_engine
 from app.storage import get_document_store
@@ -79,10 +80,12 @@ async def get_document_content(doc_id: str) -> Response:
 
 @router.delete("/documents/{doc_id}", dependencies=[Depends(verify_token)])
 async def delete_document(doc_id: str) -> dict:
-    """删除文档（文件+元数据+索引）"""
+    """删除文档（文件+元数据+索引+拓扑引用）"""
     store = get_document_store()
     ok = store.delete(doc_id)
     if not ok:
         raise HTTPException(404, f"文档不存在: {doc_id}")
     get_search_engine().remove_index(doc_id)
-    return {"deleted": True, "doc_id": doc_id}
+    # P2-4.5 清理拓扑中该文档的引用
+    topo_cleanup = get_topology_builder().remove_doc(doc_id)
+    return {"deleted": True, "doc_id": doc_id, "topology_cleanup": topo_cleanup}
