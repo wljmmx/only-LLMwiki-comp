@@ -338,11 +338,12 @@ class ChangeCorrelator:
         else:                          # >30 min after
             time_score = 0.05
 
-        # 3. 变更类型权重
+        # 3. 变更类型权重（P2-3.1 修复：原 * 0.1 稀释为 0.03~0.09，几乎无影响）
+        #    改为 * 0.25：type_weight 0.3~0.9 → 贡献 0.075~0.225，约占总分 20%
         type_weight = CHANGE_TYPE_WEIGHT.get(change.change_type, 0.3)
 
-        # 综合分（封顶 1.0）
-        score = min(1.0, scope_score + time_score + type_weight * 0.1)
+        # 综合分（封顶 1.0）：scope 0.6 + time 0.3 + type 0.225 = 1.125 → 封顶 1.0
+        score = min(1.0, scope_score + time_score + type_weight * 0.25)
 
         # 推理说明
         reasoning_parts = []

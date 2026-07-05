@@ -357,14 +357,18 @@ class EventCorrelator:
                 root = find(next(iter(evt_keys[i])))
                 groups[root].append(e)
 
-        # 单事件且无 entity 关联 → 标记为 noise（合并到 noise 组）
+        # 单事件且无 entity 关联 → noise，过滤掉不计入 incident
+        # noise_filtered 计数 = len(events) - sum(incident.alert_ids) 在调用方计算
         clusters: list[list[Event]] = []
+        noise_count = 0
         for grp in groups.values():
             if len(grp) == 1 and not self._has_entity(grp[0]):
-                # noise，但仍单独成 incident 以便追踪
-                clusters.append(grp)
-            else:
-                clusters.append(grp)
+                # noise：单事件且无 entity 关联，过滤掉
+                noise_count += 1
+                continue
+            clusters.append(grp)
+        if noise_count:
+            logger.info("noise_filtered", count=noise_count)
         return clusters
 
     def _build_incident(self, events: list[Event]) -> Incident | None:

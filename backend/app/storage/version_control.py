@@ -195,6 +195,29 @@ class VersionControl:
         conn.commit()
         return cursor.rowcount
 
+    def list_by_prefix(self, prefix: str, limit: int = 500) -> list[dict]:
+        """按 doc_key 前缀列出最新版本（用于 wiki:* 列表）
+
+        返回每个 doc_key 的最新版本（不含 content 字段，减少传输）。
+        """
+        conn = _get_db()
+        rows = conn.execute(
+            """SELECT dv.id, dv.doc_key, dv.version, dv.title, dv.checksum,
+                      dv.author, dv.change_summary, dv.created_at
+               FROM document_versions dv
+               INNER JOIN (
+                   SELECT doc_key, MAX(version) as max_v
+                   FROM document_versions
+                   WHERE doc_key LIKE ?
+                   GROUP BY doc_key
+               ) latest ON dv.doc_key = latest.doc_key AND dv.version = latest.max_v
+               WHERE dv.doc_key LIKE ?
+               ORDER BY dv.created_at DESC
+               LIMIT ?""",
+            (f"{prefix}%", f"{prefix}%", limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
 
 # 全局单例
 _vc: VersionControl | None = None
