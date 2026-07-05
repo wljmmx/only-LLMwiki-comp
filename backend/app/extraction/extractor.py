@@ -14,6 +14,7 @@ from app.parsers.base import ParsedDocument
 from app.extraction.types import (
     ExtractionResult, ExtractedEntity, ExtractedRelation, ExtractionStats,
 )
+from app.extraction.rule_extractor import RuleBasedExtractor
 
 logger = structlog.get_logger()
 
@@ -59,6 +60,7 @@ class KnowledgeExtractor:
     def __init__(self) -> None:
         self.llm = get_llm_client()
         self.settings = get_settings()
+        self.rule_extractor = RuleBasedExtractor()
 
     async def extract(self, doc: ParsedDocument) -> ExtractionResult:
         """从 ParsedDocument 抽取知识"""
@@ -79,6 +81,11 @@ class KnowledgeExtractor:
         entities = [self._parse_entity(e, doc.doc_id) for e in raw_entities]
         relations = [self._parse_relation(r, doc.doc_id) for r in raw_relations]
 
+        # LLM 抽取为空时启用规则化兜底
+        if not entities and not relations:
+            logger.info("extraction_fallback_to_rules", doc_id=doc.doc_id)
+            entities, relations = self.rule_extractor.extract(doc)
+
         # 置信度门控
         self._apply_gating(entities, relations, result)
 
@@ -86,6 +93,7 @@ class KnowledgeExtractor:
             "extraction_done", doc_id=doc.doc_id,
             total=len(entities), auto=len(result.auto_accepted_entities),
             review=len(result.review_entities), discarded=result.discarded_count,
+            source="llm" if raw_entities or raw_relations else "rules",
         )
         return result
 

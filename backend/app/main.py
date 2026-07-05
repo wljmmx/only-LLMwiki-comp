@@ -1,6 +1,7 @@
 """FastAPI 应用入口 + 解析器 API（W3） + 抽取 API（W4） + 图谱 API（W5） + 编译 API（W6） + 文档存储 API（P0）"""
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -21,6 +22,7 @@ from app.auth import verify_token
 from app.search import get_search_engine
 from app.templates import get_template_manager
 from app.export import get_exporter
+from app.aiops import get_event_correlator
 
 logger = structlog.get_logger()
 
@@ -943,3 +945,194 @@ async def wiki_delete(slug: str) -> dict:
         raise HTTPException(404, f"Wiki 文档不存在: {slug}")
     get_search_engine().remove_index(doc_key)
     return {"deleted": True, "slug": slug, "versions_removed": count}
+
+
+# ────────── P2-1 Runbook 自动生成 API ──────────
+
+@app.post("/runbook/generate", dependencies=[Depends(verify_token)])
+async def runbook_generate(payload: dict) -> dict:
+    """基于知识库自动生成故障处理 Runbook
+
+    Body:
+        symptom: 故障现象描述（必填）
+        service: 受影响服务（可选）
+        host: 受影响主机（可选）
+        max_docs: 检索文档数上限（默认 5）
+        publish: 是否同时发布为 Wiki（默认 false）
+        wiki_slug: Wiki slug（默认 auto:runbook-<timestamp>）
+    """
+    from app.knowledge import get_runbook_generator
+
+    symptom = (payload.get("symptom") or "").strip()
+    if not symptom:
+        raise HTTPException(400, "symptom 不能为空")
+    service = payload.get("service", "") or ""
+    host = payload.get("host", "") or ""
+    max_docs = int(payload.get("max_docs", 5))
+    publish = bool(payload.get("publish", False))
+
+    gen = get_runbook_generator()
+    try:
+        result = gen.generate(symptom, service, host, max_docs)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    # 可选：发布为 Wiki
+    if publish:
+        import time
+        slug = payload.get("wiki_slug") or f"runbook-{int(time.time())}"
+        vc = get_version_control()
+        title = f"Runbook: {symptom[:60]}"
+        vc.save_version(
+            doc_key=f"wiki:{slug}",
+            title=title,
+            content=result["runbook_md"],
+            author="runbook-generator",
+            change_summary=f"自动生成: {symptom}",
+        )
+        get_search_engine().index_document(
+            f"wiki:{slug}", title, result["runbook_md"], "runbook",
+        )
+        result["wiki_slug"] = slug
+        result["wiki_published"] = True
+
+    return result
+
+
+@app.get("/runbook/preview")
+async def runbook_preview(
+    symptom: str,
+    service: str = "",
+    host: str = "",
+    max_docs: int = 5,
+) -> dict:
+    """预览 Runbook（GET 版本，便于浏览器/curl 快速调用）
+
+    返回 Markdown 原文 + 来源统计，不写入 Wiki。
+    """
+    from app.knowledge import get_runbook_generator
+
+    if not symptom.strip():
+        raise HTTPException(400, "symptom 不能为空")
+    gen = get_runbook_generator()
+    return gen.generate(symptom.strip(), service, host, max_docs)
+
+
+# ────────── P2-2 事件关联 API ──────────
+
+@app.post("/events/ingest", dependencies=[Depends(verify_token)])
+async def events_ingest(payload: dict) -> dict:
+    """接收告警事件流
+
+    Body:
+        events: [Event]  事件列表，每个事件包含:
+            - id (可选，缺省自动生成)
+            - timestamp (可选，缺省用当前时间)
+            - host, service, component (可选)
+            - severity: info|low|warning|high|critical|fatal
+            - message
+            - tags, source, attributes (可选)
+    """
+    events = payload.get("events") or []
+    if not isinstance(events, list) or not events:
+        raise HTTPException(400, "events 必须是非空数组")
+    corr = get_event_correlator()
+    return corr.ingest(events)
+
+
+@app.post("/events/correlate", dependencies=[Depends(verify_token)])
+async def events_correlate(payload: dict = None) -> dict:
+    """关联最近事件，输出 incident 分组
+
+    Body (可选):
+        since_minutes: 关联时间窗口起点（默认 60）
+        max_events: 最多处理事件数（默认 500）
+    """
+    payload = payload or {}
+    since = int(payload.get("since_minutes", 60))
+    max_ev = int(payload.get("max_events", 500))
+    corr = get_event_correlator()
+    return corr.correlate(since_minutes=since, max_events=max_ev)
+
+
+@app.get("/events/incidents")
+async def events_list_incidents(
+    status: str = "open",
+    limit: int = 50,
+) -> dict:
+    """列出 incident"""
+    corr = get_event_correlator()
+    items = corr.list_incidents(status, limit)
+    return {"incidents": items, "count": len(items)}
+
+
+@app.get("/events/incidents/{incident_id}")
+async def events_get_incident(incident_id: str) -> dict:
+    """获取 incident 详情"""
+    corr = get_event_correlator()
+    inc = corr.get_incident(incident_id)
+    if not inc:
+        raise HTTPException(404, f"incident 不存在: {incident_id}")
+    return inc
+
+
+@app.post("/events/incidents/{incident_id}/close", dependencies=[Depends(verify_token)])
+async def events_close_incident(incident_id: str, note: str = "") -> dict:
+    """关闭 incident"""
+    corr = get_event_correlator()
+    ok = corr.close_incident(incident_id, note)
+    if not ok:
+        raise HTTPException(404, f"incident 不存在或已关闭: {incident_id}")
+    return {"incident_id": incident_id, "status": "closed"}
+
+
+@app.post("/events/incidents/{incident_id}/runbook", dependencies=[Depends(verify_token)])
+async def events_incident_to_runbook(incident_id: str, publish: bool = False) -> dict:
+    """基于 incident 自动生成 Runbook"""
+    from app.knowledge import get_runbook_generator
+
+    corr = get_event_correlator()
+    inc = corr.get_incident(incident_id)
+    if not inc:
+        raise HTTPException(404, f"incident 不存在: {incident_id}")
+
+    hint_str = inc.get("runbook_hint") or "{}"
+    try:
+        hint = json.loads(hint_str)
+    except (json.JSONDecodeError, TypeError):
+        hint = {}
+
+    symptom = hint.get("symptom") or inc.get("suspected_root_cause") or "未知故障"
+    service = hint.get("service", "")
+    host = hint.get("host", "")
+
+    gen = get_runbook_generator()
+    result = gen.generate(symptom, service, host, max_docs=5)
+
+    # 在 Runbook 顶部附加 incident 元信息
+    incident_header = (
+        f"> 关联 incident: `{incident_id}` 严重度: {inc['severity']}\n"
+        f"> 告警数: {inc.get('alert_count', 0)}  根因推断: {inc.get('suspected_root_cause', '')}\n\n"
+    )
+    result["runbook_md"] = incident_header + result["runbook_md"]
+    result["incident_id"] = incident_id
+
+    if publish:
+        import time
+        slug = f"incident-{incident_id}"
+        vc = get_version_control()
+        title = f"Incident Runbook: {symptom[:60]}"
+        vc.save_version(
+            doc_key=f"wiki:{slug}",
+            title=title,
+            content=result["runbook_md"],
+            author="incident-runbook-generator",
+            change_summary=f"基于 incident {incident_id} 自动生成",
+        )
+        get_search_engine().index_document(
+            f"wiki:{slug}", title, result["runbook_md"], "incident-runbook",
+        )
+        result["wiki_slug"] = slug
+        result["wiki_published"] = True
+
+    return result
