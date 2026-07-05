@@ -33,10 +33,20 @@ class Settings(BaseSettings):
     openai_compat_api_key: str = ""
     openai_compat_model: str = "deepseek-chat"
 
+    # Neo4j
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "password"
+
     # 抽取门控
     confidence_auto: float = 0.85
     confidence_review: float = 0.60
     dedup_cos_threshold: float = 0.92
+
+    # 知识编译
+    authority_source_weight: float = 0.5
+    authority_recency_weight: float = 0.3
+    authority_consensus_weight: float = 0.2
 
     # 文档生成
     doc_gen_max_iter: int = 3

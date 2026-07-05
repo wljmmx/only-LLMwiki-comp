@@ -127,3 +127,117 @@ class TestExtractionGating:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ═══════════════ W5 图谱存储（离线测试） ═══════════════
+
+class TestKnowledgeCompiler:
+    def test_deduplicate_exact(self):
+        """测试精确去重：同名同类型实体合并"""
+        from app.knowledge import KnowledgeCompiler, GraphEntity
+
+        compiler = KnowledgeCompiler()
+        entities = [
+            GraphEntity("Service", "order-service", {"tier": "t1"}, confidence=0.95),
+            GraphEntity("Service", "order-service", {"tier": "t1"}, confidence=0.88),
+            GraphEntity("Host", "web-01", {"ip": "10.0.0.1"}, confidence=0.90),
+        ]
+        result = compiler.deduplicate(entities)
+        assert result.duplicates_found >= 1, "应检测到重复"
+
+    def test_deduplicate_type_diff(self):
+        """不同实体类型不合并"""
+        from app.knowledge import KnowledgeCompiler, GraphEntity
+
+        compiler = KnowledgeCompiler()
+        entities = [
+            GraphEntity("Service", "nginx", {}, confidence=0.9),
+            GraphEntity("Host", "nginx", {}, confidence=0.9),
+        ]
+        result = compiler.deduplicate(entities)
+        assert result.merged_count == 0, "不同类型不应合并"
+
+    def test_merge_properties(self):
+        """合并时保留最高置信度，聚合属性"""
+        from app.knowledge import KnowledgeCompiler, GraphEntity
+
+        compiler = KnowledgeCompiler()
+        entities = [
+            GraphEntity("Host", "db-01", {"ip": "10.0.1.1"}, confidence=0.7),
+            GraphEntity("Host", "db-01", {"role": "master"}, confidence=0.9),
+        ]
+        result = compiler.deduplicate(entities)
+        # 合并后应同时有 ip 和 role
+        merged = compiler._merge_group(entities)
+        assert "ip" in merged.properties
+        assert "role" in merged.properties
+        assert merged.confidence == 0.9  # 保留高置信度
+
+    def test_authority_scoring(self):
+        """权威评分计算"""
+        from app.knowledge import KnowledgeCompiler, GraphEntity
+
+        compiler = KnowledgeCompiler()
+        e = GraphEntity(
+            "Procedure", "mysql-backup",
+            {"source_type": "sop", "sources": ["doc1", "doc2", "doc3"]},
+            confidence=0.9,
+        )
+        scored = compiler.score_authority([e])
+        assert "authority_score" in scored[0].properties
+        assert scored[0].properties["authority_score"] > 0.5
+
+    def test_compile_pipeline(self):
+        """完整编译流水线：3→2 去重（哈希去重处理精确重复）"""
+        from app.knowledge import KnowledgeCompiler, GraphEntity
+
+        compiler = KnowledgeCompiler()
+        entities = [
+            GraphEntity("Service", "svc-a", {}, confidence=0.95),
+            GraphEntity("Service", "svc-a", {}, confidence=0.88),  # 精确重复
+            GraphEntity("Host", "h-01", {}, confidence=0.90),
+        ]
+        result = compiler.compile(entities, [])
+        assert result.input_entities == 3
+        assert result.after_dedup == 2  # 3 - 1 重复 = 2
+        assert result.duplicates_found >= 1
+
+
+# ═══════════════ W7 文档生成 ═══════════════
+
+class TestDocGenerationPipeline:
+    def test_graph_built(self):
+        """验证 LangGraph 状态图构建成功"""
+        from app.knowledge import get_pipeline
+
+        pipeline = get_pipeline()
+        nodes = list(pipeline.graph.nodes.keys())
+        assert "intent" in nodes
+        assert "outline" in nodes
+        assert "generate" in nodes
+        assert "review" in nodes
+        assert "modify" in nodes
+        assert "proofread" in nodes
+
+    def test_review_router(self):
+        """路由决策：accept → proofread, reject → modify"""
+        from app.knowledge import get_pipeline
+
+        pipeline = get_pipeline()
+        assert pipeline._review_router({"review_decision": "accept", "iteration": 0, "max_iterations": 3}) == "accept"
+        assert pipeline._review_router({"review_decision": "reject", "iteration": 0, "max_iterations": 3}) == "reject"
+        assert pipeline._review_router({"review_decision": "reject", "iteration": 3, "max_iterations": 3}) == "done"
+
+    def test_format_document(self):
+        """文档格式化"""
+        from app.knowledge import get_pipeline
+
+        pipeline = get_pipeline()
+        sections = [
+            {"title": "Section 1", "level": 1, "content": "Content 1"},
+            {"title": "Sub 1.1", "level": 2, "content": "Content 1.1"},
+        ]
+        doc = pipeline._format_document(sections)
+        assert "# Section 1" in doc
+        assert "## Sub 1.1" in doc
+        assert "Content 1" in doc
