@@ -1,0 +1,9 @@
+Nginx 配置优化指南
+
+本文档说明 Nginx 反向代理的性能调优参数。
+
+worker_processes 建议设置为 CPU 核心数。worker_connections 建议 1024-4096。
+
+keepalive_timeout 建议 65 秒，过短会导致连接频繁建立。
+
+关于缓存配置，proxy_cache_path 指定缓存目录，proxy_cache 控制是否启用缓存。

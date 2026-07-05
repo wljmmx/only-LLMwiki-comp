@@ -1,0 +1,11 @@
+<html><head><title>故障报告</title></head><body>
+<h1>Redis 内存溢出故障报告</h1>
+<h2>故障时间</h2>
+<p>2026-06-15 14:30 至 2026-06-15 15:00</p>
+<h2>影响范围</h2>
+<p>用户登录服务（auth-service）不可用</p>
+<h2>根因</h2>
+<pre>maxmemory 设置为 2GB，业务增长导致 key 数量超出预期</pre>
+<h2>修复措施</h2>
+<ul><li>扩容至 4GB</li><li>启用 LRU 淘汰策略</li></ul>
+</body></html>
