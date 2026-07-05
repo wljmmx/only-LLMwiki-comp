@@ -1,4 +1,13 @@
-"""解析器注册中心。新增格式：实现 DocumentParser 后调用 register_parser() 即可。"""
+"""解析器注册中心。
+
+策略（见 docs/解析器对比评测.md）：
+  - Word/Excel/PPT/HTML → MarkItDown（MIT，无 GPU，180+ 文件/s）
+  - PDF/图片 → MinerU（VLM 高精度，Python 3.10-3.13 环境）→ MarkItDown（fallback）
+  - SQL → sqlparse（自研，语义识别）
+  - Markdown → 自研（结构提取）
+  - TXT → 自研（零依赖最快）
+  - Unstructured → 备选 fallback
+"""
 from __future__ import annotations
 
 from typing import Callable
@@ -26,34 +35,59 @@ def supported_formats() -> list[str]:
     return sorted(_registry.keys())
 
 
-# 注册内置解析器（延迟导入，避免未安装依赖时启动崩溃）
 def _register_builtin() -> None:
+    # ── 自研（必须） ──
     try:
         from app.parsers.markdown_parser import MarkdownParser
         register_parser("markdown", lambda: MarkdownParser())
-    except ImportError: pass
+        register_parser("md", lambda: MarkdownParser())
+    except ImportError:
+        pass
     try:
         from app.parsers.sql_parser import SQLParser
         register_parser("sql", lambda: SQLParser())
-    except ImportError: pass
+    except ImportError:
+        pass
     try:
         from app.parsers.text_parser import TextParser
         register_parser("txt", lambda: TextParser())
-    except ImportError: pass
+    except ImportError:
+        pass
+
+    # ── MarkItDown（主力，MIT 许可） ──
     try:
-        from app.parsers.html_parser import HTMLParser
-        register_parser("html", lambda: HTMLParser())
-    except ImportError: pass
+        from app.parsers.markitdown_adapter import make_markitdown_factory
+        for fmt in ("word", "docx", "doc", "excel", "xlsx", "xls",
+                     "ppt", "pptx", "html", "htm", "epub", "csv", "json"):
+            register_parser(fmt, make_markitdown_factory(fmt))
+    except ImportError:
+        pass
+
+    # ── MinerU（PDF 专项，Python 3.10-3.13，GPU 推荐） ──
     try:
-        from app.parsers.word_parser import WordParser
-        register_parser("word", lambda: WordParser())
-        register_parser("docx", lambda: WordParser())
-    except ImportError: pass
+        from app.parsers.mineru_adapter import make_mineru_factory
+        register_parser("pdf", make_mineru_factory("pdf"))
+    except ImportError:
+        # MinerU 不可用时，PDF 降级为 MarkItDown
+        try:
+            from app.parsers.markitdown_adapter import make_markitdown_factory
+            register_parser("pdf", make_markitdown_factory("pdf"))
+        except ImportError:
+            pass
     try:
-        from app.parsers.excel_parser import ExcelParser
-        register_parser("excel", lambda: ExcelParser())
-        register_parser("xlsx", lambda: ExcelParser())
-    except ImportError: pass
+        from app.parsers.mineru_adapter import make_mineru_factory
+        for fmt in ("png", "jpg", "jpeg", "gif", "bmp"):
+            register_parser(fmt, make_mineru_factory(fmt))
+    except ImportError:
+        pass
+
+    # ── Unstructured（备选 fallback） ──
+    try:
+        from app.parsers.unstructured_adapter import make_unstructured_factory
+        for fmt in ("rst", "xml", "odt", "msg", "eml"):
+            register_parser(fmt, make_unstructured_factory(fmt))
+    except ImportError:
+        pass
 
 
 _register_builtin()

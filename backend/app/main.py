@@ -15,6 +15,15 @@ from app.extraction import KnowledgeExtractor, ExtractionStats
 
 logger = structlog.get_logger()
 
+# 扩展名 → 格式映射（统一）
+EXT_FMT_MAP = {
+    "md": "markdown", "sql": "sql", "txt": "txt",
+    "docx": "word", "doc": "word", "xlsx": "excel", "xls": "excel",
+    "pptx": "ppt", "ppt": "ppt", "html": "html", "htm": "html",
+    "pdf": "pdf", "epub": "epub", "csv": "csv", "json": "json",
+    "png": "png", "jpg": "jpg", "jpeg": "jpg", "gif": "gif", "bmp": "bmp",
+}
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -45,9 +54,7 @@ async def parse_batch(files: list[UploadFile] = File(..., alias="files")) -> dic
 
     for file in files:
         ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
-        fmt_map = {"md": "markdown", "sql": "sql", "txt": "txt", "html": "html", "htm": "html",
-                    "docx": "word", "doc": "word", "xlsx": "excel", "xls": "excel"}
-        fmt = fmt_map.get(ext, ext)
+        fmt = EXT_FMT_MAP.get(ext, ext)
         if fmt not in formats:
             results.append({"filename": file.filename, "error": f"不支持的格式: {fmt}"})
             continue
@@ -116,9 +123,7 @@ async def extract_knowledge(file: UploadFile = File(...)) -> dict:
     import tempfile, os
 
     ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
-    fmt_map = {"md": "markdown", "sql": "sql", "txt": "txt", "html": "html", "htm": "html",
-               "docx": "word", "doc": "word", "xlsx": "excel", "xls": "excel"}
-    fmt = fmt_map.get(ext, ext)
+    fmt = EXT_FMT_MAP.get(ext, ext)
 
     if fmt not in supported_formats():
         raise HTTPException(400, f"不支持的格式: {fmt}。支持: {supported_formats()}")

@@ -28,7 +28,13 @@ class MarkdownParser:
 
     def _extract_title(self, text: str) -> str | None:
         m = re.match(r"^#\s+(.+)$", text, re.MULTILINE)
-        return m.group(1).strip() if m else None
+        if m:
+            return m.group(1).strip()
+        # 兜底：取首行非空内容（去除 Markdown 加粗标记）
+        first = text.strip().split("\n")[0].strip()
+        if first:
+            return re.sub(r"\*+", "", first).strip()[:120]
+        return None
 
     def _parse_markdown(self, text: str) -> list[ParsedElement]:
         elements: list[ParsedElement] = []
