@@ -384,7 +384,6 @@ def test_concurrent_writes(concurrency: int, docs_per_worker: int) -> dict:
             except Exception:
                 pass
             latencies.append(time.perf_counter() - t0)
-        elapsed = sum(latencies)
         return shard_idx, count, latencies
 
     print(f"  启动 {concurrency} 线程并发写入...")
