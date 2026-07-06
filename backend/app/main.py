@@ -27,6 +27,7 @@ from app.routers.llm_wiki_router import router as llm_wiki_router
 from app.routers.mcp_router import router as mcp_router
 from app.routers.oidc_router import router as oidc_router
 from app.routers.parsers_router import router as parsers_router
+from app.routers.realtime_router import router as realtime_router
 from app.routers.review_router import router as review_router
 from app.routers.runbook_router import router as runbook_router
 from app.routers.saml_router import router as saml_router
@@ -63,6 +64,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     from app.observability import start_metrics_collector
 
     collector_task = await start_metrics_collector(interval_seconds=30)
+    # S15-5：启动协作 Hub 心跳清理后台任务
+    from app.realtime import get_collab_hub
+
+    collab_hub = get_collab_hub()
+    await collab_hub.start_cleanup_loop()
     # P3-1：引导默认 admin 用户（首次启动）
     try:
         from app.auth.models import get_auth_store
@@ -82,6 +88,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             await collector_task
         except Exception:  # noqa: BLE001
             pass
+        # S15-5：停止协作 Hub 心跳清理
+        await collab_hub.stop_cleanup_loop()
         await get_webhook_manager().stop_retry_worker()
         logger.info("backend.stopping", instance_id=instance_id)
 
@@ -172,3 +180,4 @@ app.include_router(export_router)
 app.include_router(mcp_router)
 app.include_router(webhook_router)
 app.include_router(anomaly_router)
+app.include_router(realtime_router)

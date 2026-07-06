@@ -20,7 +20,13 @@ from app.auth.saml import (
 from app.auth.saml import (
     extract_user_info_from_attributes as saml_extract_user_info,
 )
-from app.auth.token_auth import generate_token, get_current_user, require_role, verify_token
+from app.auth.token_auth import (
+    generate_token,
+    get_current_user,
+    require_role,
+    verify_token,
+    verify_token_string,
+)
 
 __all__ = [
     "AuthStore",
@@ -44,4 +50,5 @@ __all__ = [
     "require_role",
     "saml_extract_user_info",
     "verify_token",
+    "verify_token_string",
 ]

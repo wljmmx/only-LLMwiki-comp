@@ -47,12 +47,39 @@ async def verify_token(
         )
 
     token = credentials.credentials
+    identity = verify_token_string(token)
+    if identity is None:
+        raise HTTPException(401, "认证失败：Token 无效")
+    return identity
+
+
+def verify_token_string(token: str | None) -> str | None:
+    """基于 token 字符串校验身份（S15-5 WebSocket 鉴权复用）
+
+    与 verify_token 同语义，但不依赖 HTTP 依赖注入链，便于 WebSocket / SSE
+    等非 HTTP Bearer 场景复用。
+
+    返回：
+        - 开发模式（未配置 OPSKG_API_TOKEN 且 token 为空）→ "anonymous"
+        - legacy 共享 token 匹配 → "user"
+        - session token 有效 → "user:<username>"
+        - 其他 → None（调用方决定如何拒绝）
+    """
+    settings = get_settings()
+    expected_token = settings.api_token
+
+    # 开发模式
+    if not expected_token and not token:
+        return "anonymous"
+
+    if not token:
+        return None
 
     # 1. legacy 共享 token
     if expected_token and secrets.compare_digest(token, expected_token):
         return "user"
 
-    # 2. 新模式：session token
+    # 2. session token
     try:
         from app.auth.models import get_auth_store
 
@@ -61,9 +88,9 @@ async def verify_token(
         if user:
             return f"user:{user['username']}"
     except Exception:  # noqa: BLE001
-        pass  # auth store 不可用时降级到 401
+        pass
 
-    raise HTTPException(401, "认证失败：Token 无效")
+    return None
 
 
 async def get_current_user(

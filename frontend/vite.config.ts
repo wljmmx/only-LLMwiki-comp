@@ -16,6 +16,8 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
+        // S15-5：支持 WebSocket 协作端点（/api/realtime/collab/{slug}）
+        ws: true,
       },
     },
   },
