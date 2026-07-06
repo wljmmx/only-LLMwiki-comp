@@ -52,6 +52,8 @@ from app.aiops import (
 )
 from app.search import get_search_engine
 from app.storage import get_document_store
+# P2-5.8 入参 JSON Schema 运行时校验
+from app.mcp.schema_validator import validate_args, fill_defaults
 
 logger = structlog.get_logger()
 
@@ -1104,6 +1106,21 @@ def _get_prompt(name: str, arguments: dict) -> dict:
 # ────────── JSON-RPC 处理 ──────────
 
 
+def _get_tool_schema(tool_name: str) -> dict | None:
+    """P2-5.8 从 TOOLS 列表中查询工具的 inputSchema
+
+    Args:
+        tool_name: 工具名
+
+    Returns:
+        工具的 inputSchema dict，未找到返回 None
+    """
+    for tool in TOOLS:
+        if tool.get("name") == tool_name:
+            return tool.get("inputSchema")
+    return None
+
+
 def handle_request(request: dict) -> dict | None:
     """处理单个 JSON-RPC 请求
 
@@ -1145,6 +1162,18 @@ def handle_request(request: dict) -> dict | None:
                     -32601,
                     f"未知工具: {tool_name}",
                 )
+            # P2-5.8 入参 JSON Schema 运行时校验
+            tool_schema = _get_tool_schema(tool_name)
+            if tool_schema:
+                validation_errors = validate_args(tool_args, tool_schema)
+                if validation_errors:
+                    return _error_response(
+                        req_id,
+                        -32602,
+                        "Invalid Params: " + "; ".join(validation_errors),
+                    )
+                # 填充 default 字段
+                tool_args = fill_defaults(tool_args, tool_schema)
             handler = TOOL_HANDLERS[tool_name]
             text_result = handler(tool_args)
             result = {
