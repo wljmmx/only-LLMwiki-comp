@@ -37,7 +37,18 @@ logger = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    logger.info("backend.starting", env=settings.env, llm_backend=settings.llm_backend)
+    # HA：启动时记录实例 ID 与部署模式
+    from app.ha import get_instance_id, get_startup_time
+
+    instance_id = get_instance_id()
+    logger.info(
+        "backend.starting",
+        env=settings.env,
+        llm_backend=settings.llm_backend,
+        instance_id=instance_id,
+        deployment_mode=settings.deployment_mode,
+        started_at=get_startup_time(),
+    )
     # 启动 Webhook 重试后台 worker
     from app.webhooks import get_webhook_manager
 
@@ -55,7 +66,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         except Exception:  # noqa: BLE001
             pass
         await get_webhook_manager().stop_retry_worker()
-        logger.info("backend.stopping")
+        logger.info("backend.stopping", instance_id=instance_id)
 
 
 app = FastAPI(title="OpsKG Backend", version="0.1.0", lifespan=lifespan)
@@ -67,8 +78,32 @@ setup_metrics_middleware(app)
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, object]:
+    """Liveness 探针：返回实例元数据与依赖状态。
+
+    - `status` ∈ `ok | degraded | down`
+    - 任一依赖不可达 → degraded；全部不可达 → down
+    - HTTP 200 表示进程存活，K8s 不会重启
+    """
+    from app.ha import collect_health
+
+    return collect_health()
+
+
+@app.get("/ready")
+async def ready() -> dict[str, object]:
+    """Readiness 探针：所有 DB 必须可达 + 关键 worker 必须 running。
+
+    返回 ready=False 时返回 HTTP 503，K8s 会从 Service endpoints 摘除流量。
+    """
+    from fastapi.responses import JSONResponse
+
+    from app.ha import collect_readiness
+
+    result = collect_readiness()
+    if not result["ready"]:
+        return JSONResponse(status_code=503, content=result)
+    return result
 
 
 # ────────── 业务域 APIRouter 聚合注册 ──────────

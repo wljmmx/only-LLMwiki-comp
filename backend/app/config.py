@@ -65,6 +65,14 @@ class Settings(BaseSettings):
     # 认证（P0-2）— 留空则关闭认证（开发模式）
     api_token: str = ""
 
+    # HA 高可用（P3-4）
+    # 实例 ID 用于多实例区分；不传则用 hostname + pid 自动生成
+    instance_id: str = ""
+    # 部署模式：standalone | replicated
+    # standalone: 单实例（默认）
+    # replicated: 多实例 + 共享存储（需 NFS 或类似方案）
+    deployment_mode: str = "standalone"
+
 
 @lru_cache
 def get_settings() -> Settings:
