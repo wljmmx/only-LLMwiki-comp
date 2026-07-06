@@ -32,12 +32,11 @@ import {
   type McpPrompt,
   type SseEvent,
 } from '@/api/mcp'
+import { getAuthToken } from '@/api/index'
 
 const message = useMessage()
 
-const isAuthenticated = computed(
-  () => typeof localStorage !== 'undefined' && !!localStorage.getItem('opskg_token'),
-)
+const isAuthenticated = computed(() => !!getAuthToken())
 
 const activeTab = ref<'tools' | 'resources' | 'prompts'>('tools')
 

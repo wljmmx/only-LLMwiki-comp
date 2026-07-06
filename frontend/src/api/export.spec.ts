@@ -1,19 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// export.ts 直接使用全局 axios（不是 api 实例），需 mock axios
-vi.mock('axios', () => ({
-  default: {
+// S14-3：export.ts 改用共享 apiRaw 实例（不再直接 import axios）
+// mock ./index 提供 apiRaw + getApiBaseUrl
+vi.mock('./index', () => ({
+  getApiBaseUrl: () => '/api',
+  apiRaw: {
     post: vi.fn(),
     get: vi.fn(),
   },
 }))
 
-// mock ./index 避免加载真实的 api 实例（其会调用 axios.create）
-vi.mock('./index', () => ({
-  getApiBaseUrl: () => '/api',
-}))
-
-import axios from 'axios'
+import { apiRaw } from './index'
 import { downloadBlob, exportFormatOptions, exportDocument } from './export'
 
 describe('api/export.ts', () => {
@@ -130,7 +127,7 @@ describe('api/export.ts', () => {
     })
 
     it('从 Content-Disposition filename* 解析 UTF-8 编码文件名', async () => {
-      ;(axios.post as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ;(apiRaw.post as ReturnType<typeof vi.fn>).mockResolvedValue({
         data: new Blob(['x']),
         headers: { 'content-disposition': "attachment; filename*=UTF-8''%E6%B5%8B%E8%AF%95.md" },
       })
@@ -140,7 +137,7 @@ describe('api/export.ts', () => {
     })
 
     it('无 Content-Disposition 时按格式生成文件名并替换非法字符', async () => {
-      ;(axios.post as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ;(apiRaw.post as ReturnType<typeof vi.fn>).mockResolvedValue({
         data: new Blob(['x']),
         headers: {},
       })
@@ -148,13 +145,13 @@ describe('api/export.ts', () => {
       expect(res.filename).toBe('我的_文档.html')
     })
 
-    it('调用 axios.post 时附带正确 URL 与 responseType', async () => {
-      ;(axios.post as ReturnType<typeof vi.fn>).mockResolvedValue({
+    it('调用 apiRaw.post 时附带正确 URL 与 responseType', async () => {
+      ;(apiRaw.post as ReturnType<typeof vi.fn>).mockResolvedValue({
         data: new Blob(['x']),
         headers: {},
       })
       await exportDocument({ title: 't', content: 'c', format: 'markdown' })
-      expect(axios.post).toHaveBeenCalledWith(
+      expect(apiRaw.post).toHaveBeenCalledWith(
         '/api/export',
         { title: 't', content: 'c', format: 'markdown' },
         expect.objectContaining({ responseType: 'blob' }),

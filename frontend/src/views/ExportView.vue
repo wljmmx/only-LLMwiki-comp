@@ -15,12 +15,11 @@ import {
 import { exportDocument, downloadBlob, exportFormatOptions, type ExportFormat } from '@/api/export'
 import { listWikiDocs } from '@/api/versions'
 import { getTemplate } from '@/api/templates'
+import { getAuthToken } from '@/api/index'
 
 const message = useMessage()
 
-const isAuthenticated = computed(
-  () => typeof localStorage !== 'undefined' && !!localStorage.getItem('opskg_token'),
-)
+const isAuthenticated = computed(() => !!getAuthToken())
 
 const title = ref('untitled')
 const content = ref('# 标题\n\n在此输入 Markdown 内容...')

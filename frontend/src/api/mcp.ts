@@ -1,4 +1,4 @@
-import api from './index'
+import api, { getAuthToken, getApiBaseUrl } from './index'
 
 // ────────── MCP（F13 MCP 工具浏览器） ──────────
 
@@ -147,6 +147,9 @@ export interface SseEvent {
 /**
  * SSE 流式调用工具（POST /mcp/stream）
  * 通过 fetch + ReadableStream 解析 SSE 事件
+ *
+ * S14-3：token 与 baseURL 通过共享 helper 获取（不再硬编码 'opskg_token' / '/api'）。
+ * fetch 不走 axios 拦截器，故仍需手动注入 Authorization 头与 loading bar。
  */
 export async function callToolStream(
   name: string,
@@ -155,7 +158,7 @@ export async function callToolStream(
   progressToken?: any,
   signal?: AbortSignal,
 ): Promise<void> {
-  const token = typeof localStorage !== 'undefined' ? localStorage.getItem('opskg_token') : null
+  const token = getAuthToken()
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'text/event-stream',
@@ -170,7 +173,7 @@ export async function callToolStream(
     _meta: progressToken != null ? { progressToken } : undefined,
   }
 
-  const res = await fetch('/api/mcp/stream', {
+  const res = await fetch(`${getApiBaseUrl()}/mcp/stream`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),

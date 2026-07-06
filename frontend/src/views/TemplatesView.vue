@@ -30,6 +30,7 @@ import {
   renderTemplate,
   type Template,
 } from '@/api/templates'
+import { getAuthToken } from '@/api/index'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -39,9 +40,7 @@ const templates = ref<Template[]>([])
 
 const categoryFilter = ref<string | null>(null)
 
-const isAuthenticated = computed(
-  () => typeof localStorage !== 'undefined' && !!localStorage.getItem('opskg_token'),
-)
+const isAuthenticated = computed(() => !!getAuthToken())
 
 // 详情抽屉
 const detailVisible = ref(false)

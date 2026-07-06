@@ -7,15 +7,16 @@
  * - 提供 login / logout / fetchMe 方法
  * - 加载 OIDC 提供者列表
  *
- * 注意：token 也由 api/index.ts 的 axios 拦截器读取，
- *      store 与拦截器共享 localStorage key 'opskg_token'。
+ * 注意：token key 通过 AUTH_TOKEN_KEY 从 @/api/index 统一导入（S14-3），
+ *      store 与 axios 拦截器共享同一 key。
  */
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import * as authApi from '@/api/auth'
+import { AUTH_TOKEN_KEY } from '@/api/index'
 import type { OIDCProviderInfo, User } from '@/api/auth'
 
-const TOKEN_KEY = 'opskg_token'
+const TOKEN_KEY = AUTH_TOKEN_KEY
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(localStorage.getItem(TOKEN_KEY))

@@ -1,5 +1,4 @@
-import axios from 'axios'
-import { getApiBaseUrl } from './index'
+import { apiRaw, getApiBaseUrl } from './index'
 
 // ────────── Export（F12 导出中心） ──────────
 
@@ -50,26 +49,19 @@ export const exportFormatOptions: ExportFormatOption[] = [
   },
 ]
 
-function getAuthToken(): string | null {
-  if (typeof localStorage === 'undefined') return null
-  return localStorage.getItem('opskg_token')
-}
-
 /**
  * 导出文档为指定格式（同步返回二进制流）
  * POST /export  body: { title, content, format }
  * 返回: { blob, filename }
+ *
+ * S14-3：使用共享 apiRaw 实例（自动注入 token + loading bar），
+ * 保留完整 AxiosResponse 以访问 Content-Disposition 头与 Blob 数据。
  */
 export async function exportDocument(
   payload: ExportPayload,
 ): Promise<{ blob: Blob; filename: string }> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  const token = getAuthToken()
-  if (token) headers.Authorization = `Bearer ${token}`
-
-  const res = await axios.post(`${getApiBaseUrl()}/export`, payload, {
+  const res = await apiRaw.post(`${getApiBaseUrl()}/export`, payload, {
     responseType: 'blob',
-    headers,
   })
 
   // 从 Content-Disposition 解析文件名（RFC 5987 编码）

@@ -29,12 +29,11 @@ import {
   type VersionDetail,
   type WikiDocSummary,
 } from '@/api/versions'
+import { getAuthToken } from '@/api/index'
 
 const message = useMessage()
 
-const isAuthenticated = computed(
-  () => typeof localStorage !== 'undefined' && !!localStorage.getItem('opskg_token'),
-)
+const isAuthenticated = computed(() => !!getAuthToken())
 
 // doc_key 输入与列表
 const docKeyInput = ref<string>('wiki:')
