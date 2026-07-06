@@ -14,13 +14,18 @@
  * - 连接状态指示器（disconnected/connecting/connected/reconnecting/error）
  * - 错误提示
  */
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { NAvatar, NButton, NTag, NSpace, NTooltip, NText } from 'naive-ui'
 import { useCollab } from '@/composables/useCollab'
 import type { ConnectionState } from '@/composables/useCollab'
 
 const props = defineProps<{
   slug: string
+}>()
+
+// S16-2：向上通知锁状态变化，便于 WikiView 控制 WikiEditor 显示
+const emit = defineEmits<{
+  (e: 'lock-change', payload: { hasLock: boolean; lockHolder: string | null }): void
 }>()
 
 const {
@@ -35,6 +40,16 @@ const {
   acquireLock,
   releaseLock,
 } = useCollab(props.slug)
+
+// S16-2：锁状态变化时通知父组件
+// 用 getter 函数形式 watch，兼容 ref 与 mock 对象（测试时 mock 返回 {value: ...} 非真 ref）
+watch(
+  () => [hasLock.value, lockHolder.value] as [boolean, string | null],
+  ([hl, lh]) => {
+    emit('lock-change', { hasLock: hl, lockHolder: lh })
+  },
+  { immediate: true },
+)
 
 // 连接状态 → 标签类型
 const stateTagType: Record<ConnectionState, 'default' | 'info' | 'success' | 'warning' | 'error'> = {

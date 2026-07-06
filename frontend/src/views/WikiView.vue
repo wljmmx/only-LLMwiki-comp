@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { NSplit, NTree, NCard, NTag, NSpace, NSpin, NEmpty, NThing } from 'naive-ui'
+import { NSplit, NTree, NCard, NTag, NSpace, NSpin, NEmpty, NThing, NButton } from 'naive-ui'
 import type { TreeOption } from 'naive-ui'
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
 import { renderWikiMarkdown, parseSlugFromHash } from '@/utils/wikiRender'
 import type { WikiPage, BacklinkItem } from '@/types/api'
 // S16-1：协作面板（实时在线用户 + 编辑锁状态）
 import CollabPanel from '@/components/collab/CollabPanel.vue'
+// S16-2：Wiki 页面编辑器
+import WikiEditor from '@/components/wiki/WikiEditor.vue'
 
 const treeLoading = ref(true)
 const contentLoading = ref(false)
@@ -15,6 +17,35 @@ const pages = ref<WikiPage[]>([])
 const currentPage = ref<WikiPage | null>(null)
 const backlinks = ref<BacklinkItem[]>([])
 const selectedKey = ref<string | null>(null)
+
+// S16-2：编辑模式状态
+const isEditing = ref(false)
+const hasLock = ref(false)
+const lockHolder = ref<string | null>(null)
+
+// S16-2：CollabPanel 锁状态变化回调
+function handleLockChange(payload: { hasLock: boolean; lockHolder: string | null }) {
+  hasLock.value = payload.hasLock
+  lockHolder.value = payload.lockHolder
+}
+
+// S16-2：进入编辑模式
+function startEditing() {
+  isEditing.value = true
+}
+
+// S16-2：退出编辑模式
+function cancelEditing() {
+  isEditing.value = false
+}
+
+// S16-2：保存成功后刷新页面内容
+async function handleSaved() {
+  isEditing.value = false
+  if (selectedKey.value) {
+    await loadPage(selectedKey.value)
+  }
+}
 
 const typeLabelMap: Record<string, string> = {
   entity: '实体',
@@ -169,8 +200,31 @@ onMounted(() => {
               :key="selectedKey"
               :slug="selectedKey"
               class="collab-panel-wrapper"
+              @lock-change="handleLockChange"
             />
-            <div class="page-content" @click="handleContentClick" v-html="renderedContent"></div>
+            <!-- S16-2：编辑模式切换 -->
+            <div v-if="!isEditing" class="page-toolbar">
+              <NButton
+                size="small"
+                type="primary"
+                :disabled="!hasLock"
+                @click="startEditing"
+              >
+                {{ hasLock ? '编辑' : '需先申请编辑锁' }}
+              </NButton>
+            </div>
+            <!-- S16-2：WikiEditor 替代只读内容区 -->
+            <WikiEditor
+              v-if="isEditing && currentPage"
+              :slug="currentPage.slug"
+              :content="currentPage.content"
+              :version="currentPage.version"
+              :can-edit="hasLock"
+              @saved="handleSaved"
+              @cancel="cancelEditing"
+              class="editor-wrapper"
+            />
+            <div v-else class="page-content" @click="handleContentClick" v-html="renderedContent"></div>
             <div v-if="backlinks.length > 0" class="backlinks-section">
               <div class="backlinks-title">反向链接</div>
               <div class="backlinks-list">
@@ -279,6 +333,14 @@ onMounted(() => {
 }
 
 .collab-panel-wrapper {
+  margin-bottom: 24px;
+}
+
+.page-toolbar {
+  margin-bottom: 16px;
+}
+
+.editor-wrapper {
   margin-bottom: 24px;
 }
 

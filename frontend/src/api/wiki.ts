@@ -1,5 +1,11 @@
 import api from './index'
-import type { WikiPage, WikiIndex, BacklinkItem } from '@/types/api'
+import type {
+  WikiPage,
+  WikiIndex,
+  BacklinkItem,
+  WikiPageUpdatePayload,
+  WikiPageUpdateResult,
+} from '@/types/api'
 
 export function getWikiIndex() {
   return api.get<any, WikiIndex>('/llm-wiki/index')
@@ -11,6 +17,11 @@ export function listWikiPages() {
 
 export function getWikiPage(slug: string) {
   return api.get<any, WikiPage>(`/llm-wiki/page/${slug}`)
+}
+
+// S16-2：用户直接编辑 wiki page
+export function updateWikiPage(slug: string, payload: WikiPageUpdatePayload) {
+  return api.put<any, WikiPageUpdateResult>(`/llm-wiki/page/${slug}`, payload)
 }
 
 export function getWikiBacklinks(slug: string) {

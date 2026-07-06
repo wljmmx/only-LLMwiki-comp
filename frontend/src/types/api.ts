@@ -70,6 +70,31 @@ export interface WikiPage {
   content: string
   created_at: string
   updated_at: string
+  // S16-2：后端 GET /llm-wiki/page/{slug} 实际返回的额外字段
+  version?: number
+  content_html?: string
+  backlinks?: { source: string; display: string; count: number }[]
+  outlinks?: { target: string; display: string; count: number }[]
+}
+
+// S16-2：PUT /llm-wiki/page/{slug} 请求体
+export interface WikiPageUpdatePayload {
+  content: string
+  title?: string
+  change_summary?: string
+  expected_version?: number
+  bypass_lock?: boolean
+}
+
+// S16-2：PUT /llm-wiki/page/{slug} 响应
+export interface WikiPageUpdateResult {
+  slug: string
+  title: string
+  version: number
+  checksum: string
+  created_at: string
+  skipped: boolean
+  reason?: string
 }
 
 export interface WikiIndex {
