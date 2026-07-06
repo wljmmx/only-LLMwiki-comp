@@ -32,13 +32,16 @@ from app.core.llm import ChatMessage, get_llm_client
 from app.extraction import KnowledgeExtractor
 from app.extraction.types import EntityType, ExtractedEntity
 from app.knowledge.wiki_drift import clear_stale, record_compiled_checksum
-from app.knowledge.wiki_index import _key_from_slug, rebuild_index
-from app.knowledge.wikilink import update_backlinks
+from app.knowledge.wiki_index import _key_from_slug, list_wiki_pages, rebuild_index
+from app.knowledge.wikilink import WIKILINK_RE, update_backlinks
 from app.parsers import get_parser
 from app.storage import get_document_store
 from app.storage.version_control import get_version_control
 
 logger = structlog.get_logger()
+
+# CJK 字符检测（用于决定匹配策略与最小词长）
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 # ────────── EntityType → Wiki 页面类型映射 ──────────
 # 见 AGENTS.md §三：entity | concept | incident | runbook | service | host
@@ -479,6 +482,22 @@ class WikiCompiler:
         )
         # 维护 backlink
         update_backlinks(page.slug, md_to_save)
+
+        # S12-2 反向回链：新建页面时，扫描已有页面正文，
+        # 在提及新概念处插入 [[new_slug]]（AGENTS.md §五 5.b）
+        if outcome == "created":
+            try:
+                back = self._backlink_existing_pages(page.slug, page.title)
+                if back > 0:
+                    logger.info(
+                        "wiki_backlink_retrofitted",
+                        slug=page.slug,
+                        updated=back,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "wiki_backlink_retrofit_failed", slug=page.slug, error=str(e)
+                )
         return outcome
 
     def _merge_existing(
@@ -606,6 +625,188 @@ class WikiCompiler:
         if page.stale_items:
             return f"增量合并并标注 {len(page.stale_items)} 项 stale（来源 {page.source_doc_id}）"
         return f"增量合并（来源 {page.source_doc_id}）"
+
+    # ── S12-2 反向回链 ──
+
+    def _backlink_existing_pages(
+        self, new_slug: str, new_title: str, aliases: list[str] | None = None
+    ) -> int:
+        """新建页面时，扫描已有页面正文，在提及新概念处插入 [[new_slug]]
+
+        实现 AGENTS.md §五 5.b："已有页面中提及新概念时回链到新页面"
+
+        Args:
+            new_slug: 新建页面的 slug
+            new_title: 新建页面的标题
+            aliases: 标题的别名（如英文/缩写），可选
+
+        Returns:
+            被更新（插入回链）的已有页面数
+        """
+        # 收集候选词：标题 + 别名，过滤过短词
+        candidates = [new_title] + (aliases or [])
+        candidates = [c for c in candidates if c and self._is_meaningful_token(c)]
+        # 按长度降序（优先匹配长词，避免短词子串污染）
+        candidates.sort(key=len, reverse=True)
+        if not candidates:
+            return 0
+
+        # 列出所有已有 wiki 页面
+        existing_pages = list_wiki_pages(limit=10000)
+        updated_count = 0
+
+        for page_meta in existing_pages:
+            slug = page_meta["slug"]
+            # 跳过自身、index
+            if slug == new_slug or slug == "index":
+                continue
+
+            doc_key = page_meta["doc_key"]
+            latest = self.vc.get_latest(doc_key)
+            if not latest:
+                continue
+            original_content = latest["content"]
+
+            # 已有指向 new_slug 的链接 → 跳过
+            if f"[[{new_slug}" in original_content:
+                continue
+
+            new_content, matched = self._insert_wikilink_in_body(
+                original_content, new_slug, candidates
+            )
+            if not matched:
+                continue
+
+            # 保存新版本
+            self.vc.save_version(
+                doc_key=doc_key,
+                title=page_meta["title"],
+                content=new_content,
+                author="wiki-backlink-bot",
+                change_summary=f"反向回链：插入 [[{new_slug}]]",
+            )
+            # 刷新被修改页面的出链 backlink
+            update_backlinks(slug, new_content)
+            updated_count += 1
+            logger.info(
+                "wiki_backlink_inserted",
+                source=slug,
+                target=new_slug,
+            )
+
+        return updated_count
+
+    @staticmethod
+    def _is_meaningful_token(text: str) -> bool:
+        """判断候选词是否值得建链（避免过短词造成噪音）
+
+        - 含 CJK 字符：长度 >= 2
+        - 纯 ASCII：长度 >= 3
+        """
+        if not text:
+            return False
+        has_cjk = bool(_CJK_RE.search(text))
+        return len(text) >= (2 if has_cjk else 3)
+
+    def _insert_wikilink_in_body(
+        self, content: str, new_slug: str, candidates: list[str]
+    ) -> tuple[str, bool]:
+        """在正文中找到首次提及候选词的位置，替换为 [[new_slug|原文]]
+
+        保护策略：
+        - 不动 frontmatter
+        - 不动代码块（``` ... ```）
+        - 不动已有的 [[wikilink]]（避免嵌套）
+        - 不动表格行（避免破坏对齐）
+        - 不动 H1 标题行（页面自己的标题）
+        - 仅替换整个文档中的首次出现（AGENTS.md "首次提及建链"）
+        """
+        # 拆分 frontmatter（保留原始 frontmatter 字符串以便重组）
+        front, body = self._split_frontmatter_raw(content)
+
+        lines = body.split("\n")
+        in_code_block = False
+        matched = False
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            # 代码块开关
+            if stripped.startswith("```"):
+                in_code_block = not in_code_block
+                continue
+            if in_code_block:
+                continue
+            # 跳过 H1 标题、表格行、frontmatter 边界（保险）
+            if stripped.startswith("# ") or stripped.startswith("|") or stripped == "---":
+                continue
+
+            for candidate in candidates:
+                new_line, did_replace = self._replace_first_outside_wikilink(
+                    line, candidate, f"[[{new_slug}|{candidate}]]"
+                )
+                if did_replace:
+                    lines[i] = new_line
+                    matched = True
+                    break
+            if matched:
+                break  # 全文仅替换首次出现
+
+        if not matched:
+            return content, False
+
+        new_body = "\n".join(lines)
+        new_content = (front + new_body) if front else new_body
+        return new_content, True
+
+    @staticmethod
+    def _split_frontmatter_raw(md: str) -> tuple[str, str]:
+        """拆分为 (frontmatter 原始字符串含边界, body)
+
+        - 有 frontmatter：返回 ("---\\n...\\n---\\n\\n", body)
+        - 无 frontmatter：返回 ("", md)
+        """
+        if not md.startswith("---"):
+            return "", md
+        parts = md.split("---", 2)
+        if len(parts) < 3:
+            return "", md
+        # parts[0] 是空串，parts[1] 是 yaml，parts[2] 是 body
+        front = "---" + parts[1] + "---" + "\n"
+        body = parts[2].lstrip("\n")
+        return front, body
+
+    @staticmethod
+    def _replace_first_outside_wikilink(
+        line: str, needle: str, replacement: str
+    ) -> tuple[str, bool]:
+        """在行中替换首次出现的 needle（不在 [[...]] 内），返回新行和是否替换
+
+        英文使用 \\b 词边界，中文直接子串匹配。
+        """
+        # 收集已有 [[...]] 区间
+        blocked: list[tuple[int, int]] = [
+            (m.start(), m.end()) for m in WIKILINK_RE.finditer(line)
+        ]
+
+        # 构造正则
+        if _CJK_RE.search(needle):
+            pattern = re.escape(needle)
+        else:
+            pattern = r"\b" + re.escape(needle) + r"\b"
+
+        for m in re.finditer(pattern, line):
+            s, e = m.start(), m.end()
+            # 跳过位于已有 wikilink 内的匹配
+            if any(bs <= s and e <= be for bs, be in blocked):
+                continue
+            # 跳过紧邻 | 或 ] 的位置（避免在 wikilink 边界插入）
+            if s > 0 and line[s - 1] in "|[":
+                continue
+            if e < len(line) and line[e] in "|]":
+                continue
+            new_line = line[:s] + replacement + line[e:]
+            return new_line, True
+        return line, False
 
 
 # ────────── 全局单例 ──────────
