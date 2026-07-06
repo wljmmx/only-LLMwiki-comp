@@ -362,7 +362,21 @@ def _tool_generate_runbook(args: dict) -> str:
     service = args.get("service", "")
     host = args.get("host", "")
     max_docs = int(args.get("max_docs", 5))
+
+    # P2-5.5 推送进度通知（SSE 端点会捕获；普通 JSON-RPC 路径为 no-op）
+    from app.mcp.progress import emit_progress
+    emit_progress("开始生成 Runbook", 0, 5)
+    emit_progress("构造检索查询", 1, 5)
+
     result = get_runbook_generator().generate(symptom, service, host, max_docs)
+    emit_progress(
+        f"检索完成，命中 {result['stats']['docs_searched']} 篇文档",
+        3,
+        5,
+    )
+    emit_progress("生成 Runbook Markdown", 4, 5)
+    emit_progress("完成", 5, 5)
+
     # 只返回 Markdown 和统计，省略完整 sources 以节省 token
     return json.dumps(
         {
