@@ -13,6 +13,22 @@ vi.mock('@/utils/wikiRender', () => ({
   parseSlugFromHash: vi.fn(() => null),
 }))
 
+// S16-1：mock useCollab 避免 WikiView 测试触发真实 WebSocket
+vi.mock('@/composables/useCollab', () => ({
+  useCollab: () => ({
+    onlineUsers: { value: [] },
+    lockHolder: { value: null },
+    connectionState: { value: 'disconnected' },
+    lastError: { value: '' },
+    hasLock: { value: false },
+    onlineCount: { value: 0 },
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    acquireLock: vi.fn(),
+    releaseLock: vi.fn(),
+  }),
+}))
+
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
 import WikiView from '@/views/WikiView.vue'
 import '@/test/setup'

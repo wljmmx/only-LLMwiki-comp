@@ -50,6 +50,7 @@ config.global.stubs = {
   NBadge: true,
   NBackTop: true,
   NButton: true,
+  NText: true,
 }
 
 // 副作用导入，导出为空

@@ -5,6 +5,8 @@ import type { TreeOption } from 'naive-ui'
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
 import { renderWikiMarkdown, parseSlugFromHash } from '@/utils/wikiRender'
 import type { WikiPage, BacklinkItem } from '@/types/api'
+// S16-1：协作面板（实时在线用户 + 编辑锁状态）
+import CollabPanel from '@/components/collab/CollabPanel.vue'
 
 const treeLoading = ref(true)
 const contentLoading = ref(false)
@@ -161,6 +163,13 @@ onMounted(() => {
                 </template>
               </NSpace>
             </div>
+            <!-- S16-1：协作面板（随 selectedKey 变化重建，触发 useCollab 重连） -->
+            <CollabPanel
+              v-if="selectedKey"
+              :key="selectedKey"
+              :slug="selectedKey"
+              class="collab-panel-wrapper"
+            />
             <div class="page-content" @click="handleContentClick" v-html="renderedContent"></div>
             <div v-if="backlinks.length > 0" class="backlinks-section">
               <div class="backlinks-title">反向链接</div>
@@ -267,6 +276,10 @@ onMounted(() => {
   font-size: 15px;
   line-height: 1.8;
   color: var(--n-text-color, #1f2937);
+}
+
+.collab-panel-wrapper {
+  margin-bottom: 24px;
 }
 
 .page-content :deep(h1) {
