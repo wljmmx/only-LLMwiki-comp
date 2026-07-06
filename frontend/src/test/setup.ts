@@ -18,6 +18,7 @@ config.global.stubs = {
   NIcon: true,
   NPopover: true,
   NTooltip: true,
+  NPopconfirm: true,
   NDivider: true,
   NEmpty: true,
   NPagination: true,

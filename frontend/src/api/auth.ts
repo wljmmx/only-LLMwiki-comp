@@ -102,6 +102,11 @@ export async function deleteUser(userId: number): Promise<{ deleted: boolean; us
   return await api.delete(`/auth/users/${userId}`)
 }
 
+/** 清理过期 session（admin） */
+export async function cleanupSessions(): Promise<{ cleaned: number }> {
+  return await api.post('/auth/cleanup')
+}
+
 /** OIDC 状态 */
 export async function getOIDCStatus(): Promise<OIDCStatusResponse> {
   return await api.get('/auth/oidc/status')
@@ -126,7 +131,7 @@ export async function checkAuthRequired(): Promise<boolean> {
   // 通过 /auth/me 判断：返回 authenticated=false 且无 401 → dev 模式放行
   // 返回 401 → 需要登录
   try {
-    const me = await getMe()
+    await getMe()
     // authenticated=false 表示 dev/legacy 模式放行，不需要登录
     // 但如果有 token 且 authenticated=true，也不需要登录
     return false

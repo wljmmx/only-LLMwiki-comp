@@ -118,6 +118,12 @@ const routes = [
         component: () => import('@/views/McpView.vue'),
         meta: { title: 'MCP 浏览器', icon: 'mcp' },
       },
+      {
+        path: 'users',
+        name: 'users',
+        component: () => import('@/views/UsersView.vue'),
+        meta: { title: '用户管理', icon: 'users' },
+      },
     ],
   },
 ]

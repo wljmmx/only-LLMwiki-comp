@@ -22,7 +22,6 @@ const form = reactive({
   username: '',
   password: '',
 })
-const formRef = ref()
 const submitting = ref(false)
 const errorMessage = ref('')
 const redirect = ref<string>((route.query.redirect as string) || '/dashboard')

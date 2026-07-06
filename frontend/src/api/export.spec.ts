@@ -101,7 +101,7 @@ describe('api/export.ts', () => {
       const anchors: HTMLAnchorElement[] = []
       vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
         const el = realCreate(tag)
-        if (tag.toLowerCase() === 'a') anchors.push(el)
+        if (tag.toLowerCase() === 'a') anchors.push(el as HTMLAnchorElement)
         return el
       })
       vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
