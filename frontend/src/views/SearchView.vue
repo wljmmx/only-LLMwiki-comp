@@ -53,19 +53,19 @@ function getScoreType(score: number): 'success' | 'info' | 'warning' | 'default'
         size="large"
         placeholder="输入关键词搜索知识库..."
         clearable
-        @keydown="handleKeydown"
         class="search-input"
+        @keydown="handleKeydown"
       >
         <template #prefix>
-          <span style="font-size: 18px;">🔍</span>
+          <span style="font-size: 18px">🔍</span>
         </template>
       </n-input>
       <n-button
         type="primary"
         size="large"
-        @click="handleSearch"
         :loading="loading"
         class="search-btn"
+        @click="handleSearch"
       >
         搜索
       </n-button>
@@ -85,17 +85,14 @@ function getScoreType(score: number): 'success' | 'info' | 'warning' | 'default'
       <div v-else>
         <div v-if="total > 0" class="results-header">
           <span class="results-count">
-            找到 <strong>{{ total }}</strong> 条结果
+            找到
+            <strong>{{ total }}</strong>
+            条结果
           </span>
         </div>
 
         <n-space vertical :size="16" class="results-list">
-          <n-card
-            v-for="item in results"
-            :key="item.id"
-            hoverable
-            class="result-card"
-          >
+          <n-card v-for="item in results" :key="item.id" hoverable class="result-card">
             <div class="card-header">
               <span class="result-title">{{ item.title }}</span>
               <n-tag :type="getScoreType(item.score)" size="small">
@@ -189,7 +186,9 @@ function getScoreType(score: number): 'success' | 'info' | 'warning' | 'default'
 }
 
 .result-card {
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
 .result-card:hover {

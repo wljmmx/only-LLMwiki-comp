@@ -20,13 +20,7 @@ import {
   useMessage,
   type DataTableColumns,
 } from 'naive-ui'
-import {
-  listChanges,
-  getChange,
-  correlateChanges,
-  ingestChanges,
-  type Change,
-} from '@/api/aiops'
+import { listChanges, getChange, correlateChanges, ingestChanges, type Change } from '@/api/aiops'
 
 const message = useMessage()
 
@@ -75,7 +69,10 @@ function tagSeverity(s?: string) {
   return severityTagType[s || ''] || 'default'
 }
 
-const changeTypeColor: Record<string, 'default' | 'info' | 'success' | 'warning' | 'error' | 'primary'> = {
+const changeTypeColor: Record<
+  string,
+  'default' | 'info' | 'success' | 'warning' | 'error' | 'primary'
+> = {
   deployment: 'primary',
   config_change: 'warning',
   migration: 'info',
@@ -129,14 +126,19 @@ const columns = computed<DataTableColumns<Change>>(() => [
     key: 'severity',
     width: 90,
     render: (row) =>
-      h(NTag, { type: tagSeverity(row.severity), size: 'small' }, { default: () => row.severity || '-' }),
+      h(
+        NTag,
+        { type: tagSeverity(row.severity), size: 'small' },
+        { default: () => row.severity || '-' },
+      ),
   },
   {
     title: '状态',
     key: 'status',
     width: 110,
     render: (row) => {
-      const t = row.status === 'completed' ? 'success' : row.status === 'failed' ? 'error' : 'warning'
+      const t =
+        row.status === 'completed' ? 'success' : row.status === 'failed' ? 'error' : 'warning'
       return h(NTag, { type: t, size: 'small' }, { default: () => row.status || '-' })
     },
   },
@@ -158,7 +160,11 @@ const columns = computed<DataTableColumns<Change>>(() => [
     render: (row) =>
       h(
         NButton,
-        { size: 'small', quaternary: true, onClick: () => openDetail(row.change_id || row.id || '') },
+        {
+          size: 'small',
+          quaternary: true,
+          onClick: () => openDetail(row.change_id || row.id || ''),
+        },
         { default: () => '详情' },
       ),
   },
@@ -196,10 +202,7 @@ async function handleCorrelate() {
   correlateLoading.value = true
   correlateResult.value = null
   try {
-    const res = await correlateChanges(
-      correlateForm.sinceHours,
-      correlateForm.timeWindowMinutes,
-    )
+    const res = await correlateChanges(correlateForm.sinceHours, correlateForm.timeWindowMinutes)
     correlateResult.value = res
     message.success('关联完成')
   } catch (err: any) {
@@ -252,28 +255,20 @@ onMounted(() => {
             v-model:value="serviceFilter"
             placeholder="按服务过滤"
             size="small"
-            style="width: 200px;"
+            style="width: 200px"
             clearable
             @keyup.enter="loadChanges"
           />
           <n-button quaternary size="small" @click="loadChanges">刷新</n-button>
-          <n-button size="small" type="primary" @click="ingestVisible = true">
-            录入变更
-          </n-button>
-          <n-button size="small" type="warning" @click="correlateVisible = true">
-            关联分析
-          </n-button>
+          <n-button size="small" type="primary" @click="ingestVisible = true">录入变更</n-button>
+          <n-button size="small" type="warning" @click="correlateVisible = true">关联分析</n-button>
         </n-space>
       </template>
 
       <div v-if="loading" class="loading-container">
         <n-spin size="large" />
       </div>
-      <n-empty
-        v-else-if="!changes.length"
-        description="暂无变更记录"
-        style="padding: 60px 0;"
-      />
+      <n-empty v-else-if="!changes.length" description="暂无变更记录" style="padding: 60px 0" />
       <n-data-table
         v-else
         :columns="columns"
@@ -313,7 +308,13 @@ onMounted(() => {
             </n-descriptions-item>
             <n-descriptions-item label="状态">
               <n-tag
-                :type="currentChange.status === 'completed' ? 'success' : currentChange.status === 'failed' ? 'error' : 'warning'"
+                :type="
+                  currentChange.status === 'completed'
+                    ? 'success'
+                    : currentChange.status === 'failed'
+                      ? 'error'
+                      : 'warning'
+                "
                 size="small"
               >
                 {{ currentChange.status || '-' }}
@@ -332,9 +333,14 @@ onMounted(() => {
               <code>{{ currentChange.rollback_of }}</code>
             </n-descriptions-item>
             <n-descriptions-item v-if="currentChange.attributes" label="附加属性">
-              <pre style="font-size: 12px; margin: 0; white-space: pre-wrap;">{{ JSON.stringify(currentChange.attributes, null, 2) }}</pre>
+              <pre style="font-size: 12px; margin: 0; white-space: pre-wrap">{{
+                JSON.stringify(currentChange.attributes, null, 2)
+              }}</pre>
             </n-descriptions-item>
-            <n-descriptions-item v-if="currentChange.related_incidents?.length" label="关联 Incident">
+            <n-descriptions-item
+              v-if="currentChange.related_incidents?.length"
+              label="关联 Incident"
+            >
               <n-space :size="4">
                 <n-tag
                   v-for="inc in currentChange.related_incidents"
@@ -356,7 +362,7 @@ onMounted(() => {
       v-model:show="correlateVisible"
       preset="card"
       title="变更 ↔ Incident 关联分析"
-      style="width: 700px; max-width: 95vw;"
+      style="width: 700px; max-width: 95vw"
     >
       <n-form label-placement="left" :show-feedback="false" inline>
         <n-form-item label="时间范围（小时）">
@@ -376,7 +382,7 @@ onMounted(() => {
         <n-spin size="large" />
       </div>
       <template v-else-if="correlateResult">
-        <n-descriptions :column="2" bordered size="small" style="margin-top: 16px;">
+        <n-descriptions :column="2" bordered size="small" style="margin-top: 16px">
           <n-descriptions-item label="扫描变更数">
             {{ correlateResult.changes_scanned ?? correlateResult.total_changes ?? '-' }}
           </n-descriptions-item>
@@ -384,7 +390,17 @@ onMounted(() => {
             {{ correlateResult.correlations?.length ?? correlateResult.total_correlations ?? '-' }}
           </n-descriptions-item>
         </n-descriptions>
-        <pre style="margin-top: 12px; font-size: 12px; background: #f5f5f5; padding: 8px; border-radius: 4px; max-height: 400px; overflow: auto;">{{ JSON.stringify(correlateResult, null, 2) }}</pre>
+        <pre
+          style="
+            margin-top: 12px;
+            font-size: 12px;
+            background: #f5f5f5;
+            padding: 8px;
+            border-radius: 4px;
+            max-height: 400px;
+            overflow: auto;
+          "
+          >{{ JSON.stringify(correlateResult, null, 2) }}</pre>
       </template>
     </n-modal>
 
@@ -393,9 +409,9 @@ onMounted(() => {
       v-model:show="ingestVisible"
       preset="card"
       title="录入变更事件"
-      style="width: 700px; max-width: 95vw;"
+      style="width: 700px; max-width: 95vw"
     >
-      <p style="font-size: 13px; color: #888; margin: 0 0 8px;">
+      <p style="font-size: 13px; color: #888; margin: 0 0 8px">
         请粘贴变更事件 JSON 数组，字段说明见 API 文档
       </p>
       <n-input
@@ -403,13 +419,11 @@ onMounted(() => {
         type="textarea"
         :rows="14"
         placeholder="[{...}]"
-        style="font-family: monospace; font-size: 12px;"
+        style="font-family: monospace; font-size: 12px"
       />
-      <n-space style="margin-top: 12px;" justify="end">
+      <n-space style="margin-top: 12px" justify="end">
         <n-button @click="ingestVisible = false">取消</n-button>
-        <n-button type="primary" :loading="ingestLoading" @click="handleIngest">
-          提交
-        </n-button>
+        <n-button type="primary" :loading="ingestLoading" @click="handleIngest">提交</n-button>
       </n-space>
     </n-modal>
   </div>

@@ -155,8 +155,7 @@ export async function callToolStream(
   progressToken?: any,
   signal?: AbortSignal,
 ): Promise<void> {
-  const token =
-    typeof localStorage !== 'undefined' ? localStorage.getItem('opskg_token') : null
+  const token = typeof localStorage !== 'undefined' ? localStorage.getItem('opskg_token') : null
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'text/event-stream',
@@ -187,6 +186,7 @@ export async function callToolStream(
   let buffer = ''
   let currentEvent = 'message'
 
+  // eslint-disable-next-line no-constant-condition
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
@@ -198,7 +198,7 @@ export async function callToolStream(
 
     for (const frame of frames) {
       const lines = frame.split('\n')
-      let dataLines: string[] = []
+      const dataLines: string[] = []
       currentEvent = 'message'
       for (const line of lines) {
         if (line.startsWith('event:')) {

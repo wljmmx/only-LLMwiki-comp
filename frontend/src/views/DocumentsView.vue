@@ -17,12 +17,7 @@ import {
   useMessage,
 } from 'naive-ui'
 import type { UploadCustomRequestOptions } from 'naive-ui'
-import {
-  listDocuments,
-  deleteDocument,
-  parseDocument,
-  getDocumentContent,
-} from '@/api/documents'
+import { listDocuments, deleteDocument, parseDocument, getDocumentContent } from '@/api/documents'
 import type { DocumentMeta } from '@/types/api'
 
 const message = useMessage()
@@ -78,9 +73,7 @@ const filteredDocuments = computed(() => {
   let result = [...documents.value]
   if (searchText.value) {
     const keyword = searchText.value.toLowerCase()
-    result = result.filter((doc) =>
-      doc.filename.toLowerCase().includes(keyword),
-    )
+    result = result.filter((doc) => doc.filename.toLowerCase().includes(keyword))
   }
   return result
 })
@@ -112,7 +105,11 @@ const columns = [
     key: 'status',
     width: 100,
     render(row: DocumentMeta) {
-      return h(NTag, { type: statusTagType[row.status], size: 'small' }, { default: () => statusText[row.status] })
+      return h(
+        NTag,
+        { type: statusTagType[row.status], size: 'small' },
+        { default: () => statusText[row.status] },
+      )
     },
   },
   {
@@ -128,12 +125,24 @@ const columns = [
     key: 'actions',
     width: 160,
     render(row: DocumentMeta) {
-      return h(NSpace, { size: 'small' }, {
-        default: () => [
-          h(NButton, { size: 'small', type: 'primary', quaternary: true, onClick: () => handleView(row) }, { default: () => '查看' }),
-          h(NButton, { size: 'small', type: 'error', quaternary: true, onClick: () => handleDelete(row) }, { default: () => '删除' }),
-        ],
-      })
+      return h(
+        NSpace,
+        { size: 'small' },
+        {
+          default: () => [
+            h(
+              NButton,
+              { size: 'small', type: 'primary', quaternary: true, onClick: () => handleView(row) },
+              { default: () => '查看' },
+            ),
+            h(
+              NButton,
+              { size: 'small', type: 'error', quaternary: true, onClick: () => handleDelete(row) },
+              { default: () => '删除' },
+            ),
+          ],
+        },
+      )
     },
   },
 ]
@@ -249,12 +258,7 @@ onMounted(() => {
   <div class="documents-view">
     <div class="toolbar">
       <NSpace align="center" wrap>
-        <NUpload
-          :show-file-list="false"
-          :custom-request="handleUpload"
-          drag
-          class="upload-dragger"
-        >
+        <NUpload :show-file-list="false" :custom-request="handleUpload" drag class="upload-dragger">
           <div class="upload-area">
             <div class="upload-icon">📤</div>
             <div class="upload-text">点击或拖拽文件到此处上传</div>

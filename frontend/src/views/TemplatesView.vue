@@ -240,8 +240,7 @@ async function doRender() {
     const res = await renderTemplate(renderSlug.value, variables)
     renderOutput.value = res.rendered
   } catch (err: any) {
-    renderError.value =
-      err?.response?.data?.detail || err?.message || '渲染失败'
+    renderError.value = err?.response?.data?.detail || err?.message || '渲染失败'
   } finally {
     renderLoading.value = false
   }
@@ -258,8 +257,8 @@ onMounted(() => {
       <h2 class="page-title">模板管理</h2>
       <p class="page-desc">
         <span>内置运维 / 故障 / 配置等模板，支持 Mustache 风格变量占位渲染（</span>
-        <code v-pre>{{variable}}</code>
-        <span> / </span>
+        <code v-pre>{{ variable }}</code>
+        <span>/</span>
         <code v-pre>{{#list}}...{{/list}}</code>
         <span>）</span>
       </p>
@@ -273,7 +272,7 @@ onMounted(() => {
             v-model:value="categoryFilter"
             :options="categoryOptions"
             size="small"
-            style="width: 180px;"
+            style="width: 180px"
             placeholder="分类筛选"
             @update:value="loadTemplates"
           />
@@ -288,7 +287,12 @@ onMounted(() => {
           >
             新建模板
           </n-button>
-          <n-alert v-if="!isAuthenticated" type="info" :show-icon="false" style="font-size: 12px; padding: 4px 10px;">
+          <n-alert
+            v-if="!isAuthenticated"
+            type="info"
+            :show-icon="false"
+            style="font-size: 12px; padding: 4px 10px"
+          >
             未登录，编辑/删除/创建需先登录获取 token
           </n-alert>
         </n-space>
@@ -298,20 +302,10 @@ onMounted(() => {
         <n-spin size="large" />
       </div>
 
-      <n-empty
-        v-else-if="!templates.length"
-        description="暂无模板数据"
-        style="padding: 60px 0;"
-      />
+      <n-empty v-else-if="!templates.length" description="暂无模板数据" style="padding: 60px 0" />
 
       <n-space v-else vertical :size="8">
-        <n-card
-          v-for="tpl in templates"
-          :key="tpl.slug"
-          size="small"
-          :bordered="true"
-          hoverable
-        >
+        <n-card v-for="tpl in templates" :key="tpl.slug" size="small" :bordered="true" hoverable>
           <div class="tpl-row">
             <div class="tpl-main">
               <n-space align="center" :size="8">
@@ -319,7 +313,10 @@ onMounted(() => {
                 <n-tag
                   size="small"
                   :bordered="false"
-                  :style="{ color: categoryColor[tpl.category] || '#999', background: 'transparent' }"
+                  :style="{
+                    color: categoryColor[tpl.category] || '#999',
+                    background: 'transparent',
+                  }"
                 >
                   {{ tpl.category }}
                 </n-tag>
@@ -331,9 +328,7 @@ onMounted(() => {
             </div>
             <n-space :size="6">
               <n-button size="small" quaternary @click="openDetail(tpl)">查看</n-button>
-              <n-button size="small" quaternary type="info" @click="openRender(tpl)">
-                渲染
-              </n-button>
+              <n-button size="small" quaternary type="info" @click="openRender(tpl)">渲染</n-button>
               <n-button
                 size="small"
                 quaternary
@@ -376,7 +371,10 @@ onMounted(() => {
               <n-tag
                 size="small"
                 :bordered="false"
-                :style="{ color: categoryColor[selectedTemplate.category] || '#999', background: 'transparent' }"
+                :style="{
+                  color: categoryColor[selectedTemplate.category] || '#999',
+                  background: 'transparent',
+                }"
               >
                 {{ selectedTemplate.category }}
               </n-tag>
@@ -396,19 +394,27 @@ onMounted(() => {
             </n-descriptions-item>
           </n-descriptions>
 
-          <h4 style="margin-top: 20px; margin-bottom: 8px;">模板内容</h4>
+          <h4 style="margin-top: 20px; margin-bottom: 8px">模板内容</h4>
           <n-code
             :code="selectedTemplate.content || ''"
             language="markdown"
             word-wrap
-            style="font-size: 13px; padding: 12px; border-radius: 6px; background: var(--n-color-target, #fafafa);"
+            style="
+              font-size: 13px;
+              padding: 12px;
+              border-radius: 6px;
+              background: var(--n-color-target, #fafafa);
+            "
           />
 
-          <n-space style="margin-top: 16px;" :size="8">
+          <n-space style="margin-top: 16px" :size="8">
             <n-button
               size="small"
               type="info"
-              @click="openRender(selectedTemplate); detailVisible = false"
+              @click="
+                openRender(selectedTemplate);
+                detailVisible = false;
+              "
             >
               渲染此模板
             </n-button>
@@ -416,7 +422,10 @@ onMounted(() => {
               size="small"
               type="warning"
               :disabled="!isAuthenticated"
-              @click="openEditor(selectedTemplate, 'edit'); detailVisible = false"
+              @click="
+                openEditor(selectedTemplate, 'edit');
+                detailVisible = false;
+              "
             >
               编辑
             </n-button>
@@ -430,7 +439,7 @@ onMounted(() => {
       v-model:show="editorVisible"
       preset="card"
       :title="editorMode === 'create' ? '新建模板' : `编辑模板: ${editorOriginalSlug}`"
-      style="width: 800px; max-width: 95vw;"
+      style="width: 800px; max-width: 95vw"
     >
       <n-form :label-width="90" label-placement="left" size="small">
         <n-form-item label="Slug" required>
@@ -459,8 +468,8 @@ onMounted(() => {
           />
         </n-form-item>
         <n-form-item label="内容" required>
-          <div v-if="editorIsBuiltin" style="margin-bottom: 6px;">
-            <n-alert type="warning" :show-icon="false" style="font-size: 12px; padding: 4px 10px;">
+          <div v-if="editorIsBuiltin" style="margin-bottom: 6px">
+            <n-alert type="warning" :show-icon="false" style="font-size: 12px; padding: 4px 10px">
               内置模板内容不可修改，仅可调整名称/分类/描述；如需自定义内容请创建副本
             </n-alert>
           </div>
@@ -470,7 +479,7 @@ onMounted(() => {
             :rows="14"
             placeholder="模板内容，支持 {{variable}} 与 {{#list}}...{{/list}} 占位"
             :disabled="editorIsBuiltin"
-            style="font-family: monospace; font-size: 13px;"
+            style="font-family: monospace; font-size: 13px"
           />
         </n-form-item>
       </n-form>
@@ -489,7 +498,7 @@ onMounted(() => {
       v-model:show="renderVisible"
       preset="card"
       :title="`渲染模板: ${renderSlug}`"
-      style="width: 900px; max-width: 95vw;"
+      style="width: 900px; max-width: 95vw"
     >
       <n-form :label-width="80" label-placement="left" size="small">
         <n-form-item label="变量 JSON">
@@ -498,27 +507,32 @@ onMounted(() => {
             type="textarea"
             :rows="8"
             placeholder='{"key": "value", "list": [{"a": 1}]}'
-            style="font-family: monospace; font-size: 13px;"
+            style="font-family: monospace; font-size: 13px"
           />
         </n-form-item>
         <n-space>
-          <n-button type="primary" :loading="renderLoading" @click="doRender">
-            渲染
-          </n-button>
+          <n-button type="primary" :loading="renderLoading" @click="doRender">渲染</n-button>
         </n-space>
       </n-form>
 
-      <n-alert v-if="renderError" type="error" style="margin-top: 12px;">
+      <n-alert v-if="renderError" type="error" style="margin-top: 12px">
         {{ renderError }}
       </n-alert>
 
-      <div v-if="renderOutput" style="margin-top: 12px;">
-        <h4 style="margin: 0 0 6px;">渲染结果</h4>
+      <div v-if="renderOutput" style="margin-top: 12px">
+        <h4 style="margin: 0 0 6px">渲染结果</h4>
         <n-code
           :code="renderOutput"
           language="markdown"
           word-wrap
-          style="font-size: 13px; padding: 12px; border-radius: 6px; background: var(--n-color-target, #fafafa); max-height: 400px; overflow: auto;"
+          style="
+            font-size: 13px;
+            padding: 12px;
+            border-radius: 6px;
+            background: var(--n-color-target, #fafafa);
+            max-height: 400px;
+            overflow: auto;
+          "
         />
       </div>
     </n-modal>

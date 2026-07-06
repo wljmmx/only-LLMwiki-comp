@@ -27,9 +27,7 @@ export function deleteDocument(docId: string) {
 }
 
 export function parseDocument(fmt: string, formData: FormData) {
-  return api.post<any, { doc_id: string; status: string }>(
-    `/parsers/parse/${fmt}`,
-    formData,
-    { headers: { 'Content-Type': 'multipart/form-data' } },
-  )
+  return api.post<any, { doc_id: string; status: string }>(`/parsers/parse/${fmt}`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
 }

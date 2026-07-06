@@ -24,7 +24,7 @@ const documentColumns = [
     title: '大小',
     key: 'size',
     width: 120,
-    render: (row: DocumentMeta) => formatFileSize(row.size)
+    render: (row: DocumentMeta) => formatFileSize(row.size),
   },
   {
     title: '状态',
@@ -35,23 +35,27 @@ const documentColumns = [
         uploaded: 'default',
         parsing: 'info',
         parsed: 'success',
-        failed: 'error'
+        failed: 'error',
       }
       const labelMap: Record<string, string> = {
         uploaded: '已上传',
         parsing: '解析中',
         parsed: '已解析',
-        failed: '失败'
+        failed: '失败',
       }
-      return h(NTag, { type: typeMap[row.status] || 'default' }, { default: () => labelMap[row.status] || row.status })
-    }
+      return h(
+        NTag,
+        { type: typeMap[row.status] || 'default' },
+        { default: () => labelMap[row.status] || row.status },
+      )
+    },
   },
   {
     title: '时间',
     key: 'created_at',
     width: 180,
-    render: (row: DocumentMeta) => formatDate(row.created_at)
-  }
+    render: (row: DocumentMeta) => formatDate(row.created_at),
+  },
 ]
 
 const reviewColumns = [
@@ -65,22 +69,26 @@ const reviewColumns = [
       const typeMap: Record<string, 'default' | 'info' | 'success' | 'error'> = {
         pending: 'info',
         approved: 'success',
-        rejected: 'error'
+        rejected: 'error',
       }
       const labelMap: Record<string, string> = {
         pending: '待审查',
         approved: '已通过',
-        rejected: '已拒绝'
+        rejected: '已拒绝',
       }
-      return h(NTag, { type: typeMap[row.status] || 'default' }, { default: () => labelMap[row.status] || row.status })
-    }
+      return h(
+        NTag,
+        { type: typeMap[row.status] || 'default' },
+        { default: () => labelMap[row.status] || row.status },
+      )
+    },
   },
   {
     title: '时间',
     key: 'created_at',
     width: 180,
-    render: (row: ReviewItem) => formatDate(row.created_at)
-  }
+    render: (row: ReviewItem) => formatDate(row.created_at),
+  },
 ]
 
 function formatFileSize(bytes: number): string {
@@ -96,21 +104,22 @@ function formatDate(dateStr: string): string {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
-    minute: '2-digit'
+    minute: '2-digit',
   })
 }
 
 async function fetchData() {
   loading.value = true
   try {
-    const [docStatsRes, graphStatsRes, reviewStatsRes, searchStatsRes, docListRes, reviewQueueRes] = await Promise.all([
-      getDocumentStats(),
-      api.get<any, GraphStats>('/graph/stats'),
-      getReviewStats(),
-      getSearchStats(),
-      listDocuments({ limit: 5 }),
-      getReviewQueue(undefined, 5, 0)
-    ])
+    const [docStatsRes, graphStatsRes, reviewStatsRes, searchStatsRes, docListRes, reviewQueueRes] =
+      await Promise.all([
+        getDocumentStats(),
+        api.get<any, GraphStats>('/graph/stats'),
+        getReviewStats(),
+        getSearchStats(),
+        listDocuments({ limit: 5 }),
+        getReviewQueue(undefined, 5, 0),
+      ])
 
     documentStats.value = docStatsRes
     graphStats.value = graphStatsRes
@@ -136,18 +145,12 @@ onMounted(() => {
       <NGrid :cols="4" :x-gap="16" :y-gap="16" class="stats-grid">
         <NGi>
           <NCard>
-            <NStatistic
-              label="文档总数"
-              :value="documentStats?.total ?? 0"
-            />
+            <NStatistic label="文档总数" :value="documentStats?.total ?? 0" />
           </NCard>
         </NGi>
         <NGi>
           <NCard>
-            <NStatistic
-              label="知识实体数"
-              :value="graphStats?.total_entities ?? 0"
-            />
+            <NStatistic label="知识实体数" :value="graphStats?.total_entities ?? 0" />
           </NCard>
         </NGi>
         <NGi>
@@ -161,10 +164,7 @@ onMounted(() => {
         </NGi>
         <NGi>
           <NCard>
-            <NStatistic
-              label="搜索索引数"
-              :value="searchStats?.total_indexed ?? 0"
-            />
+            <NStatistic label="搜索索引数" :value="searchStats?.total_indexed ?? 0" />
           </NCard>
         </NGi>
       </NGrid>

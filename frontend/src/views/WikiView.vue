@@ -1,15 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import {
-  NSplit,
-  NTree,
-  NCard,
-  NTag,
-  NSpace,
-  NSpin,
-  NEmpty,
-  NThing,
-} from 'naive-ui'
+import { NSplit, NTree, NCard, NTag, NSpace, NSpin, NEmpty, NThing } from 'naive-ui'
 import type { TreeOption } from 'naive-ui'
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
 import { renderWikiMarkdown, parseSlugFromHash } from '@/utils/wikiRender'
@@ -32,7 +23,10 @@ const typeLabelMap: Record<string, string> = {
   host: '主机',
 }
 
-const typeTagTypeMap: Record<string, 'default' | 'info' | 'success' | 'warning' | 'error' | 'primary'> = {
+const typeTagTypeMap: Record<
+  string,
+  'default' | 'info' | 'success' | 'warning' | 'error' | 'primary'
+> = {
   entity: 'primary',
   concept: 'info',
   incident: 'error',
@@ -89,10 +83,7 @@ async function loadPage(slug: string) {
   contentLoading.value = true
   backlinksLoading.value = true
   try {
-    const [page, bl] = await Promise.all([
-      getWikiPage(slug),
-      getWikiBacklinks(slug),
-    ])
+    const [page, bl] = await Promise.all([getWikiPage(slug), getWikiBacklinks(slug)])
     currentPage.value = page
     backlinks.value = bl
   } finally {
@@ -145,8 +136,8 @@ onMounted(() => {
             :selected-keys="selectedKey ? [selectedKey] : []"
             :default-expand-all="true"
             block-line
-            @update:selected-keys="(keys) => handleSelect(keys[0] as string)"
             class="wiki-tree"
+            @update:selected-keys="(keys) => handleSelect(keys[0] as string)"
           />
           <NEmpty v-if="!treeLoading && pages.length === 0" description="暂无页面" />
         </NCard>
@@ -170,7 +161,7 @@ onMounted(() => {
                 </template>
               </NSpace>
             </div>
-            <div class="page-content" v-html="renderedContent" @click="handleContentClick"></div>
+            <div class="page-content" @click="handleContentClick" v-html="renderedContent"></div>
             <div v-if="backlinks.length > 0" class="backlinks-section">
               <div class="backlinks-title">反向链接</div>
               <div class="backlinks-list">

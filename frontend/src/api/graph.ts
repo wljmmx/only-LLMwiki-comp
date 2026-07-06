@@ -86,9 +86,7 @@ export function searchGraph(q: string, limit = 20) {
  * GET /graph/entity/{name}
  */
 export function getGraphEntity(name: string) {
-  return api.get<any, GraphEntityDetail>(
-    `/graph/entity/${encodeURIComponent(name)}`,
-  )
+  return api.get<any, GraphEntityDetail>(`/graph/entity/${encodeURIComponent(name)}`)
 }
 
 /**

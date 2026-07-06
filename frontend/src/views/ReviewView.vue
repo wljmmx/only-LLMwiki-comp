@@ -89,7 +89,11 @@ const columns = [
     key: 'status',
     width: 100,
     render(row: ReviewItem) {
-      return h(NTag, { type: statusTagType[row.status], size: 'small' }, { default: () => statusText[row.status] })
+      return h(
+        NTag,
+        { type: statusTagType[row.status], size: 'small' },
+        { default: () => statusText[row.status] },
+      )
     },
   },
   {
@@ -112,12 +116,24 @@ const columns = [
     width: 160,
     render(row: ReviewItem) {
       const disabled = row.status !== 'pending'
-      return h(NSpace, { size: 'small' }, {
-        default: () => [
-          h(NButton, { size: 'small', type: 'primary', disabled, onClick: () => handleApprove(row.id) }, { default: () => '批准' }),
-          h(NButton, { size: 'small', type: 'error', disabled, onClick: () => handleReject(row) }, { default: () => '拒绝' }),
-        ],
-      })
+      return h(
+        NSpace,
+        { size: 'small' },
+        {
+          default: () => [
+            h(
+              NButton,
+              { size: 'small', type: 'primary', disabled, onClick: () => handleApprove(row.id) },
+              { default: () => '批准' },
+            ),
+            h(
+              NButton,
+              { size: 'small', type: 'error', disabled, onClick: () => handleReject(row) },
+              { default: () => '拒绝' },
+            ),
+          ],
+        },
+      )
     },
   },
 ]
@@ -254,8 +270,8 @@ onMounted(() => {
             批量批准 ({{ checkedRowKeys.length }})
           </NButton>
           <NSelect
-            :options="statusOptions"
             v-model:value="statusFilter"
+            :options="statusOptions"
             style="width: 150px"
             @update:value="handleStatusChange"
           />
@@ -263,11 +279,11 @@ onMounted(() => {
       </div>
 
       <NDataTable
+        v-model:checked-row-keys="checkedRowKeys"
         :columns="columns"
         :data="items"
         :loading="loading"
         :row-key="(row: ReviewItem) => row.id"
-        v-model:checked-row-keys="checkedRowKeys"
         :pagination="{
           itemCount: total,
           pageSize: limit,
@@ -293,7 +309,8 @@ onMounted(() => {
     >
       <div class="reject-form">
         <p v-if="currentRejectItem" class="reject-item">
-          拒绝项目：<strong>{{ currentRejectItem.title }}</strong>
+          拒绝项目：
+          <strong>{{ currentRejectItem.title }}</strong>
         </p>
         <NInput
           v-model:value="rejectReason"

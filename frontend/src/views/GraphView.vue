@@ -372,15 +372,11 @@ onMounted(() => {
             v-model:value="entityTypeFilter"
             :options="entityTypeOptions"
             size="small"
-            style="width: 200px;"
+            style="width: 200px"
             placeholder="实体类型"
           />
-          <n-button quaternary size="small" :loading="loading" @click="loadGraph">
-            刷新
-          </n-button>
-          <n-button size="small" @click="() => fitView({ padding: 0.2 })">
-            适配视图
-          </n-button>
+          <n-button quaternary size="small" :loading="loading" @click="loadGraph">刷新</n-button>
+          <n-button size="small" @click="() => fitView({ padding: 0.2 })">适配视图</n-button>
         </n-space>
       </template>
 
@@ -389,7 +385,7 @@ onMounted(() => {
           v-model:value="searchKeyword"
           size="small"
           placeholder="搜索实体名（按回车）"
-          style="width: 280px;"
+          style="width: 280px"
           clearable
           @keyup.enter="doSearch"
         />
@@ -408,7 +404,7 @@ onMounted(() => {
         </n-space>
       </div>
 
-      <n-alert v-if="neo4jError" type="warning" style="margin: 8px 0;">
+      <n-alert v-if="neo4jError" type="warning" style="margin: 8px 0">
         Neo4j 不可用：{{ neo4jError }}
       </n-alert>
 
@@ -419,7 +415,7 @@ onMounted(() => {
       <n-empty
         v-else-if="!graphData.nodes.length && !neo4jError"
         description="暂无图谱数据"
-        style="padding: 80px 0;"
+        style="padding: 80px 0"
       />
 
       <div v-else-if="graphData.nodes.length" class="flow-container">
@@ -437,11 +433,7 @@ onMounted(() => {
         <div class="legend">
           <div class="legend-title">节点类型</div>
           <div class="legend-grid">
-            <div
-              v-for="t in Object.keys(nodeTypeLabel)"
-              :key="t"
-              class="legend-item"
-            >
+            <div v-for="t in Object.keys(nodeTypeLabel)" :key="t" class="legend-item">
               <span class="legend-dot" :style="{ background: nodeTypeColor[t] }"></span>
               <span>{{ nodeTypeLabel[t] }} ({{ t }})</span>
             </div>
@@ -449,11 +441,7 @@ onMounted(() => {
           <div class="legend-divider"></div>
           <div class="legend-title">关系类型</div>
           <div class="legend-grid">
-            <div
-              v-for="r in Object.keys(relationColor)"
-              :key="r"
-              class="legend-item"
-            >
+            <div v-for="r in Object.keys(relationColor)" :key="r" class="legend-item">
               <span class="legend-line" :style="{ background: relationColor[r] }"></span>
               <span>{{ r }}</span>
             </div>
@@ -476,7 +464,10 @@ onMounted(() => {
             <n-descriptions-item label="类型">
               <n-tag
                 size="small"
-                :style="{ color: nodeTypeColor[selectedEntity.entity?.entity_type] || '#999', background: 'transparent' }"
+                :style="{
+                  color: nodeTypeColor[selectedEntity.entity?.entity_type] || '#999',
+                  background: 'transparent',
+                }"
                 :bordered="false"
               >
                 {{ selectedEntity.entity?.entity_type || '-' }}
@@ -489,11 +480,13 @@ onMounted(() => {
               <code>{{ selectedEntity.entity.source_doc_id }}</code>
             </n-descriptions-item>
             <n-descriptions-item v-if="selectedEntity.entity?.properties" label="属性">
-              <pre style="font-size: 12px; margin: 0; white-space: pre-wrap;">{{ JSON.stringify(selectedEntity.entity.properties, null, 2) }}</pre>
+              <pre style="font-size: 12px; margin: 0; white-space: pre-wrap">{{
+                JSON.stringify(selectedEntity.entity.properties, null, 2)
+              }}</pre>
             </n-descriptions-item>
           </n-descriptions>
 
-          <h4 style="margin-top: 20px; margin-bottom: 8px;">
+          <h4 style="margin-top: 20px; margin-bottom: 8px">
             相关节点 ({{ selectedEntity.related?.length || 0 }})
           </h4>
           <n-empty v-if="!selectedEntity.related?.length" description="无相关节点" />
@@ -505,22 +498,27 @@ onMounted(() => {
               :bordered="true"
             >
               <n-space align="center" :size="8" wrap>
-                <code style="font-size: 12px;">{{ rel.source }}</code>
-                <n-tag size="small" :bordered="false" :style="{ color: relationColor[rel.relation] || '#999', background: 'transparent' }">
+                <code style="font-size: 12px">{{ rel.source }}</code>
+                <n-tag
+                  size="small"
+                  :bordered="false"
+                  :style="{
+                    color: relationColor[rel.relation] || '#999',
+                    background: 'transparent',
+                  }"
+                >
                   → {{ rel.relation }} →
                 </n-tag>
-                <n-button
-                  size="tiny"
-                  quaternary
-                  type="info"
-                  @click="openEntityDetail(rel.target)"
-                >
+                <n-button size="tiny" quaternary type="info" @click="openEntityDetail(rel.target)">
                   {{ rel.target }}
                 </n-button>
                 <n-tag
                   size="small"
                   :bordered="false"
-                  :style="{ color: nodeTypeColor[rel.target_type] || '#999', background: 'transparent' }"
+                  :style="{
+                    color: nodeTypeColor[rel.target_type] || '#999',
+                    background: 'transparent',
+                  }"
                 >
                   {{ nodeTypeLabel[rel.target_type] || rel.target_type || '-' }}
                 </n-tag>

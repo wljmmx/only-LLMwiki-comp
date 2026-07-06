@@ -29,12 +29,7 @@ export function generateRunbook(payload: {
   return api.post<any, RunbookGenerateResult>('/runbook/generate', payload)
 }
 
-export function previewRunbook(
-  symptom: string,
-  service = '',
-  host = '',
-  maxDocs = 5,
-) {
+export function previewRunbook(symptom: string, service = '', host = '', maxDocs = 5) {
   return api.get<any, RunbookGenerateResult>('/runbook/preview', {
     params: { symptom, service, host, max_docs: maxDocs },
   })
@@ -127,10 +122,9 @@ export function correlateEvents(sinceMinutes = 60, maxEvents = 500) {
 }
 
 export function listIncidents(status: IncidentState | string = 'open', limit = 50) {
-  return api.get<any, { incidents: Incident[]; count: number }>(
-    '/events/incidents',
-    { params: { status, limit } },
-  )
+  return api.get<any, { incidents: Incident[]; count: number }>('/events/incidents', {
+    params: { status, limit },
+  })
 }
 
 export function getIncident(incidentId: string) {
@@ -150,72 +144,51 @@ export function transitionIncident(
   targetState: IncidentState | string,
   options: { note?: string; by?: string; assignee?: string } = {},
 ) {
-  return api.post<any, TransitionResult>(
-    `/events/incidents/${incidentId}/transition`,
-    {
-      target_state: targetState,
-      note: options.note ?? '',
-      by: options.by ?? '',
-      assignee: options.assignee,
-    },
-  )
+  return api.post<any, TransitionResult>(`/events/incidents/${incidentId}/transition`, {
+    target_state: targetState,
+    note: options.note ?? '',
+    by: options.by ?? '',
+    assignee: options.assignee,
+  })
 }
 
 export function ackIncident(
   incidentId: string,
   options: { note?: string; by?: string; assignee?: string } = {},
 ) {
-  return api.post<any, TransitionResult>(
-    `/events/incidents/${incidentId}/ack`,
-    options,
-  )
+  return api.post<any, TransitionResult>(`/events/incidents/${incidentId}/ack`, options)
 }
 
 export function investigateIncident(
   incidentId: string,
   options: { note?: string; by?: string; assignee?: string } = {},
 ) {
-  return api.post<any, TransitionResult>(
-    `/events/incidents/${incidentId}/investigate`,
-    options,
-  )
+  return api.post<any, TransitionResult>(`/events/incidents/${incidentId}/investigate`, options)
 }
 
 export function mitigateIncident(
   incidentId: string,
   options: { note?: string; by?: string; assignee?: string } = {},
 ) {
-  return api.post<any, TransitionResult>(
-    `/events/incidents/${incidentId}/mitigate`,
-    options,
-  )
+  return api.post<any, TransitionResult>(`/events/incidents/${incidentId}/mitigate`, options)
 }
 
 export function resolveIncident(
   incidentId: string,
   options: { note?: string; by?: string; assignee?: string } = {},
 ) {
-  return api.post<any, TransitionResult>(
-    `/events/incidents/${incidentId}/resolve`,
-    options,
-  )
+  return api.post<any, TransitionResult>(`/events/incidents/${incidentId}/resolve`, options)
 }
 
 /** Legacy close 端点（等价于 resolve） */
 export function closeIncident(incidentId: string, note = '') {
-  return api.post<any, any>(
-    `/events/incidents/${incidentId}/close`,
-    null,
-    { params: { note } },
-  )
+  return api.post<any, any>(`/events/incidents/${incidentId}/close`, null, { params: { note } })
 }
 
 export function incidentToRunbook(incidentId: string, publish = false) {
-  return api.post<any, RunbookGenerateResult>(
-    `/events/incidents/${incidentId}/runbook`,
-    null,
-    { params: { publish } },
-  )
+  return api.post<any, RunbookGenerateResult>(`/events/incidents/${incidentId}/runbook`, null, {
+    params: { publish },
+  })
 }
 
 export function getIncidentChanges(incidentId: string) {
@@ -295,10 +268,7 @@ export function rebuildTopology(maxDocs = 100) {
   })
 }
 
-export function getTopology(
-  nodeType?: string,
-  relation?: string,
-): Promise<TopologyData> {
+export function getTopology(nodeType?: string, relation?: string): Promise<TopologyData> {
   return api.get<any, TopologyData>('/topology', {
     params: { node_type: nodeType, relation },
   })

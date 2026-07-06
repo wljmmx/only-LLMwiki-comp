@@ -286,11 +286,12 @@ onMounted(() => {
     <div class="page-header">
       <h2 class="page-title">MCP 工具浏览器</h2>
       <p class="page-desc">
-        Model Context Protocol — 浏览 13 个工具 / 资源 / Prompt 模板，支持 JSON-RPC 调用与 SSE 流式响应
+        Model Context Protocol — 浏览 13 个工具 / 资源 / Prompt 模板，支持 JSON-RPC 调用与 SSE
+        流式响应
       </p>
     </div>
 
-    <n-alert v-if="!isAuthenticated" type="info" style="margin-bottom: 16px;">
+    <n-alert v-if="!isAuthenticated" type="info" style="margin-bottom: 16px">
       工具调用 / Prompt 渲染 / 资源读取需要登录 Token；列表查询在开发模式下放行
     </n-alert>
 
@@ -374,7 +375,10 @@ onMounted(() => {
                       </n-tag>
                     </n-space>
                   </n-descriptions-item>
-                  <n-descriptions-item v-if="selectedTool.inputSchema?.required?.length" label="必填参数">
+                  <n-descriptions-item
+                    v-if="selectedTool.inputSchema?.required?.length"
+                    label="必填参数"
+                  >
                     <n-space :size="4">
                       <n-tag
                         v-for="r in selectedTool.inputSchema.required"
@@ -388,27 +392,27 @@ onMounted(() => {
                   </n-descriptions-item>
                 </n-descriptions>
 
-                <n-collapse style="margin-top: 12px;">
+                <n-collapse style="margin-top: 12px">
                   <n-collapse-item title="inputSchema" name="schema">
                     <n-code
                       :code="JSON.stringify(selectedTool.inputSchema, null, 2)"
                       language="json"
                       word-wrap
-                      style="font-size: 12px; max-height: 240px; overflow: auto;"
+                      style="font-size: 12px; max-height: 240px; overflow: auto"
                     />
                   </n-collapse-item>
                 </n-collapse>
 
-                <h4 style="margin-top: 16px; margin-bottom: 6px;">参数（JSON）</h4>
+                <h4 style="margin-top: 16px; margin-bottom: 6px">参数（JSON）</h4>
                 <n-input
                   v-model:value="toolArgsText"
                   type="textarea"
                   :rows="8"
                   placeholder='{"key": "value"}'
-                  style="font-family: monospace; font-size: 13px;"
+                  style="font-family: monospace; font-size: 13px"
                 />
 
-                <n-space style="margin-top: 12px;" align="center" :size="12">
+                <n-space style="margin-top: 12px" align="center" :size="12">
                   <n-button
                     type="primary"
                     :loading="toolCalling"
@@ -418,15 +422,15 @@ onMounted(() => {
                     调用工具
                   </n-button>
                   <n-space align="center" :size="6">
-                    <span style="font-size: 12px; color: var(--n-text-color-2);">SSE 流式</span>
+                    <span style="font-size: 12px; color: var(--n-text-color-2)">SSE 流式</span>
                     <n-select
-                      v-model:value="(sseMode as any)"
+                      v-model:value="sseMode as any"
                       :options="[
                         { label: '关闭', value: 0 },
                         { label: '开启', value: 1 },
                       ]"
                       size="small"
-                      style="width: 100px;"
+                      style="width: 100px"
                       @update:value="(v: any) => (sseMode = !!v)"
                     />
                     <span v-if="sseMode" class="hint">长耗时工具推送 progress 事件</span>
@@ -434,35 +438,54 @@ onMounted(() => {
                 </n-space>
 
                 <!-- SSE 事件日志 -->
-                <div v-if="sseEvents.length" style="margin-top: 12px;">
-                  <h4 style="margin: 0 0 6px;">SSE 事件 ({{ sseEvents.length }})</h4>
+                <div v-if="sseEvents.length" style="margin-top: 12px">
+                  <h4 style="margin: 0 0 6px">SSE 事件 ({{ sseEvents.length }})</h4>
                   <div class="sse-log">
                     <div v-for="(ev, idx) in sseEvents" :key="idx" class="sse-line">
                       <n-tag
                         size="tiny"
-                        :type="ev.type === 'error' ? 'error' : ev.type === 'progress' ? 'info' : 'success'"
+                        :type="
+                          ev.type === 'error'
+                            ? 'error'
+                            : ev.type === 'progress'
+                              ? 'info'
+                              : 'success'
+                        "
                         :bordered="false"
                       >
                         {{ ev.type }}
                       </n-tag>
-                      <span class="sse-data">{{ typeof ev.data === 'string' ? ev.data : JSON.stringify(ev.data).slice(0, 200) }}</span>
+                      <span class="sse-data">
+                        {{
+                          typeof ev.data === 'string'
+                            ? ev.data
+                            : JSON.stringify(ev.data).slice(0, 200)
+                        }}
+                      </span>
                     </div>
                   </div>
                 </div>
 
                 <!-- 错误 -->
-                <n-alert v-if="toolError" type="error" style="margin-top: 12px;">
+                <n-alert v-if="toolError" type="error" style="margin-top: 12px">
                   {{ toolError }}
                 </n-alert>
 
                 <!-- 结果 -->
-                <div v-if="toolResult" style="margin-top: 12px;">
-                  <h4 style="margin: 0 0 6px;">结果</h4>
+                <div v-if="toolResult" style="margin-top: 12px">
+                  <h4 style="margin: 0 0 6px">结果</h4>
                   <n-code
                     :code="toolResult"
                     language="json"
                     word-wrap
-                    style="font-size: 12px; padding: 12px; border-radius: 6px; background: var(--n-color-target, #fafafa); max-height: 400px; overflow: auto;"
+                    style="
+                      font-size: 12px;
+                      padding: 12px;
+                      border-radius: 6px;
+                      background: var(--n-color-target, #fafafa);
+                      max-height: 400px;
+                      overflow: auto;
+                    "
                   />
                 </div>
               </template>
@@ -476,7 +499,12 @@ onMounted(() => {
             <div class="left-pane">
               <div class="pane-header">
                 <span>资源列表 ({{ resources.length }})</span>
-                <n-button quaternary size="small" :loading="resourcesLoading" @click="loadResources">
+                <n-button
+                  quaternary
+                  size="small"
+                  :loading="resourcesLoading"
+                  @click="loadResources"
+                >
                   刷新
                 </n-button>
               </div>
@@ -506,7 +534,10 @@ onMounted(() => {
                 <n-empty description="选择左侧资源查看内容" />
               </div>
               <template v-else>
-                <h4 style="margin: 0 0 8px;">资源: <code>{{ selectedResourceUri }}</code></h4>
+                <h4 style="margin: 0 0 8px">
+                  资源:
+                  <code>{{ selectedResourceUri }}</code>
+                </h4>
                 <div v-if="resourceLoading" class="loading-container">
                   <n-spin size="medium" />
                 </div>
@@ -515,7 +546,14 @@ onMounted(() => {
                   :code="resourceContent"
                   language="json"
                   word-wrap
-                  style="font-size: 12px; padding: 12px; border-radius: 6px; background: var(--n-color-target, #fafafa); max-height: 600px; overflow: auto;"
+                  style="
+                    font-size: 12px;
+                    padding: 12px;
+                    border-radius: 6px;
+                    background: var(--n-color-target, #fafafa);
+                    max-height: 600px;
+                    overflow: auto;
+                  "
                 />
               </template>
             </div>
@@ -581,16 +619,16 @@ onMounted(() => {
                   </n-descriptions-item>
                 </n-descriptions>
 
-                <h4 style="margin-top: 16px; margin-bottom: 6px;">参数（JSON）</h4>
+                <h4 style="margin-top: 16px; margin-bottom: 6px">参数（JSON）</h4>
                 <n-input
                   v-model:value="promptArgsText"
                   type="textarea"
                   :rows="6"
                   placeholder='{"key": "value"}'
-                  style="font-family: monospace; font-size: 13px;"
+                  style="font-family: monospace; font-size: 13px"
                 />
 
-                <n-space style="margin-top: 12px;" :size="12">
+                <n-space style="margin-top: 12px" :size="12">
                   <n-button
                     type="primary"
                     :loading="promptLoading"
@@ -601,13 +639,20 @@ onMounted(() => {
                   </n-button>
                 </n-space>
 
-                <div v-if="promptResult" style="margin-top: 12px;">
-                  <h4 style="margin: 0 0 6px;">渲染结果</h4>
+                <div v-if="promptResult" style="margin-top: 12px">
+                  <h4 style="margin: 0 0 6px">渲染结果</h4>
                   <n-code
                     :code="promptResult"
                     language="json"
                     word-wrap
-                    style="font-size: 12px; padding: 12px; border-radius: 6px; background: var(--n-color-target, #fafafa); max-height: 500px; overflow: auto;"
+                    style="
+                      font-size: 12px;
+                      padding: 12px;
+                      border-radius: 6px;
+                      background: var(--n-color-target, #fafafa);
+                      max-height: 500px;
+                      overflow: auto;
+                    "
                   />
                 </div>
               </template>

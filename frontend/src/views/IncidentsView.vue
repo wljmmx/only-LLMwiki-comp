@@ -74,14 +74,19 @@ const columns = computed<DataTableColumns<Incident>>(() => [
     title: '严重度',
     key: 'severity',
     width: 100,
-    render: (row) => h(NTag, { type: tagSeverity(row.severity), size: 'small' }, { default: () => row.severity }),
+    render: (row) =>
+      h(NTag, { type: tagSeverity(row.severity), size: 'small' }, { default: () => row.severity }),
   },
   {
     title: '状态',
     key: 'status',
     width: 100,
     render: (row) =>
-      h(NTag, { type: row.status === 'open' ? 'warning' : 'default', size: 'small' }, { default: () => row.status }),
+      h(
+        NTag,
+        { type: row.status === 'open' ? 'warning' : 'default', size: 'small' },
+        { default: () => row.status },
+      ),
   },
   {
     title: '告警数',
@@ -104,7 +109,11 @@ const columns = computed<DataTableColumns<Incident>>(() => [
     key: 'actions',
     width: 160,
     render: (row) =>
-      h(NButton, { size: 'small', quaternary: true, onClick: () => openDetail(row.incident_id) }, { default: () => '查看详情' }),
+      h(
+        NButton,
+        { size: 'small', quaternary: true, onClick: () => openDetail(row.incident_id) },
+        { default: () => '查看详情' },
+      ),
   },
 ])
 
@@ -214,7 +223,10 @@ onMounted(() => {
               :key="s"
               :type="statusFilter === s ? 'primary' : 'default'"
               size="small"
-              @click="statusFilter = s; loadIncidents()"
+              @click="
+                statusFilter = s;
+                loadIncidents();
+              "
             >
               {{ s === 'open' ? '开放' : s === 'closed' ? '已关闭' : '全部' }}
             </n-button>
@@ -226,11 +238,7 @@ onMounted(() => {
       <div v-if="loading" class="loading-container">
         <n-spin size="large" />
       </div>
-      <n-empty
-        v-else-if="!incidents.length"
-        description="暂无 incident"
-        style="padding: 60px 0;"
-      />
+      <n-empty v-else-if="!incidents.length" description="暂无 incident" style="padding: 60px 0" />
       <n-data-table
         v-else
         :columns="columns"
@@ -255,7 +263,10 @@ onMounted(() => {
                   <code>{{ currentIncident.incident_id }}</code>
                 </n-descriptions-item>
                 <n-descriptions-item label="状态">
-                  <n-tag :type="currentIncident.status === 'open' ? 'warning' : 'default'" size="small">
+                  <n-tag
+                    :type="currentIncident.status === 'open' ? 'warning' : 'default'"
+                    size="small"
+                  >
                     {{ currentIncident.status }}
                   </n-tag>
                 </n-descriptions-item>
@@ -274,14 +285,16 @@ onMounted(() => {
                   {{ formatTime(currentIncident.last_seen) }}
                 </n-descriptions-item>
                 <n-descriptions-item label="受影响主机" :span="2">
-                  <n-space :size="4" v-if="currentIncident.hosts?.length">
+                  <n-space v-if="currentIncident.hosts?.length" :size="4">
                     <n-tag v-for="h in currentIncident.hosts" :key="h" size="small">{{ h }}</n-tag>
                   </n-space>
                   <span v-else>-</span>
                 </n-descriptions-item>
                 <n-descriptions-item label="受影响服务" :span="2">
-                  <n-space :size="4" v-if="currentIncident.services?.length">
-                    <n-tag v-for="s in currentIncident.services" :key="s" size="small" type="info">{{ s }}</n-tag>
+                  <n-space v-if="currentIncident.services?.length" :size="4">
+                    <n-tag v-for="s in currentIncident.services" :key="s" size="small" type="info">
+                      {{ s }}
+                    </n-tag>
                   </n-space>
                   <span v-else>-</span>
                 </n-descriptions-item>
@@ -290,7 +303,7 @@ onMounted(() => {
                 </n-descriptions-item>
               </n-descriptions>
 
-              <n-space style="margin-top: 16px;" :size="8">
+              <n-space style="margin-top: 16px" :size="8">
                 <n-button
                   v-if="currentIncident.status === 'open'"
                   type="warning"
@@ -300,9 +313,7 @@ onMounted(() => {
                 >
                   关闭 Incident
                 </n-button>
-                <n-button size="small" @click="handleGenerateRunbook(false)">
-                  生成 Runbook
-                </n-button>
+                <n-button size="small" @click="handleGenerateRunbook(false)">生成 Runbook</n-button>
                 <n-button size="small" type="primary" @click="handleGenerateRunbook(true)">
                   生成并发布 Wiki
                 </n-button>
@@ -323,13 +334,13 @@ onMounted(() => {
                     <n-tag v-if="ch.severity" size="small" :type="tagSeverity(ch.severity)">
                       {{ ch.severity }}
                     </n-tag>
-                    <span style="font-size: 13px; font-weight: 600;">
+                    <span style="font-size: 13px; font-weight: 600">
                       {{ ch.description || ch.ticket_id || '-' }}
                     </span>
                   </n-space>
-                  <div style="font-size: 12px; color: #888; margin-top: 4px;">
+                  <div style="font-size: 12px; color: #888; margin-top: 4px">
                     {{ ch.author || '-' }} · {{ formatTime(ch.timestamp) }}
-                    <span v-if="ch.service"> · {{ ch.service }}</span>
+                    <span v-if="ch.service">· {{ ch.service }}</span>
                   </div>
                 </n-card>
               </n-space>
@@ -345,13 +356,23 @@ onMounted(() => {
                   <n-descriptions-item label="关联变更数">
                     {{ rollbackSuggestion.related_changes?.length || 0 }}
                   </n-descriptions-item>
-                  <n-descriptions-item label="风险等级" v-if="rollbackSuggestion.risk_level">
+                  <n-descriptions-item v-if="rollbackSuggestion.risk_level" label="风险等级">
                     <n-tag size="small" :type="tagSeverity(rollbackSuggestion.risk_level)">
                       {{ rollbackSuggestion.risk_level }}
                     </n-tag>
                   </n-descriptions-item>
                 </n-descriptions>
-                <pre v-if="rollbackSuggestion.detail" style="margin-top: 12px; font-size: 12px; background: #f5f5f5; padding: 8px; border-radius: 4px; overflow-x: auto;">{{ JSON.stringify(rollbackSuggestion, null, 2) }}</pre>
+                <pre
+                  v-if="rollbackSuggestion.detail"
+                  style="
+                    margin-top: 12px;
+                    font-size: 12px;
+                    background: #f5f5f5;
+                    padding: 8px;
+                    border-radius: 4px;
+                    overflow-x: auto;
+                  "
+                  >{{ JSON.stringify(rollbackSuggestion, null, 2) }}</pre>
               </div>
             </n-tab-pane>
 
@@ -369,12 +390,12 @@ onMounted(() => {
                 >
                   <n-space align="center" :size="6">
                     <n-tag size="small" :type="tagSeverity(ev.severity)">{{ ev.severity }}</n-tag>
-                    <span style="font-size: 13px;">{{ ev.message }}</span>
+                    <span style="font-size: 13px">{{ ev.message }}</span>
                   </n-space>
-                  <div style="font-size: 12px; color: #888; margin-top: 4px;">
+                  <div style="font-size: 12px; color: #888; margin-top: 4px">
                     {{ formatTime(ev.timestamp) }}
-                    <span v-if="ev.host"> · {{ ev.host }}</span>
-                    <span v-if="ev.service"> · {{ ev.service }}</span>
+                    <span v-if="ev.host">· {{ ev.host }}</span>
+                    <span v-if="ev.service">· {{ ev.service }}</span>
                   </div>
                 </n-card>
               </n-space>
@@ -389,14 +410,14 @@ onMounted(() => {
       v-model:show="runbookVisible"
       preset="card"
       title="Incident Runbook"
-      style="width: 800px; max-width: 95vw;"
+      style="width: 800px; max-width: 95vw"
     >
       <div v-if="runbookLoading" class="loading-container">
         <n-spin size="large" />
         <div class="loading-text">生成 Runbook 中...</div>
       </div>
       <template v-else>
-        <n-space v-if="runbookSlug" style="margin-bottom: 12px;" align="center">
+        <n-space v-if="runbookSlug" style="margin-bottom: 12px" align="center">
           <n-tag type="success" size="small">已发布 Wiki</n-tag>
           <code>{{ runbookSlug }}</code>
         </n-space>

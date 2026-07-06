@@ -227,7 +227,7 @@ onMounted(() => {
             v-model:value="nodeTypeFilter"
             :options="nodeTypeOptions"
             size="small"
-            style="width: 140px;"
+            style="width: 140px"
             placeholder="节点类型"
             @update:value="loadTopology"
           />
@@ -235,7 +235,7 @@ onMounted(() => {
             v-model:value="relationFilter"
             :options="relationOptions"
             size="small"
-            style="width: 140px;"
+            style="width: 140px"
             placeholder="关系类型"
             @update:value="loadTopology"
           />
@@ -243,18 +243,11 @@ onMounted(() => {
             v-model:value="searchKeyword"
             size="small"
             placeholder="搜索节点名"
-            style="width: 200px;"
+            style="width: 200px"
             clearable
           />
-          <n-button quaternary size="small" :loading="loading" @click="loadTopology">
-            刷新
-          </n-button>
-          <n-button
-            size="small"
-            type="warning"
-            :loading="rebuilding"
-            @click="handleRebuild"
-          >
+          <n-button quaternary size="small" :loading="loading" @click="loadTopology">刷新</n-button>
+          <n-button size="small" type="warning" :loading="rebuilding" @click="handleRebuild">
             重建拓扑
           </n-button>
         </n-space>
@@ -267,17 +260,14 @@ onMounted(() => {
       <n-empty
         v-else-if="!topology.nodes.length"
         description="暂无拓扑数据，请上传包含服务依赖信息的文档后点击「重建拓扑」"
-        style="padding: 80px 0;"
+        style="padding: 80px 0"
       />
 
       <div v-else class="topology-canvas">
         <svg :width="svgWidth" :height="svgHeight" class="topology-svg">
           <!-- 边 -->
           <g class="edges">
-            <g
-              v-for="(edge, idx) in filteredEdges"
-              :key="`edge-${idx}`"
-            >
+            <g v-for="(edge, idx) in filteredEdges" :key="`edge-${idx}`">
               <line
                 v-if="layoutNodes.placed[edge.source] && layoutNodes.placed[edge.target]"
                 :x1="layoutNodes.placed[edge.source].x"
@@ -335,15 +325,10 @@ onMounted(() => {
                 :stroke="nodeTypeColor[item.node.type] || '#999'"
                 stroke-width="1.5"
               />
-              <text
-                x="0"
-                y="-4"
-                font-size="12"
-                font-weight="600"
-                fill="#333"
-                text-anchor="middle"
-              >
-                {{ item.node.name.length > 16 ? item.node.name.slice(0, 14) + '…' : item.node.name }}
+              <text x="0" y="-4" font-size="12" font-weight="600" fill="#333" text-anchor="middle">
+                {{
+                  item.node.name.length > 16 ? item.node.name.slice(0, 14) + '…' : item.node.name
+                }}
               </text>
               <text
                 x="0"
@@ -406,35 +391,32 @@ onMounted(() => {
               </n-tag>
             </n-descriptions-item>
             <n-descriptions-item v-if="selectedNode.attributes" label="属性">
-              <pre style="font-size: 12px; margin: 0; white-space: pre-wrap;">{{ JSON.stringify(selectedNode.attributes, null, 2) }}</pre>
+              <pre style="font-size: 12px; margin: 0; white-space: pre-wrap">{{
+                JSON.stringify(selectedNode.attributes, null, 2)
+              }}</pre>
             </n-descriptions-item>
           </n-descriptions>
 
-          <n-space style="margin-top: 16px;" :size="8">
-            <n-button
-              size="small"
-              type="warning"
-              @click="runImpactForNode(selectedNode.name)"
-            >
+          <n-space style="margin-top: 16px" :size="8">
+            <n-button size="small" type="warning" @click="runImpactForNode(selectedNode.name)">
               影响分析
             </n-button>
           </n-space>
 
-          <h4 style="margin-top: 24px; margin-bottom: 8px;">邻居节点</h4>
+          <h4 style="margin-top: 24px; margin-bottom: 8px">邻居节点</h4>
           <n-empty v-if="!neighbors?.neighbors?.length" description="无邻居" />
           <n-space v-else vertical :size="6">
-            <n-card
-              v-for="nb in neighbors.neighbors"
-              :key="nb.name"
-              size="small"
-              :bordered="true"
-            >
+            <n-card v-for="nb in neighbors.neighbors" :key="nb.name" size="small" :bordered="true">
               <n-space align="center" :size="8">
                 <n-tag size="small" :style="{ color: nodeTypeColor[nb.type] }">
                   {{ nb.type }}
                 </n-tag>
-                <span style="font-weight: 600;">{{ nb.name }}</span>
-                <n-tag v-if="nb.direction" size="small" :type="nb.direction === 'upstream' ? 'info' : 'warning'">
+                <span style="font-weight: 600">{{ nb.name }}</span>
+                <n-tag
+                  v-if="nb.direction"
+                  size="small"
+                  :type="nb.direction === 'upstream' ? 'info' : 'warning'"
+                >
                   {{ nb.direction }}
                 </n-tag>
                 <n-tag v-if="nb.relation" size="small">{{ nb.relation }}</n-tag>
@@ -450,13 +432,13 @@ onMounted(() => {
       v-model:show="impactVisible"
       preset="card"
       :title="`影响分析: ${impactForNode}`"
-      style="width: 700px; max-width: 95vw;"
+      style="width: 700px; max-width: 95vw"
     >
       <div v-if="impactLoading" class="loading-container">
         <n-spin size="large" />
       </div>
       <template v-else-if="impactResult">
-        <n-alert v-if="impactResult.error" type="error" style="margin-bottom: 12px;">
+        <n-alert v-if="impactResult.error" type="error" style="margin-bottom: 12px">
           {{ impactResult.error }}
         </n-alert>
         <n-descriptions :column="1" bordered size="small">
@@ -471,18 +453,23 @@ onMounted(() => {
           </n-descriptions-item>
         </n-descriptions>
 
-        <div v-if="impactResult.upstream_affected?.length" style="margin-top: 12px;">
-          <h4 style="margin: 0 0 6px;">上游受影响节点</h4>
+        <div v-if="impactResult.upstream_affected?.length" style="margin-top: 12px">
+          <h4 style="margin: 0 0 6px">上游受影响节点</h4>
           <n-space :size="4">
             <n-tag v-for="n in impactResult.upstream_affected" :key="n" size="small" type="info">
               {{ n }}
             </n-tag>
           </n-space>
         </div>
-        <div v-if="impactResult.downstream_affected?.length" style="margin-top: 12px;">
-          <h4 style="margin: 0 0 6px;">下游受影响节点</h4>
+        <div v-if="impactResult.downstream_affected?.length" style="margin-top: 12px">
+          <h4 style="margin: 0 0 6px">下游受影响节点</h4>
           <n-space :size="4">
-            <n-tag v-for="n in impactResult.downstream_affected" :key="n" size="small" type="warning">
+            <n-tag
+              v-for="n in impactResult.downstream_affected"
+              :key="n"
+              size="small"
+              type="warning"
+            >
               {{ n }}
             </n-tag>
           </n-space>

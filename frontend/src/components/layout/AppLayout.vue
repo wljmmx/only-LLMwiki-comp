@@ -41,7 +41,7 @@ function toggleDark() {
           <span class="page-title">{{ pageTitle }}</span>
         </div>
         <div class="header-right">
-          <button class="icon-btn" @click="toggleDark" title="切换主题">
+          <button class="icon-btn" title="切换主题" @click="toggleDark">
             {{ appStore.darkMode ? '☀️' : '🌙' }}
           </button>
           <span class="user-avatar">👤</span>

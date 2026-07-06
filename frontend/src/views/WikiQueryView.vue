@@ -1,17 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import {
-  NInput,
-  NButton,
-  NCard,
-  NTag,
-  NSpace,
-  NSpin,
-  NEmpty,
-  NAlert,
-  NDivider,
-} from 'naive-ui'
+import { NInput, NButton, NCard, NTag, NSpace, NSpin, NEmpty, NAlert, NDivider } from 'naive-ui'
 import { queryWiki } from '@/api/wiki'
 import type { WikiQueryResult } from '@/api/wiki'
 
@@ -24,7 +14,7 @@ const result = ref<WikiQueryResult | null>(null)
 
 const hasError = computed(() => !!result.value?.error)
 const hasAnswer = computed(
-  () => !hasError.value && !!result.value && !result.value.insufficient_knowledge
+  () => !hasError.value && !!result.value && !result.value.insufficient_knowledge,
 )
 
 function handleQuery() {
@@ -88,16 +78,16 @@ function goToWikiPage(slug: string) {
         :rows="2"
         placeholder="输入你的问题，例如：Nginx 502 错误如何排查？"
         :disabled="loading"
-        @keydown="handleKeydown"
         class="search-input"
+        @keydown="handleKeydown"
       />
       <n-button
         type="primary"
         size="large"
         :loading="loading"
         :disabled="!question.trim()"
-        @click="handleQuery"
         class="search-btn"
+        @click="handleQuery"
       >
         提问
       </n-button>
@@ -115,7 +105,7 @@ function goToWikiPage(slug: string) {
       <div v-else-if="!asked" class="empty-wrapper">
         <n-empty description="输入问题，从 Wiki 知识库中获取结构化解答">
           <template #icon>
-            <span style="font-size: 48px;">💬</span>
+            <span style="font-size: 48px">💬</span>
           </template>
         </n-empty>
       </div>
@@ -123,12 +113,7 @@ function goToWikiPage(slug: string) {
       <!-- 结果区 -->
       <div v-else-if="result" class="result-content">
         <!-- 错误提示 -->
-        <n-alert
-          v-if="hasError"
-          type="error"
-          title="查询失败"
-          class="result-alert"
-        >
+        <n-alert v-if="hasError" type="error" title="查询失败" class="result-alert">
           {{ result.error }}
         </n-alert>
 
@@ -144,20 +129,13 @@ function goToWikiPage(slug: string) {
           </n-alert>
 
           <!-- 回答区域 -->
-          <n-card
-            v-if="hasAnswer"
-            title="回答"
-            class="answer-card"
-            :bordered="true"
-          >
+          <n-card v-if="hasAnswer" title="回答" class="answer-card" :bordered="true">
             <div class="answer-text">{{ result.answer }}</div>
           </n-card>
 
           <!-- 引用来源 -->
           <template v-if="hasAnswer && result.cited_slugs.length > 0">
-            <n-divider title-placement="left" class="section-divider">
-              引用来源
-            </n-divider>
+            <n-divider title-placement="left" class="section-divider">引用来源</n-divider>
             <div class="cited-list">
               <n-space :size="8" wrap>
                 <n-button
@@ -178,9 +156,7 @@ function goToWikiPage(slug: string) {
 
           <!-- 召回页面 -->
           <template v-if="hasAnswer && result.recalled_pages.length > 0">
-            <n-divider title-placement="left" class="section-divider">
-              召回页面
-            </n-divider>
+            <n-divider title-placement="left" class="section-divider">召回页面</n-divider>
             <n-space vertical :size="10" class="recalled-list">
               <n-card
                 v-for="page in result.recalled_pages"
@@ -321,7 +297,9 @@ function goToWikiPage(slug: string) {
 
 .recalled-card {
   cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
 .recalled-card:hover {

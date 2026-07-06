@@ -78,11 +78,7 @@ export function updateTemplate(
     description?: string
   },
 ) {
-  return api.put<any, Template>(
-    `/templates/${encodeURIComponent(slug)}`,
-    null,
-    { params: payload },
-  )
+  return api.put<any, Template>(`/templates/${encodeURIComponent(slug)}`, null, { params: payload })
 }
 
 /**
@@ -100,8 +96,5 @@ export function deleteTemplate(slug: string) {
  * POST /templates/{slug}/render  body: { variables: {...} }
  */
 export function renderTemplate(slug: string, variables: Record<string, any>) {
-  return api.post<any, RenderResult>(
-    `/templates/${encodeURIComponent(slug)}/render`,
-    variables,
-  )
+  return api.post<any, RenderResult>(`/templates/${encodeURIComponent(slug)}/render`, variables)
 }

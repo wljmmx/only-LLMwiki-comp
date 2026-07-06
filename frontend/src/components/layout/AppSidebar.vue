@@ -39,11 +39,6 @@ const menuItems: MenuOption[] = [
         icon: () => h('span', { style: 'font-size: 16px' }, '💬'),
       },
       {
-        label: '健康检查',
-        key: '/wiki-health',
-        icon: () => h('span', { style: 'font-size: 16px' }, '🩺'),
-      },
-      {
         label: '知识图谱',
         key: '/graph',
         icon: () => h('span', { style: 'font-size: 16px' }, '🕸️'),
@@ -51,33 +46,23 @@ const menuItems: MenuOption[] = [
     ],
   },
   {
-    label: '系统治理',
-    key: 'governance',
+    label: '质量治理',
+    key: 'quality',
     children: [
+      {
+        label: '健康检查',
+        key: '/wiki-health',
+        icon: () => h('span', { style: 'font-size: 16px' }, '🩺'),
+      },
       {
         label: '审查队列',
         key: '/review',
         icon: () => h('span', { style: 'font-size: 16px' }, '✅'),
       },
       {
-        label: '模板管理',
-        key: '/templates',
-        icon: () => h('span', { style: 'font-size: 16px' }, '📋'),
-      },
-      {
         label: '版本控制',
         key: '/versions',
         icon: () => h('span', { style: 'font-size: 16px' }, '🕒'),
-      },
-      {
-        label: '导出中心',
-        key: '/export',
-        icon: () => h('span', { style: 'font-size: 16px' }, '📤'),
-      },
-      {
-        label: 'MCP 浏览器',
-        key: '/mcp',
-        icon: () => h('span', { style: 'font-size: 16px' }, '🔌'),
       },
     ],
   },
@@ -98,12 +83,33 @@ const menuItems: MenuOption[] = [
       {
         label: '服务拓扑',
         key: '/topology',
-        icon: () => h('span', { style: 'font-size: 16px' }, '🕸️'),
+        icon: () => h('span', { style: 'font-size: 16px' }, '🔗'),
       },
       {
         label: 'Runbook 工作台',
         key: '/runbook',
         icon: () => h('span', { style: 'font-size: 16px' }, '🛠️'),
+      },
+    ],
+  },
+  {
+    label: '系统工具',
+    key: 'system',
+    children: [
+      {
+        label: '模板管理',
+        key: '/templates',
+        icon: () => h('span', { style: 'font-size: 16px' }, '📋'),
+      },
+      {
+        label: '导出中心',
+        key: '/export',
+        icon: () => h('span', { style: 'font-size: 16px' }, '📤'),
+      },
+      {
+        label: 'MCP 浏览器',
+        key: '/mcp',
+        icon: () => h('span', { style: 'font-size: 16px' }, '🔌'),
       },
     ],
   },

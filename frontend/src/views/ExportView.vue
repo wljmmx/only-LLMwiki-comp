@@ -12,12 +12,7 @@ import {
   NCode,
   useMessage,
 } from 'naive-ui'
-import {
-  exportDocument,
-  downloadBlob,
-  exportFormatOptions,
-  type ExportFormat,
-} from '@/api/export'
+import { exportDocument, downloadBlob, exportFormatOptions, type ExportFormat } from '@/api/export'
 import { listWikiDocs } from '@/api/versions'
 import { getTemplate } from '@/api/templates'
 
@@ -165,7 +160,7 @@ onMounted(() => {
       </p>
     </div>
 
-    <n-alert v-if="!isAuthenticated" type="info" style="margin-bottom: 16px;">
+    <n-alert v-if="!isAuthenticated" type="info" style="margin-bottom: 16px">
       导出需要登录 Token，未登录时按钮将禁用
     </n-alert>
 
@@ -194,7 +189,7 @@ onMounted(() => {
           <span v-else class="empty-hint">暂无已发布 Wiki 文档</span>
         </div>
 
-        <n-divider style="margin: 4px 0;" />
+        <n-divider style="margin: 4px 0" />
 
         <div>
           <div class="preset-label">从模板加载：</div>
@@ -218,7 +213,7 @@ onMounted(() => {
       </n-space>
     </n-card>
 
-    <n-card :bordered="true" style="margin-top: 16px;">
+    <n-card :bordered="true" style="margin-top: 16px">
       <template #header>
         <span>导出内容</span>
       </template>
@@ -228,7 +223,7 @@ onMounted(() => {
         <n-input
           v-model:value="title"
           placeholder="文档标题（影响导出文件名）"
-          style="max-width: 500px;"
+          style="max-width: 500px"
         />
       </div>
 
@@ -237,23 +232,23 @@ onMounted(() => {
         <n-select
           v-model:value="format"
           :options="exportFormatOptions.map((o) => ({ label: o.label, value: o.value }))"
-          style="max-width: 280px;"
+          style="max-width: 280px"
         />
         <span class="format-desc">{{ formatDesc }}</span>
       </div>
 
-      <div class="form-row" style="align-items: flex-start;">
+      <div class="form-row" style="align-items: flex-start">
         <label class="form-label">内容</label>
         <n-input
           v-model:value="content"
           type="textarea"
           :rows="16"
           placeholder="支持 Markdown 语法"
-          style="flex: 1; font-family: monospace; font-size: 13px;"
+          style="flex: 1; font-family: monospace; font-size: 13px"
         />
       </div>
 
-      <div class="form-row" style="margin-top: 12px;">
+      <div class="form-row" style="margin-top: 12px">
         <n-button
           type="primary"
           size="large"
@@ -267,7 +262,7 @@ onMounted(() => {
       </div>
     </n-card>
 
-    <n-card :bordered="true" style="margin-top: 16px;" size="small">
+    <n-card :bordered="true" style="margin-top: 16px" size="small">
       <template #header>
         <span>预览（原始 Markdown）</span>
       </template>
@@ -275,7 +270,14 @@ onMounted(() => {
         :code="content"
         language="markdown"
         word-wrap
-        style="font-size: 12px; padding: 12px; border-radius: 6px; background: var(--n-color-target, #fafafa); max-height: 300px; overflow: auto;"
+        style="
+          font-size: 12px;
+          padding: 12px;
+          border-radius: 6px;
+          background: var(--n-color-target, #fafafa);
+          max-height: 300px;
+          overflow: auto;
+        "
       />
     </n-card>
   </div>

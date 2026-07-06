@@ -92,19 +92,15 @@ function goToWiki(slug: string) {
           />
         </n-form-item>
         <n-space :size="12">
-          <n-form-item label="受影响服务" style="flex: 1; min-width: 200px;">
+          <n-form-item label="受影响服务" style="flex: 1; min-width: 200px">
             <n-input
               v-model:value="service"
               placeholder="可选，如 nginx / order-service"
               :disabled="loading"
             />
           </n-form-item>
-          <n-form-item label="受影响主机" style="flex: 1; min-width: 200px;">
-            <n-input
-              v-model:value="host"
-              placeholder="可选，如 web-prod-01"
-              :disabled="loading"
-            />
+          <n-form-item label="受影响主机" style="flex: 1; min-width: 200px">
+            <n-input v-model:value="host" placeholder="可选，如 web-prod-01" :disabled="loading" />
           </n-form-item>
         </n-space>
         <n-space :size="12" align="center">
@@ -142,7 +138,7 @@ function goToWiki(slug: string) {
       <div v-else-if="!result" class="empty-wrapper">
         <n-empty description="填写故障现象，点击「生成 Runbook」开始">
           <template #icon>
-            <span style="font-size: 48px;">🛠️</span>
+            <span style="font-size: 48px">🛠️</span>
           </template>
         </n-empty>
       </div>
@@ -161,7 +157,12 @@ function goToWiki(slug: string) {
           </n-space>
         </n-card>
 
-        <n-card v-if="result.sources?.length" title="引用来源" :bordered="true" class="sources-card">
+        <n-card
+          v-if="result.sources?.length"
+          title="引用来源"
+          :bordered="true"
+          class="sources-card"
+        >
           <n-space vertical :size="8">
             <div v-for="src in result.sources" :key="src.doc_id" class="source-item">
               <n-space align="center" :size="8">

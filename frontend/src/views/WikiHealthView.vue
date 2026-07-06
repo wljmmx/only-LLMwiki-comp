@@ -35,7 +35,10 @@ const activeTab = ref<'lint' | 'drift' | 'orphan'>('lint')
 const lintLoading = ref(false)
 const lintReport = ref<LintReport | null>(null)
 
-const typeTagMap: Record<string, { type: 'error' | 'warning' | 'info' | 'default' | 'success' | 'primary'; label: string }> = {
+const typeTagMap: Record<
+  string,
+  { type: 'error' | 'warning' | 'info' | 'default' | 'success' | 'primary'; label: string }
+> = {
   contradiction: { type: 'error', label: '矛盾' },
   stale: { type: 'warning', label: '过时' },
   orphan: { type: 'default', label: '孤岛' },
@@ -44,7 +47,10 @@ const typeTagMap: Record<string, { type: 'error' | 'warning' | 'info' | 'default
   empty_section: { type: 'default', label: '空章节' },
 }
 
-const severityTagMap: Record<string, { type: 'error' | 'warning' | 'info' | 'default'; label: string }> = {
+const severityTagMap: Record<
+  string,
+  { type: 'error' | 'warning' | 'info' | 'default'; label: string }
+> = {
   critical: { type: 'error', label: '严重' },
   warning: { type: 'warning', label: '警告' },
   info: { type: 'info', label: '提示' },
@@ -348,14 +354,13 @@ onMounted(() => {
               >
                 重编译所有 stale
               </NButton>
-              <NButton :loading="rebuildingIndex" @click="handleRebuildIndex">
-                重建索引
-              </NButton>
+              <NButton :loading="rebuildingIndex" @click="handleRebuildIndex">重建索引</NButton>
             </NSpace>
           </NCard>
 
           <NAlert type="info" :show-icon="true" class="hint-alert">
-            stale 页面指 wiki 页面 updated_at 早于其引用的 raw 文档 updated_at 的页面，需要重编译以保持同步。
+            stale 页面指 wiki 页面 updated_at 早于其引用的 raw 文档 updated_at
+            的页面，需要重编译以保持同步。
           </NAlert>
 
           <NCard class="table-card">
@@ -379,7 +384,8 @@ onMounted(() => {
       <NTabPane name="orphan" tab="孤岛页面">
         <div class="tab-content">
           <NAlert type="info" :show-icon="true" class="hint-alert">
-            孤岛页面指无任何入链（backlink 为空）且不在 index.md 中的页面，建议评估是否需要建立链接或归档。
+            孤岛页面指无任何入链（backlink 为空）且不在 index.md
+            中的页面，建议评估是否需要建立链接或归档。
           </NAlert>
 
           <NCard class="table-card">
