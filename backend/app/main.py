@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -13,6 +14,7 @@ import structlog
 from fastapi import FastAPI
 
 from app.config import get_settings
+from app.routers.auth_router import router as auth_router
 from app.routers.changes_router import router as changes_router
 from app.routers.documents_router import router as documents_router
 from app.routers.events_router import router as events_router
@@ -57,6 +59,17 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     from app.observability import start_metrics_collector
 
     collector_task = await start_metrics_collector(interval_seconds=30)
+    # P3-1：引导默认 admin 用户（首次启动）
+    try:
+        from app.auth.models import get_auth_store
+
+        admin_user = os.getenv("OPSKG_BOOTSTRAP_ADMIN_USER", "admin")
+        admin_pass = os.getenv("OPSKG_BOOTSTRAP_ADMIN_PASSWORD", "admin")
+        store = get_auth_store()
+        store.ensure_bootstrap_admin(admin_user, admin_pass)
+        logger.info("auth.bootstrap_ok", admin_user=admin_user)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("auth.bootstrap_failed", error=str(e))
     try:
         yield
     finally:
@@ -107,6 +120,7 @@ async def ready() -> dict[str, object]:
 
 
 # ────────── 业务域 APIRouter 聚合注册 ──────────
+app.include_router(auth_router)
 app.include_router(documents_router)
 app.include_router(parsers_router)
 app.include_router(search_router)
