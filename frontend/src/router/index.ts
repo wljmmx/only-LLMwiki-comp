@@ -73,6 +73,12 @@ const routes = [
         component: () => import('@/views/TopologyView.vue'),
         meta: { title: '服务拓扑', icon: 'topology' },
       },
+      {
+        path: 'templates',
+        name: 'templates',
+        component: () => import('@/views/TemplatesView.vue'),
+        meta: { title: '模板管理', icon: 'templates' },
+      },
     ],
   },
 ]

@@ -54,6 +54,11 @@ const menuItems: MenuOption[] = [
         key: '/review',
         icon: () => h('span', { style: 'font-size: 16px' }, '✅'),
       },
+      {
+        label: '模板管理',
+        key: '/templates',
+        icon: () => h('span', { style: 'font-size: 16px' }, '📋'),
+      },
     ],
   },
   {
