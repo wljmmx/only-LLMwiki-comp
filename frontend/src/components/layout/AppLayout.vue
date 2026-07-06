@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { NLayout, NLayoutSider, NLayoutHeader, NLayoutContent } from 'naive-ui'
 import AppSidebar from './AppSidebar.vue'
+import OnboardingTour from '@/components/onboarding/OnboardingTour.vue'
 import { useAppStore } from '@/stores/app'
-import { computed } from 'vue'
+import { useOnboardingStore } from '@/stores/onboarding'
+import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 
 const appStore = useAppStore()
 const route = useRoute()
+const onboardingStore = useOnboardingStore()
 const collapsed = computed(() => appStore.sidebarCollapsed)
 const pageTitle = computed(() => route.meta.title || 'OpsKG')
 
@@ -17,6 +20,19 @@ function handleToggle() {
 function toggleDark() {
   appStore.toggleDarkMode()
 }
+
+/** 重启引导（用户菜单"重新查看引导"可调用） */
+function restartTour() {
+  onboardingStore.resetTour()
+  onboardingStore.startTour()
+}
+
+defineExpose({ restartTour })
+
+// 首次访问自动启动 tour
+onMounted(() => {
+  onboardingStore.autoStartIfNeeded()
+})
 </script>
 
 <template>
@@ -53,6 +69,8 @@ function toggleDark() {
       </NLayoutContent>
     </NLayout>
   </NLayout>
+  <!-- Onboarding 引导 tour（首次访问自动启动） -->
+  <OnboardingTour />
 </template>
 
 <style scoped>
