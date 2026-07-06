@@ -90,6 +90,11 @@ from app.observability import setup_metrics_middleware  # noqa: E402
 
 setup_metrics_middleware(app)
 
+# 注册 OpenTelemetry 分布式追踪（默认关闭，OPSKG_TRACING_ENABLED=1 启用）
+from app.observability import setup_tracing  # noqa: E402
+
+setup_tracing(app)
+
 
 @app.get("/health")
 async def health() -> dict[str, object]:

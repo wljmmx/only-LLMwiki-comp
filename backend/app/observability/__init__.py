@@ -26,15 +26,29 @@ from app.observability.metrics import (
     record_http_request,
     setup_metrics_middleware,
 )
+from app.observability.tracing import (
+    get_current_span_id,
+    get_current_trace_id,
+    get_tracer,
+    setup_tracing,
+    span,
+    tracing_log_processor,
+)
 
 __all__ = [
     "METRICS_ENABLED",
     "REGISTRY",
     "business_metrics",
     "collect_business_metrics",
+    "get_current_span_id",
+    "get_current_trace_id",
+    "get_tracer",
     "http_metrics",
     "record_business_metric",
     "record_http_request",
     "setup_metrics_middleware",
+    "setup_tracing",
+    "span",
     "start_metrics_collector",
+    "tracing_log_processor",
 ]
