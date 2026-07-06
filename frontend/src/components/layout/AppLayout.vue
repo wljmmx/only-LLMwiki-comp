@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { NLayout, NLayoutSider, NLayoutHeader, NLayoutContent } from 'naive-ui'
+import { NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NDropdown } from 'naive-ui'
 import AppSidebar from './AppSidebar.vue'
 import OnboardingTour from '@/components/onboarding/OnboardingTour.vue'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import { useOnboardingStore } from '@/stores/onboarding'
 import { computed, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 const appStore = useAppStore()
 const route = useRoute()
+const router = useRouter()
+const authStore = useAuthStore()
 const onboardingStore = useOnboardingStore()
 const collapsed = computed(() => appStore.sidebarCollapsed)
 const pageTitle = computed(() => route.meta.title || 'OpsKG')
@@ -27,11 +30,44 @@ function restartTour() {
   onboardingStore.startTour()
 }
 
+/** 注销 */
+async function handleLogout() {
+  await authStore.logout()
+  router.replace('/login')
+}
+
+/** 用户菜单选项 */
+const userMenuOptions = computed(() => {
+  const opts: Array<{ label: string; key: string; props?: { onClick?: () => void } }> = [
+    {
+      label: authStore.user ? `${authStore.displayName} (${authStore.user.role})` : '匿名用户',
+      key: 'info',
+    },
+  ]
+  if (authStore.isAuthenticated) {
+    opts.push({ label: '注销', key: 'logout' })
+  }
+  opts.push({ label: '重新查看引导', key: 'tour' })
+  return opts
+})
+
+function handleUserMenuSelect(key: string) {
+  if (key === 'logout') {
+    handleLogout()
+  } else if (key === 'tour') {
+    restartTour()
+  }
+}
+
 defineExpose({ restartTour })
 
 // 首次访问自动启动 tour
 onMounted(() => {
   onboardingStore.autoStartIfNeeded()
+  // 若 store 有 token 但未加载用户（如刷新页面），加载一次
+  if (authStore.token && !authStore.user) {
+    authStore.fetchMe()
+  }
 })
 </script>
 
@@ -60,7 +96,16 @@ onMounted(() => {
           <button class="icon-btn" title="切换主题" @click="toggleDark">
             {{ appStore.darkMode ? '☀️' : '🌙' }}
           </button>
-          <span class="user-avatar">👤</span>
+          <NDropdown
+            :options="userMenuOptions"
+            trigger="click"
+            @select="handleUserMenuSelect"
+          >
+            <span class="user-avatar" :title="authStore.displayName">
+              {{ authStore.user ? '👤' : '👥' }}
+              <span v-if="authStore.user" class="user-name">{{ authStore.displayName }}</span>
+            </span>
+          </NDropdown>
         </div>
       </NLayoutHeader>
 
@@ -121,6 +166,23 @@ onMounted(() => {
 }
 .user-avatar {
   font-size: 20px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.user-avatar:hover {
+  background: var(--n-item-color-hover, #f3f4f6);
+}
+.user-name {
+  font-size: 13px;
+  color: var(--n-text-color-2, #374151);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .content {
   padding: 24px;

@@ -23,6 +23,7 @@ from app.routers.export_router import router as export_router
 from app.routers.graph_router import router as graph_router
 from app.routers.llm_wiki_router import router as llm_wiki_router
 from app.routers.mcp_router import router as mcp_router
+from app.routers.oidc_router import router as oidc_router
 from app.routers.parsers_router import router as parsers_router
 from app.routers.review_router import router as review_router
 from app.routers.runbook_router import router as runbook_router
@@ -121,6 +122,7 @@ async def ready() -> dict[str, object]:
 
 # ────────── 业务域 APIRouter 聚合注册 ──────────
 app.include_router(auth_router)
+app.include_router(oidc_router)
 app.include_router(documents_router)
 app.include_router(parsers_router)
 app.include_router(search_router)

@@ -65,6 +65,21 @@ class Settings(BaseSettings):
     # 认证（P0-2）— 留空则关闭认证（开发模式）
     api_token: str = ""
 
+    # OIDC / OAuth2 SSO（P3-1 完整 SSO）
+    # oidc_providers 是 JSON 字符串，格式：
+    # [{"name":"google","display_name":"Google","client_id":"...","client_secret":"...",
+    #   "discovery_url":"https://accounts.google.com/.well-known/openid-configuration",
+    #   "scopes":["openid","email","profile"]}, ...]
+    # 留空则关闭 OIDC SSO
+    oidc_providers: str = ""
+    # OIDC 用户默认角色（首次登录自动创建）
+    oidc_default_role: str = "viewer"
+    # 后端公网回调基址（OIDC callback 端点完整 URL = oidc_redirect_base_url + /auth/oidc/{provider}/callback）
+    # 留空则从请求 Host header 推断（开发模式可用 http://localhost:8000）
+    oidc_redirect_base_url: str = ""
+    # 前端登录后的回调页（后端完成 OIDC 后重定向到此 URL 并附带 ?token=...&redirect=...）
+    frontend_base_url: str = "http://localhost:5173"
+
     # HA 高可用（P3-4）
     # 实例 ID 用于多实例区分；不传则用 hostname + pid 自动生成
     instance_id: str = ""

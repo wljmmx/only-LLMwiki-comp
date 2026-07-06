@@ -48,6 +48,7 @@ config.global.stubs = {
   NAvatar: true,
   NBadge: true,
   NBackTop: true,
+  NButton: true,
 }
 
 // 副作用导入，导出为空

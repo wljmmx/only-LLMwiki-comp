@@ -1,7 +1,22 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import { useAuthStore } from '@/stores/auth'
 
 const routes = [
+  // 登录页（不在 AppLayout 内，无侧栏）
+  {
+    path: '/login',
+    name: 'login',
+    component: () => import('@/views/LoginView.vue'),
+    meta: { title: '登录', public: true },
+  },
+  // OIDC 回调页（不在 AppLayout 内）
+  {
+    path: '/login/callback',
+    name: 'login-callback',
+    component: () => import('@/views/LoginCallbackView.vue'),
+    meta: { title: '登录回调', public: true },
+  },
   {
     path: '/',
     component: AppLayout,
@@ -112,8 +127,35 @@ const router = createRouter({
   routes,
 })
 
-router.beforeEach((to) => {
+// 已初始化标记：避免每次路由跳转都重新拉 /auth/me
+let authInitialized = false
+
+router.beforeEach(async (to) => {
   document.title = `${to.meta.title || 'OpsKG'} · LLM Wiki Console`
+
+  // 公开路由（登录页、回调页）直接放行
+  if (to.meta.public) {
+    return true
+  }
+
+  // 首次访问受保护路由时检查认证状态
+  if (!authInitialized) {
+    authInitialized = true
+    const authStore = useAuthStore()
+    // fetchMe 会设置 authRequired：
+    // - true: 后端要求认证（session/401）
+    // - false: dev/legacy 模式放行
+    // - null: 后端不可达
+    await authStore.fetchMe()
+
+    // 后端要求认证但用户未登录 → 跳登录
+    if (authStore.authRequired === true && !authStore.isAuthenticated) {
+      return { name: 'login', query: { redirect: to.fullPath } }
+    }
+    // 其他情况（dev 模式 / 已登录 / 后端不可达）放行
+  }
+
+  return true
 })
 
 export default router
