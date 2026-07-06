@@ -88,4 +88,12 @@ async def delete_document(doc_id: str) -> dict:
     get_search_engine().remove_index(doc_id)
     # P2-4.5 清理拓扑中该文档的引用
     topo_cleanup = get_topology_builder().remove_doc(doc_id)
+
+    # 触发 webhook：document.deleted
+    from app.webhooks import dispatch_event
+
+    dispatch_event(
+        "document.deleted",
+        {"doc_id": doc_id, "topology_cleanup": topo_cleanup},
+    )
     return {"deleted": True, "doc_id": doc_id, "topology_cleanup": topo_cleanup}

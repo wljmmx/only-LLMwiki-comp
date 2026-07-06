@@ -91,10 +91,32 @@ async def parse_batch(files: list[UploadFile] = File(..., alias="files")) -> dic
         doc_meta = store.save(file.filename or "unknown", content, fmt)
         stored_path = doc_meta["stored_path"]
 
+        # 触发 webhook：document.created
+        from app.webhooks import dispatch_event
+
+        dispatch_event(
+            "document.created",
+            {
+                "doc_id": doc_meta["doc_id"],
+                "filename": file.filename,
+                "format": fmt,
+                "size_bytes": doc_meta.get("size_bytes"),
+                "checksum": doc_meta.get("checksum"),
+            },
+        )
+
         try:
             parser = get_parser(fmt)
             doc = parser.parse(stored_path, doc_meta["doc_id"])
             store.update_status(doc_meta["doc_id"], "parsed", title=doc.title)
+            dispatch_event(
+                "document.parsed",
+                {
+                    "doc_id": doc_meta["doc_id"],
+                    "title": doc.title,
+                    "elements": len(doc.elements),
+                },
+            )
             results.append(
                 {
                     "filename": file.filename,
@@ -121,6 +143,20 @@ async def parse_file(fmt: str, file: UploadFile = File(...)) -> dict:
     doc_meta = store.save(file.filename or "unknown", content, fmt)
     stored_path = doc_meta["stored_path"]
 
+    # 触发 webhook：document.created
+    from app.webhooks import dispatch_event
+
+    dispatch_event(
+        "document.created",
+        {
+            "doc_id": doc_meta["doc_id"],
+            "filename": file.filename,
+            "format": fmt,
+            "size_bytes": doc_meta.get("size_bytes"),
+            "checksum": doc_meta.get("checksum"),
+        },
+    )
+
     try:
         parser = get_parser(fmt)
         doc = parser.parse(stored_path, doc_meta["doc_id"])
@@ -129,6 +165,14 @@ async def parse_file(fmt: str, file: UploadFile = File(...)) -> dict:
         content_text = " ".join(e.content for e in doc.elements if e.content)
         get_search_engine().index_document(
             doc_meta["doc_id"], doc.title, content_text, fmt
+        )
+        dispatch_event(
+            "document.parsed",
+            {
+                "doc_id": doc_meta["doc_id"],
+                "title": doc.title,
+                "elements": len(doc.elements),
+            },
         )
         result = _serialize_doc(doc)
         result["doc_id"] = doc_meta["doc_id"]

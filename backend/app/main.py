@@ -28,6 +28,7 @@ from app.routers.search_router import router as search_router
 from app.routers.templates_router import router as templates_router
 from app.routers.topology_router import router as topology_router
 from app.routers.versions_router import router as versions_router
+from app.routers.webhook_router import router as webhook_router
 from app.routers.wiki_router import router as wiki_router
 
 logger = structlog.get_logger()
@@ -37,8 +38,15 @@ logger = structlog.get_logger()
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logger.info("backend.starting", env=settings.env, llm_backend=settings.llm_backend)
-    yield
-    logger.info("backend.stopping")
+    # 启动 Webhook 重试后台 worker
+    from app.webhooks import get_webhook_manager
+
+    await get_webhook_manager().start_retry_worker(interval_seconds=15)
+    try:
+        yield
+    finally:
+        await get_webhook_manager().stop_retry_worker()
+        logger.info("backend.stopping")
 
 
 app = FastAPI(title="OpsKG Backend", version="0.1.0", lifespan=lifespan)
@@ -66,3 +74,4 @@ app.include_router(templates_router)
 app.include_router(versions_router)
 app.include_router(export_router)
 app.include_router(mcp_router)
+app.include_router(webhook_router)

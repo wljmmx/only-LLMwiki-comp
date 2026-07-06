@@ -80,6 +80,19 @@ async def wiki_publish(
     result = vc.save_version(doc_key, title, content, change_summary=change_summary)
     # 同时建立搜索索引
     get_search_engine().index_document(doc_key, title, content, "wiki")
+
+    # 触发 webhook：wiki.published
+    from app.webhooks import dispatch_event
+
+    dispatch_event(
+        "wiki.published",
+        {
+            "slug": slug,
+            "title": title,
+            "version": result.get("version"),
+            "change_summary": change_summary,
+        },
+    )
     return result
 
 
@@ -92,4 +105,12 @@ async def wiki_delete(slug: str) -> dict:
     if count == 0:
         raise HTTPException(404, f"Wiki 文档不存在: {slug}")
     get_search_engine().remove_index(doc_key)
+
+    # 触发 webhook：wiki.deleted
+    from app.webhooks import dispatch_event
+
+    dispatch_event(
+        "wiki.deleted",
+        {"slug": slug, "versions_removed": count},
+    )
     return {"deleted": True, "slug": slug, "versions_removed": count}

@@ -56,7 +56,20 @@ async def events_ingest(payload: dict) -> dict:
     if not isinstance(events, list) or not events:
         raise HTTPException(400, "events 必须是非空数组")
     corr = get_event_correlator()
-    return corr.ingest(events)
+    result = corr.ingest(events)
+
+    # 触发 webhook：event.ingested
+    from app.webhooks import dispatch_event
+
+    dispatch_event(
+        "event.ingested",
+        {
+            "ingested": result.get("ingested", 0),
+            "skipped_duplicates": result.get("skipped_duplicates", 0),
+            "event_count": len(events),
+        },
+    )
+    return result
 
 
 @router.post("/events/correlate", dependencies=[Depends(verify_token)])
@@ -71,7 +84,24 @@ async def events_correlate(payload: dict = None) -> dict:
     since = int(payload.get("since_minutes", 60))
     max_ev = int(payload.get("max_events", 500))
     corr = get_event_correlator()
-    return corr.correlate(since_minutes=since, max_events=max_ev)
+    result = corr.correlate(since_minutes=since, max_events=max_ev)
+
+    # 触发 webhook：incident.created（每个新建 incident 一条）
+    from app.webhooks import dispatch_event
+
+    for inc in result.get("incidents", []):
+        dispatch_event(
+            "incident.created",
+            {
+                "incident_id": inc.get("incident_id"),
+                "severity": inc.get("severity"),
+                "alert_count": inc.get("alert_count", 0),
+                "suspected_root_cause": inc.get("suspected_root_cause"),
+                "hosts": inc.get("hosts", []),
+                "services": inc.get("services", []),
+            },
+        )
+    return result
 
 
 @router.get("/events/incidents/states")
@@ -149,6 +179,23 @@ def _do_transition(
         )
         conn.commit()
         updated = corr.get_incident(incident_id)  # type: ignore[assignment]
+
+    # 触发 webhook：incident.status_changed
+    from app.webhooks import dispatch_event
+
+    prev_status = (
+        updated.get("previous_status") if isinstance(updated, dict) else None
+    )
+    dispatch_event(
+        "incident.status_changed",
+        {
+            "incident_id": incident_id,
+            "from": prev_status,
+            "to": target_state,
+            "by": by,
+            "note": note,
+        },
+    )
 
     return {  # type: ignore[return-value]
         "incident_id": incident_id,
@@ -303,6 +350,21 @@ async def events_incident_to_runbook(incident_id: str, publish: bool = False) ->
         result["wiki_slug"] = slug
         result["wiki_published"] = True
 
+    # 触发 webhook：runbook.generated
+    from app.webhooks import dispatch_event
+
+    dispatch_event(
+        "runbook.generated",
+        {
+            "incident_id": incident_id,
+            "symptom": symptom,
+            "service": service,
+            "host": host,
+            "published": bool(publish),
+            "wiki_slug": result.get("wiki_slug"),
+            "matched_docs": result.get("matched_docs"),
+        },
+    )
     return result
 
 
