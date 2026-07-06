@@ -15,6 +15,11 @@ dist-ssr
 # 测试覆盖率报告（S14-5）
 coverage
 
+# Playwright E2E 测试产物（S14-6）
+playwright-report
+test-results
+blob-report
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
