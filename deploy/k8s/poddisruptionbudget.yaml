@@ -1,0 +1,34 @@
+# PodDisruptionBudget（S13-3 K8s 部署，HA 加固）
+#
+# 在自愿驱逐（kubectl drain / 节点维护）时保证最少可用副本数：
+#   - Backend: 至少 1 个可用（minAvailable=1）
+#   - Frontend: 至少 1 个可用
+#
+# 非自愿驱逐（节点故障）由 Deployment replicas 保证
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: opskg-backend-pdb
+  namespace: opskg
+  labels:
+    app.kubernetes.io/name: opskg-backend
+    app.kubernetes.io/component: ha
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opskg-backend
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: opskg-frontend-pdb
+  namespace: opskg
+  labels:
+    app.kubernetes.io/name: opskg-frontend
+    app.kubernetes.io/component: ha
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opskg-frontend

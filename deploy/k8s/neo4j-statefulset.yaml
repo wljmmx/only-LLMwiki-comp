@@ -1,0 +1,125 @@
+# Neo4j StatefulSet（S13-3 K8s 部署）
+#
+# 使用 StatefulSet 而非 Deployment，原因：
+#   - Neo4j 是有状态服务，需要稳定的网络标识（neo4j-0.neo4j.opskg.svc.cluster.local）
+#   - PVC 与 Pod 一一绑定，滚动更新时数据不丢失
+#   - 便于后续扩展为 Causal Cluster（多副本集群）
+#
+# 镜像：neo4j:5-community（与 docker-compose 一致）
+# 端口：
+#   7474 - HTTP（Cypher Shell + 浏览器 UI）
+#   7687 - Bolt（应用层访问协议）
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: neo4j
+  namespace: opskg
+  labels:
+    app.kubernetes.io/name: neo4j
+    app.kubernetes.io/component: graph-database
+    app.kubernetes.io/part-of: opskg-platform
+spec:
+  serviceName: neo4j
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: neo4j
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: neo4j
+        app.kubernetes.io/component: graph-database
+    spec:
+      securityContext:
+        fsGroup: 7474  # Neo4j 容器内 GID
+      containers:
+        - name: neo4j
+          image: neo4j:5-community
+          ports:
+            - name: http
+              containerPort: 7474
+            - name: bolt
+              containerPort: 7687
+          env:
+            - name: NEO4J_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: opskg-secret
+                  key: NEO4J_AUTH
+                  optional: false
+            - name: NEO4J_server_memory_heap_initial__size
+              value: "512m"
+            - name: NEO4J_server_memory_heap_max__size
+              value: "1g"
+            - name: NEO4J_server_memory_pagecache_size
+              value: "512m"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: logs
+              mountPath: /logs
+          # Liveness：tcpSocket 探测 Bolt 端口（避免在探针中暴露密码）
+          # Neo4j 启动较慢（含 APOC / 初始化），initialDelay 给 60s
+          livenessProbe:
+            tcpSocket:
+              port: bolt
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          # Readiness：Bolt 端口可连接即认为就绪
+          readinessProbe:
+            tcpSocket:
+              port: bolt
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 20Gi
+    - metadata:
+        name: logs
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 5Gi
+---
+# Neo4j Service（headless，供 StatefulSet 使用）
+# - 集群内访问：neo4j.opskg.svc.cluster.local:7687
+# - 客户端负载均衡：neo4j-0.neo4j.opskg.svc.cluster.local
+apiVersion: v1
+kind: Service
+metadata:
+  name: neo4j
+  namespace: opskg
+  labels:
+    app.kubernetes.io/name: neo4j
+    app.kubernetes.io/component: graph-database
+spec:
+  type: ClusterIP
+  clusterIP: None  # headless，便于 StatefulSet 稳定网络标识
+  selector:
+    app.kubernetes.io/name: neo4j
+  ports:
+    - name: http
+      port: 7474
+      targetPort: http
+    - name: bolt
+      port: 7687
+      targetPort: bolt

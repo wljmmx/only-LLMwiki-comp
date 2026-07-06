@@ -1,0 +1,120 @@
+# OpsKG Ingress（S13-3 K8s 部署）
+#
+# 路由规则：
+#   /                  → opskg-frontend:80      （SPA 静态资源 + 入口）
+#   /api/              → opskg-backend:8000     （REST API）
+#   /auth/             → opskg-backend:8000     （OIDC / SAML / LDAP SSO 端点）
+#   /health            → opskg-backend:8000     （Liveness 探针）
+#   /ready             → opskg-backend:8000     （Readiness 探针）
+#   /metrics           → opskg-backend:8000     （Prometheus 指标）
+#   /tracing/status    → opskg-backend:8000     （追踪状态）
+#
+# 前置要求：
+#   1. 集群已安装 Ingress controller（nginx-ingress / traefik / HAProxy）
+#   2. DNS 已将 opskg.example.com 解析到 Ingress controller 的外网 IP
+#   3. 已配置 TLS 证书（推荐 cert-manager 自动签发 Let's Encrypt）
+#
+# 启用 HTTPS：
+#   1. 安装 cert-manager：https://cert-manager.io/docs/installation/
+#   2. 创建 ClusterIssuer：
+#      apiVersion: cert-manager.io/v1
+#      kind: ClusterIssuer
+#      metadata:
+#        name: letsencrypt-prod
+#      spec:
+#        acme:
+#          server: https://acme-v02.api.letsencrypt.org/directory
+#          email: your-email@example.com
+#          privateKeySecretRef:
+#            name: letsencrypt-prod
+#          solvers:
+#            - http01:
+#                ingress:
+#                  class: nginx
+#   3. 在下方 Ingress 添加 annotations + tls 段（已注释，取消注释即可）
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opskg-ingress
+  namespace: opskg
+  labels:
+    app.kubernetes.io/name: opskg-ingress
+    app.kubernetes.io/part-of: opskg-platform
+  annotations:
+    # nginx-ingress controller 配置
+    kubernetes.io/ingress.class: "nginx"
+    # 客户端上传文件大小限制（默认 1M，文档上传需调大）
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    # 后端长连接（LLM 流式响应可能耗时较长）
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # WebSocket 支持（用于未来实时推送）
+    nginx.ingress.kubernetes.io/websocket-services: "opskg-backend"
+    # HSTS（生产推荐开启）
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # cert-manager 自动签发（取消注释启用）
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  # TLS 配置（取消注释并替换为实际域名）
+  # tls:
+  #   - hosts:
+  #       - opskg.example.com
+  #     secretName: opskg-tls
+  rules:
+    - host: opskg.example.com
+      http:
+        paths:
+          # 后端 API
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: opskg-backend
+                port:
+                  name: http
+          # SSO 端点（OIDC / SAML / LDAP）
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service:
+                name: opskg-backend
+                port:
+                  name: http
+          # 健康检查 + 监控
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: opskg-backend
+                port:
+                  name: http
+          - path: /ready
+            pathType: Exact
+            backend:
+              service:
+                name: opskg-backend
+                port:
+                  name: http
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: opskg-backend
+                port:
+                  name: http
+          - path: /tracing
+            pathType: Prefix
+            backend:
+              service:
+                name: opskg-backend
+                port:
+                  name: http
+          # 前端静态资源（兜底）
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: opskg-frontend
+                port:
+                  name: http
