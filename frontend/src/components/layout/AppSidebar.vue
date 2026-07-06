@@ -59,6 +59,11 @@ const menuItems: MenuOption[] = [
         key: '/templates',
         icon: () => h('span', { style: 'font-size: 16px' }, '📋'),
       },
+      {
+        label: '版本控制',
+        key: '/versions',
+        icon: () => h('span', { style: 'font-size: 16px' }, '🕒'),
+      },
     ],
   },
   {

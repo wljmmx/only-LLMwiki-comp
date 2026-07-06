@@ -79,6 +79,12 @@ const routes = [
         component: () => import('@/views/TemplatesView.vue'),
         meta: { title: '模板管理', icon: 'templates' },
       },
+      {
+        path: 'versions',
+        name: 'versions',
+        component: () => import('@/views/VersionsView.vue'),
+        meta: { title: '版本控制', icon: 'versions' },
+      },
     ],
   },
 ]
