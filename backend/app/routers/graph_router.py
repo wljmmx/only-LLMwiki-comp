@@ -18,8 +18,8 @@ from app.extraction import KnowledgeExtractor
 from app.knowledge import (
     GraphEntity,
     GraphRelation,
-    get_graph_store,
     get_compiler,
+    get_graph_store,
     get_review_queue,
 )
 from app.parsers import get_parser, supported_formats
@@ -31,8 +31,8 @@ router = APIRouter()
 @router.post("/graph/upload", dependencies=[Depends(verify_token)])
 async def graph_upload(file: UploadFile = File(...)) -> dict:
     """解析文档 → 抽取知识 → 编译 → 写入图谱（全流水线）"""
-    import tempfile
     import os
+    import tempfile
 
     ext = (
         (file.filename or "").rsplit(".", 1)[-1].lower()

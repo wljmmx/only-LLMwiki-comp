@@ -18,8 +18,8 @@ from app.routers.auth_router import router as auth_router
 from app.routers.changes_router import router as changes_router
 from app.routers.documents_router import router as documents_router
 from app.routers.events_router import router as events_router
-from app.routers.extraction_router import router as extraction_router
 from app.routers.export_router import router as export_router
+from app.routers.extraction_router import router as extraction_router
 from app.routers.graph_router import router as graph_router
 from app.routers.llm_wiki_router import router as llm_wiki_router
 from app.routers.mcp_router import router as mcp_router

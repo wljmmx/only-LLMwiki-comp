@@ -30,9 +30,8 @@ from fastapi.responses import StreamingResponse
 from app.auth import verify_token
 from app.mcp import handle_request as mcp_handle_request
 from app.mcp.progress import (
-    set_progress_callback,
     reset_progress_context,
-    get_progress_token,
+    set_progress_callback,
 )
 
 router = APIRouter()
@@ -102,7 +101,6 @@ async def mcp_stream_endpoint(request: Request) -> StreamingResponse:
 
     # 提取 progressToken（来自 _meta.progressToken）
     progress_token = (body.get("_meta") or {}).get("progressToken")
-    request_id = body.get("id")
 
     async def event_generator() -> AsyncGenerator[bytes, None]:
         # 进度事件队列：工具线程 → SSE 主循环

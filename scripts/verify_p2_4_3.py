@@ -7,8 +7,8 @@
 """
 from __future__ import annotations
 
-import sys
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -21,9 +21,10 @@ TMP_DIR = Path(tempfile.mkdtemp(prefix="opsg_test_"))
 os.environ["OPSKG_DATA_DIR"] = str(TMP_DIR)
 # 重定向 events.db
 import app.aiops.topology_builder as tb_mod
+
 tb_mod.DB_PATH = TMP_DIR / "events.db"
 
-from app.aiops.topology_builder import TopologyBuilder, _get_db, _init_schema
+from app.aiops.topology_builder import TopologyBuilder, _get_db
 
 
 def setup_test_data():
@@ -188,11 +189,11 @@ def test_diff_with_change():
 def test_mcp_tools():
     """测试 MCP 工具"""
     from app.mcp.protocol import (
-        TOOLS,
-        TOOL_HANDLERS,
         _TOOL_ANNOTATIONS,
-        _tool_save_topology_snapshot,
+        TOOL_HANDLERS,
+        TOOLS,
         _tool_diff_topology_snapshots,
+        _tool_save_topology_snapshot,
         list_tools,
     )
 

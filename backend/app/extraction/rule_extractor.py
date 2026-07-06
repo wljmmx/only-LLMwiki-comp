@@ -20,11 +20,11 @@ from collections import OrderedDict
 
 import structlog
 
-from app.parsers.base import ParsedDocument, ParsedElement
 from app.extraction.types import (
     ExtractedEntity,
     ExtractedRelation,
 )
+from app.parsers.base import ParsedDocument, ParsedElement
 
 logger = structlog.get_logger()
 

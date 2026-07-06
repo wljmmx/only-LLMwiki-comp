@@ -17,7 +17,6 @@ import json
 import secrets
 import sqlite3
 import time
-import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any

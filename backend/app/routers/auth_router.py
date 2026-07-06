@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth.models import ROLES, get_auth_store
-from app.auth.token_auth import get_current_user, require_role, verify_token
+from app.auth.token_auth import get_current_user, require_role
 
 router = APIRouter()
 

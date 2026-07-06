@@ -9,8 +9,8 @@
 """
 from __future__ import annotations
 
-import sys
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -20,11 +20,12 @@ sys.path.insert(0, str(BACKEND_DIR))
 TMP_DIR = Path(tempfile.mkdtemp(prefix="opsg_p246_"))
 os.environ["OPSKG_DATA_DIR"] = str(TMP_DIR)
 import app.aiops.topology_builder as tb_mod
+
 tb_mod.DB_PATH = TMP_DIR / "events.db"
 
+from app.aiops.topology_builder import TopologyBuilder, _get_db
 from app.extraction.rule_extractor import RuleBasedExtractor
 from app.parsers.base import ParsedDocument, ParsedElement
-from app.aiops.topology_builder import TopologyBuilder, _get_db
 
 
 def test_extractor_metadata():
@@ -148,7 +149,7 @@ def test_topology_builder_metadata():
     host_node = next(n for n in topo["nodes"] if n["node_id"] == "Host:web-prod-01")
     assert "metadata" in host_node
     assert host_node["metadata"]["ip"] == "10.0.1.5"
-    print(f"  ✅ get_topology 反序列化 metadata OK")
+    print("  ✅ get_topology 反序列化 metadata OK")
 
     # 验证 get_node
     node = builder.get_node("Service:user-service")
@@ -161,7 +162,7 @@ def test_topology_builder_metadata():
     neighbors = builder.get_neighbors("web-prod-01", depth=1)
     for n in neighbors["neighbors"]:
         assert "metadata" in n
-    print(f"  ✅ get_neighbors 反序列化 metadata OK")
+    print("  ✅ get_neighbors 反序列化 metadata OK")
 
 
 def test_metadata_merge_on_update():
@@ -256,14 +257,14 @@ def test_router_endpoints():
     assert "GET" in paths["/topology/node/{node_id}"]
     assert "/topology/node/{node_id}/metadata" in paths
     assert "PATCH" in paths["/topology/node/{node_id}/metadata"]
-    print(f"  ✅ GET /topology/node/{{node_id}} 已注册")
-    print(f"  ✅ PATCH /topology/node/{{node_id}}/metadata 已注册")
+    print("  ✅ GET /topology/node/{node_id} 已注册")
+    print("  ✅ PATCH /topology/node/{node_id}/metadata 已注册")
 
     # 验证端点可调用
     builder = TopologyBuilder()
     node = builder.get_node("Host:db-01")
     assert node is not None
-    print(f"  ✅ 端点底层方法可调用")
+    print("  ✅ 端点底层方法可调用")
 
 
 def main():

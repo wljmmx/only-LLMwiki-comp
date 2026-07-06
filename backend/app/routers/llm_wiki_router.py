@@ -27,24 +27,24 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.auth import verify_token
 from app.knowledge import (
-    get_wiki_compiler,
-    rebuild_index,
-    get_index,
-    list_wiki_pages,
-    get_all_slugs,
-    render_wikilinks_html,
-    get_backlinks,
-    get_outlinks,
-    get_orphan_slugs,
-    get_all_deadlinks,
+    auto_recompile_stale,
     detect_drift,
-    mark_pages_stale,
-    list_stale_pages,
-    recall_pages,
+    get_all_deadlinks,
+    get_all_slugs,
+    get_backlinks,
+    get_index,
+    get_orphan_slugs,
+    get_outlinks,
+    get_wiki_compiler,
     get_wiki_qa_engine,
     lint_all,
+    list_stale_pages,
+    list_wiki_pages,
+    mark_pages_stale,
+    rebuild_index,
+    recall_pages,
+    render_wikilinks_html,
     suggest_missing_pages,
-    auto_recompile_stale,
 )
 from app.parsers import supported_formats
 from app.routers.parsers_router import EXT_FMT_MAP

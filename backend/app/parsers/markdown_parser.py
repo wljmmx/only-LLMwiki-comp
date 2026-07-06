@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
-import re
 import hashlib
+import re
 
 from app.parsers.base import ElementType, ParsedDocument, ParsedElement
 

@@ -44,16 +44,17 @@ from typing import Any
 
 import structlog
 
-from app.knowledge import get_runbook_generator
 from app.aiops import (
-    get_event_correlator,
     get_change_correlator,
+    get_event_correlator,
     get_topology_builder,
 )
+from app.knowledge import get_runbook_generator
+
+# P2-5.8 入参 JSON Schema 运行时校验
+from app.mcp.schema_validator import fill_defaults, validate_args
 from app.search import get_search_engine
 from app.storage import get_document_store
-# P2-5.8 入参 JSON Schema 运行时校验
-from app.mcp.schema_validator import validate_args, fill_defaults
 
 logger = structlog.get_logger()
 

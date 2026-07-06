@@ -1,0 +1,42 @@
+# Ruff 配置 — OpsKG 项目 lint 规则
+# 详见 https://docs.astral.sh/ruff/configuration/
+
+[tool.ruff]
+# 目标 Python 版本
+target-version = "py311"
+# 行宽（与现有代码风格一致，部分代码超 100，设 120 兼容）
+line-length = 120
+# 扫描范围
+extend-exclude = [
+  "backend/data",        # 数据目录
+  "frontend",            # 前端（独立 eslint 管控）
+  "data/backups",        # 备份
+]
+
+[tool.ruff.lint]
+# 启用的规则集
+select = [
+  "E",     # pycodestyle errors
+  "F",     # pyflakes (unused imports/variables, undefined names)
+  "W",     # pycodestyle warnings
+  "I",     # isort (import 排序)
+]
+ignore = [
+  "E402",  # module-level import not at top — main.py/observability 有设计性延迟导入
+  "E501",  # line too long — 项目历史代码行长不一，强拆风险大，依赖 format 自动截断
+  "E741",  # ambiguous variable name — verify 脚本中 `l` 等短变量名可读性可接受
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试/验证脚本允许更宽松
+"scripts/verify_*.py" = ["E741"]
+"backend/tests/*" = ["E741"]
+
+[tool.ruff.lint.isort]
+# 已有代码大量使用分组导入，保持兼容
+known-first-party = ["app"]
+
+[tool.ruff.format]
+# 与现有代码风格一致（双引号、空格缩进）
+quote-style = "double"
+indent-style = "space"

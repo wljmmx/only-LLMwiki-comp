@@ -17,9 +17,10 @@ import os
 import shutil
 import subprocess
 import tempfile
-import structlog
 from pathlib import Path
 from typing import Callable
+
+import structlog
 
 from app.parsers.base import DocumentParser, ParsedDocument
 

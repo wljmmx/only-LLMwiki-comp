@@ -25,10 +25,10 @@ TMP_DIR = Path(tempfile.mkdtemp(prefix="opsg_obs_"))
 os.environ["OPSKG_DATA_DIR"] = str(TMP_DIR)
 
 # 重定向各 db
+import app.aiops.event_correlator as ec_mod
 import app.storage.document_store as ds_mod
 import app.storage.version_control as vc_mod
 import app.storage.webhook_store as wh_mod
-import app.aiops.event_correlator as ec_mod
 
 ds_mod.DB_PATH = TMP_DIR / "documents.db"
 vc_mod.DB_PATH = TMP_DIR / "versions.db"
@@ -212,6 +212,7 @@ async def test_business_collector() -> None:
     await collect_business_metrics()
 
     from fastapi.testclient import TestClient
+
     from app.main import app
 
     client = TestClient(app)

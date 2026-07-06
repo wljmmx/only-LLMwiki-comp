@@ -22,12 +22,12 @@ from dataclasses import dataclass, field
 import structlog
 import yaml
 
-from app.knowledge.wikilink import (
-    get_orphan_slugs,
-    get_all_deadlinks,
-)
-from app.knowledge.wiki_index import list_wiki_pages, _key_from_slug
 from app.knowledge.wiki_drift import list_stale_pages
+from app.knowledge.wiki_index import _key_from_slug, list_wiki_pages
+from app.knowledge.wikilink import (
+    get_all_deadlinks,
+    get_orphan_slugs,
+)
 from app.storage.version_control import get_version_control
 
 logger = structlog.get_logger()

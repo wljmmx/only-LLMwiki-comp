@@ -11,11 +11,10 @@
 """
 from __future__ import annotations
 
-import sys
-import os
 import json
+import os
+import sys
 import tempfile
-import asyncio
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).parent.parent / "backend"
@@ -24,13 +23,14 @@ sys.path.insert(0, str(BACKEND_DIR))
 TMP_DIR = Path(tempfile.mkdtemp(prefix="opsg_p255_"))
 os.environ["OPSKG_DATA_DIR"] = str(TMP_DIR)
 import app.aiops.topology_builder as tb_mod
+
 tb_mod.DB_PATH = TMP_DIR / "events.db"
 
 from app.mcp.progress import (
     emit_progress,
-    set_progress_callback,
-    reset_progress_context,
     get_progress_token,
+    reset_progress_context,
+    set_progress_callback,
 )
 
 
@@ -100,6 +100,7 @@ def test_sse_endpoint_returns_event_stream():
     """测试 SSE 端点返回 text/event-stream"""
     print("\n[4/7] 测试 SSE 端点返回 text/event-stream...")
     from fastapi.testclient import TestClient
+
     from app.main import app
 
     client = TestClient(app)
@@ -131,6 +132,7 @@ def test_sse_stream_with_progress():
     """测试 SSE 流包含 progress 事件（generate_runbook）"""
     print("\n[5/7] 测试 SSE 流包含 progress 事件...")
     from fastapi.testclient import TestClient
+
     from app.main import app
 
     client = TestClient(app)
@@ -161,7 +163,7 @@ def test_sse_stream_with_progress():
         assert "sse-token-abc" in full, f"应含 progressToken:\n{full}"
         # 应含 notifications/progress
         assert "notifications/progress" in full
-        print(f"  ✅ SSE 流含 progress + result 事件，progressToken 已透传")
+        print("  ✅ SSE 流含 progress + result 事件，progressToken 已透传")
 
         # 提取 progress 事件数
         prog_count = full.count("event: progress")
@@ -172,6 +174,7 @@ def test_sse_batch_rejected():
     """测试 SSE 端点拒绝批量请求"""
     print("\n[6/7] 测试 SSE 端点拒绝批量请求...")
     from fastapi.testclient import TestClient
+
     from app.main import app
 
     client = TestClient(app)
@@ -187,13 +190,14 @@ def test_sse_batch_rejected():
             full += line + "\n"
         assert "event: error" in full, f"批量请求应返回 error 事件:\n{full}"
         assert "不支持批量" in full or "批量" in full
-        print(f"  ✅ 批量请求被拒绝，返回 error 事件")
+        print("  ✅ 批量请求被拒绝，返回 error 事件")
 
 
 def test_progress_token_passthrough():
     """测试 progressToken 透传到 SSE 通知"""
     print("\n[7/7] 测试 progressToken 透传到 SSE 通知...")
     from fastapi.testclient import TestClient
+
     from app.main import app
 
     client = TestClient(app)
@@ -219,7 +223,7 @@ def test_progress_token_passthrough():
         assert '"progressToken": 42' in full or '"progressToken":42' in full, (
             f"progressToken=42 应透传:\n{full}"
         )
-        print(f"  ✅ progressToken=42 已透传到 SSE 通知")
+        print("  ✅ progressToken=42 已透传到 SSE 通知")
 
 
 def main():

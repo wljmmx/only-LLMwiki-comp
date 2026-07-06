@@ -146,8 +146,9 @@ async def topology_export(fmt: str = "mermaid"):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if fmt == "cytoscape":
-        from fastapi.responses import JSONResponse
         import json
+
+        from fastapi.responses import JSONResponse
         return JSONResponse(content=json.loads(content))
     # mermaid 返回纯文本
     return PlainTextResponse(content=content, media_type="text/plain")

@@ -10,8 +10,8 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import secrets
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -158,7 +158,7 @@ class WebhookStore:
                 clauses.append("active = 1")
             if event_type:
                 clauses.append("(events LIKE ? OR events LIKE ?)")
-                params.extend([f'%"{event_type}"%', f'"%*"%'])
+                params.extend([f'%"{event_type}"%', '"%*"%'])
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
             sql += " ORDER BY created_at DESC"

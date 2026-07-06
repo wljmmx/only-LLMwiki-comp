@@ -8,9 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from neo4j import GraphDatabase, Driver
-from neo4j.exceptions import Neo4jError
 import structlog
+from neo4j import Driver, GraphDatabase
+from neo4j.exceptions import Neo4jError
 
 from app.config import get_settings
 

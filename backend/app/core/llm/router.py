@@ -18,8 +18,8 @@ def get_llm_client() -> LLMClient:
         return OllamaClient(settings)
     if backend in ("vllm", "openai_compat"):
         from app.core.llm.openai_compat import (
-            build_vllm_client,
             build_openai_compat_client,
+            build_vllm_client,
         )
 
         if backend == "vllm":

@@ -11,10 +11,10 @@
 """
 from __future__ import annotations
 
-import sys
-import os
-import tempfile
 import json
+import os
+import sys
+import tempfile
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).parent.parent / "backend"
@@ -23,6 +23,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 TMP_DIR = Path(tempfile.mkdtemp(prefix="opsg_p247_"))
 os.environ["OPSKG_DATA_DIR"] = str(TMP_DIR)
 import app.aiops.topology_builder as tb_mod
+
 tb_mod.DB_PATH = TMP_DIR / "events.db"
 
 from app.aiops.topology_builder import TopologyBuilder, _get_db
@@ -179,19 +180,19 @@ def test_node_is_spof_flag():
     result = builder.impact_analysis("spof-host")
     assert result["redundancy"]["node_is_spof"] is True
     assert result["redundancy"]["node_replicas"] == 1
-    print(f"  ✅ spof-host: node_is_spof=True, replicas=1")
+    print("  ✅ spof-host: node_is_spof=True, replicas=1")
 
     # multi-host: replicas=3 + 有 dependents → is_spof=False
     result = builder.impact_analysis("multi-host")
     assert result["redundancy"]["node_is_spof"] is False
     assert result["redundancy"]["node_replicas"] == 3
-    print(f"  ✅ multi-host: node_is_spof=False, replicas=3")
+    print("  ✅ multi-host: node_is_spof=False, replicas=3")
 
 
 def test_mcp_tool_redundancy_field():
     """测试 MCP _tool_impact_analysis 输出 redundancy 字段"""
     print("\n[7/7] 测试 MCP 工具输出 redundancy 字段...")
-    builder = _setup_topology()
+    _setup_topology()
 
     from app.mcp.protocol import _tool_impact_analysis
 

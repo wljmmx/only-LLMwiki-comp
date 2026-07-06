@@ -24,8 +24,8 @@ router = APIRouter()
 @router.post("/extract", response_model=dict, dependencies=[Depends(verify_token)])
 async def extract_knowledge(file: UploadFile = File(...)) -> dict:
     """解析文档 → 抽取知识 → 置信度门控，返回完整结果"""
-    import tempfile
     import os
+    import tempfile
 
     ext = (
         (file.filename or "").rsplit(".", 1)[-1].lower()
@@ -102,8 +102,8 @@ async def extract_knowledge(file: UploadFile = File(...)) -> dict:
 @router.post("/compile", dependencies=[Depends(verify_token)])
 async def compile_knowledge(file: UploadFile = File(...)) -> dict:
     """解析 → 抽取 → 编译（不写入图谱，仅返回编译结果）"""
-    import tempfile
     import os
+    import tempfile
 
     ext = (
         (file.filename or "").rsplit(".", 1)[-1].lower()

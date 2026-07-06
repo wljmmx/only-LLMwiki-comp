@@ -1,12 +1,12 @@
+from app.extraction.extractor import KnowledgeExtractor
 from app.extraction.types import (
     EntityType,
-    RelationType,
     ExtractedEntity,
     ExtractedRelation,
     ExtractionResult,
     ExtractionStats,
+    RelationType,
 )
-from app.extraction.extractor import KnowledgeExtractor
 
 __all__ = [
     "EntityType",

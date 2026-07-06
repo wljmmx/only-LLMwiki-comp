@@ -86,7 +86,7 @@ def test_user_crud() -> None:
 
 def test_password_hashing() -> None:
     print("\n[2] 密码哈希与验证")
-    from app.auth.models import get_auth_store, _hash_password, _verify_password
+    from app.auth.models import _hash_password, _verify_password, get_auth_store
 
     # 相同密码不同 salt
     h1 = _hash_password("secret")
@@ -132,7 +132,7 @@ def test_session_lifecycle() -> None:
     check(store.verify_session(expired_token) is None, "过期 token verify 返回 None")
 
     # cleanup — 需创建新的过期 session（verify_session 会自动删除已过期的）
-    expired_token2 = store.create_session(user["id"], ttl_seconds=0)
+    store.create_session(user["id"], ttl_seconds=0)
     time.sleep(0.1)
     n = store.cleanup_expired_sessions()
     check(n >= 1, f"cleanup_expired_sessions 清理 {n} 个")

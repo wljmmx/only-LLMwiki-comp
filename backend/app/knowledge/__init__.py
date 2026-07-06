@@ -1,19 +1,19 @@
-from app.knowledge.graph_store import (
-    GraphStore,
-    GraphEntity,
-    GraphRelation,
-    get_graph_store,
-)
 from app.knowledge.compiler import (
-    KnowledgeCompiler,
     CompileResult,
     DedupResult,
+    KnowledgeCompiler,
     get_compiler,
 )
 from app.knowledge.doc_generator import (
     DocGenerationPipeline,
     DocGenState,
     get_pipeline,
+)
+from app.knowledge.graph_store import (
+    GraphEntity,
+    GraphRelation,
+    GraphStore,
+    get_graph_store,
 )
 from app.knowledge.review_queue import (
     ReviewQueue,
@@ -23,70 +23,70 @@ from app.knowledge.runbook_generator import (
     RunbookGenerator,
     get_runbook_generator,
 )
-from app.knowledge.wikilink import (
-    WikiLink,
-    DeadLink,
-    BacklinkEntry,
-    parse_wikilinks,
-    render_wikilinks_html,
-    render_wikilinks_text,
-    validate_links,
-    update_backlinks,
-    remove_backlinks,
-    get_backlinks,
-    get_outlinks,
-    get_orphan_slugs,
-    get_all_deadlinks,
-)
-from app.knowledge.wiki_index import (
-    rebuild_index,
-    get_index,
-    list_wiki_pages,
-    get_all_slugs,
-    INDEX_SLUG,
-)
 from app.knowledge.wiki_compiler import (
     WikiCompiler,
-    WikiPage,
     WikiCompileResult,
+    WikiPage,
     get_wiki_compiler,
     make_slug,
 )
 from app.knowledge.wiki_drift import (
-    StalePage,
     DriftReport,
-    RecompileJob,
     RecompileBatchResult,
-    record_compiled_checksum,
-    get_compiled_checksum,
-    detect_drift,
-    mark_pages_stale,
-    clear_stale,
-    list_stale_pages,
+    RecompileJob,
+    StalePage,
     auto_recompile_stale,
+    clear_stale,
+    detect_drift,
+    get_compiled_checksum,
+    list_stale_pages,
+    mark_pages_stale,
+    record_compiled_checksum,
 )
-from app.knowledge.wiki_query import (
-    WikiPageHit,
-    WikiQueryResult,
-    WikiQAEngine,
-    recall_pages,
-    get_wiki_qa_engine,
+from app.knowledge.wiki_index import (
+    INDEX_SLUG,
+    get_all_slugs,
+    get_index,
+    list_wiki_pages,
+    rebuild_index,
 )
 from app.knowledge.wiki_lint import (
+    SEV_ERROR,
+    SEV_INFO,
+    SEV_WARN,
+    TYPE_CONTRADICTION,
+    TYPE_DEADLINK,
+    TYPE_EMPTY_SECTION,
+    TYPE_MISSING_CONCEPT,
+    TYPE_MISSING_TYPE_SECTION,
+    TYPE_ORPHAN,
+    TYPE_STALE,
     LintIssue,
     LintReport,
     lint_all,
     suggest_missing_pages,
-    TYPE_CONTRADICTION,
-    TYPE_STALE,
-    TYPE_ORPHAN,
-    TYPE_DEADLINK,
-    TYPE_MISSING_CONCEPT,
-    TYPE_EMPTY_SECTION,
-    TYPE_MISSING_TYPE_SECTION,
-    SEV_INFO,
-    SEV_WARN,
-    SEV_ERROR,
+)
+from app.knowledge.wiki_query import (
+    WikiPageHit,
+    WikiQAEngine,
+    WikiQueryResult,
+    get_wiki_qa_engine,
+    recall_pages,
+)
+from app.knowledge.wikilink import (
+    BacklinkEntry,
+    DeadLink,
+    WikiLink,
+    get_all_deadlinks,
+    get_backlinks,
+    get_orphan_slugs,
+    get_outlinks,
+    parse_wikilinks,
+    remove_backlinks,
+    render_wikilinks_html,
+    render_wikilinks_text,
+    update_backlinks,
+    validate_links,
 )
 
 __all__ = [

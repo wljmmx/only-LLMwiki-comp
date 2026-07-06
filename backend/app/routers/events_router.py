@@ -24,12 +24,12 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.aiops import (
-    get_change_correlator,
-    get_event_correlator,
     INCIDENT_STATES,
     INCIDENT_TRANSITIONS,
     TERMINAL_STATES,
     InvalidTransitionError,
+    get_change_correlator,
+    get_event_correlator,
     is_valid_state,
 )
 from app.auth import verify_token

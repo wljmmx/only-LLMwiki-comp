@@ -22,7 +22,6 @@ import base64
 import json
 import os
 import sys
-import time
 from pathlib import Path
 
 # 确保可以 import backend.app.*
@@ -197,7 +196,7 @@ def test_pkce() -> None:
 
 def test_state_store() -> None:
     section("4. State 存储")
-    from app.auth.oidc import pop_state, save_state, _state_store
+    from app.auth.oidc import _state_store, pop_state, save_state
 
     _state_store.clear()
 
@@ -224,7 +223,7 @@ def test_state_store() -> None:
 def test_find_or_create_user() -> None:
     section("5. OIDC 用户映射 find_or_create_user")
     from app.auth.models import get_auth_store
-    from app.auth.oidc import find_or_create_user, _get_mapping_db
+    from app.auth.oidc import _get_mapping_db, find_or_create_user
 
     # 初始化 schema（先建 users 表，再建 mappings 表）
     store = get_auth_store()
@@ -366,7 +365,6 @@ def test_oidc_authorize_redirect() -> None:
     get_settings.cache_clear()
 
     # mock discovery
-    import app.auth.oidc as oidc_mod
     from app.auth.oidc import OIDCProvider
 
     original_discover = OIDCProvider.discover
@@ -432,7 +430,7 @@ def test_oidc_callback_e2e() -> None:
     get_settings.cache_clear()
 
     # mock discovery + exchange_code
-    from app.auth.oidc import OIDCProvider, save_state, generate_pkce
+    from app.auth.oidc import OIDCProvider, generate_pkce, save_state
 
     original_discover = OIDCProvider.discover
 

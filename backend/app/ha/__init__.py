@@ -97,11 +97,11 @@ def collect_health() -> dict[str, Any]:
             "background_workers": {webhook_worker},
         }
     """
+    from app.aiops.event_correlator import DB_PATH as EV_DB
+    from app.search.search_engine import DB_PATH as SEARCH_DB
     from app.storage.document_store import DB_PATH as DOC_DB
     from app.storage.version_control import DB_PATH as VC_DB
     from app.storage.webhook_store import DB_PATH as WH_DB
-    from app.aiops.event_correlator import DB_PATH as EV_DB
-    from app.search.search_engine import DB_PATH as SEARCH_DB
     from app.templates.manager import DB_PATH as TPL_DB
 
     settings = get_settings()

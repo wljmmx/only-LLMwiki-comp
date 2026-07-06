@@ -250,7 +250,7 @@ class TopologyBuilder:
             "WHERE source NOT IN (SELECT node_id FROM topology_nodes) "
             "OR target NOT IN (SELECT node_id FROM topology_nodes)"
         )
-        orphan_edges = conn.total_changes  # 粗略计数
+        orphan_edges_count = conn.total_changes  # 粗略计数
 
         conn.commit()
         logger.info(
@@ -260,6 +260,7 @@ class TopologyBuilder:
             edges_removed=edges_removed,
             nodes_updated=nodes_updated,
             edges_updated=edges_updated,
+            orphan_edges_cleaned=orphan_edges_count,
         )
         return {
             "doc_id": doc_id,
@@ -1180,7 +1181,6 @@ class TopologyBuilder:
             nid = safe_id(n["node_id"])
             label = n["name"]
             style = type_style.get(n["node_type"], "fill:#999,color:#fff")
-            inferred_tag = ""
             lines.append(f'    {nid}["{label}"]:::nodeStyle')
         # 边
         for e in edges:

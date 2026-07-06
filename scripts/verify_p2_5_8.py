@@ -14,9 +14,8 @@
 """
 from __future__ import annotations
 
-import sys
 import os
-import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -26,9 +25,10 @@ sys.path.insert(0, str(BACKEND_DIR))
 TMP_DIR = Path(tempfile.mkdtemp(prefix="opsg_p258_"))
 os.environ["OPSKG_DATA_DIR"] = str(TMP_DIR)
 import app.aiops.topology_builder as tb_mod
+
 tb_mod.DB_PATH = TMP_DIR / "events.db"
 
-from app.mcp.schema_validator import validate_args, fill_defaults
+from app.mcp.schema_validator import fill_defaults, validate_args
 
 
 def test_basic_types():
@@ -203,7 +203,7 @@ def test_handle_request_valid_with_default():
     resp = handle_request(req)
     assert "result" in resp, f"应返回 result: {resp}"
     assert resp["result"]["isError"] is False
-    print(f"  ✅ query=nginx 正常执行，limit 自动填充 default")
+    print("  ✅ query=nginx 正常执行，limit 自动填充 default")
 
 
 def test_handle_request_unknown_tool():

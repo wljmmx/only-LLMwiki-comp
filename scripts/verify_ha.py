@@ -26,11 +26,11 @@ TMP_DIR = Path(tempfile.mkdtemp(prefix="opsg_ha_"))
 os.environ["OPSKG_DATA_DIR"] = str(TMP_DIR)
 
 # 重定向各 DB 到临时目录
+import app.aiops.event_correlator as ec_mod
+import app.search.search_engine as se_mod
 import app.storage.document_store as ds_mod
 import app.storage.version_control as vc_mod
 import app.storage.webhook_store as wh_mod
-import app.aiops.event_correlator as ec_mod
-import app.search.search_engine as se_mod
 import app.templates.manager as tpl_mod
 
 ds_mod.DB_PATH = TMP_DIR / "documents.db"
@@ -134,11 +134,11 @@ def test_check_db_connection() -> None:
 def test_collect_health_structure() -> None:
     print("\n[4] collect_health 结构")
     # 显式初始化所有 DB schema（部分 Store 不在构造时建表，需触发一次 _get_db）
+    from app.aiops import event_correlator as ec
+    from app.search import search_engine as se
     from app.storage import document_store as ds
     from app.storage import version_control as vc
     from app.storage import webhook_store as wh
-    from app.aiops import event_correlator as ec
-    from app.search import search_engine as se
     from app.templates import manager as tpl
 
     ds._get_db().close()

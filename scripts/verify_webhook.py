@@ -35,7 +35,7 @@ import app.storage.webhook_store as wh_store_mod
 
 wh_store_mod.DB_PATH = TMP_DIR / "webhooks.db"
 
-from app.storage.webhook_store import WebhookStore, get_webhook_store
+from app.storage.webhook_store import WebhookStore
 from app.webhooks.manager import (
     EVENT_CATALOG,
     RETRY_INTERVALS,

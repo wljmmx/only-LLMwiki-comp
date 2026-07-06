@@ -11,14 +11,14 @@ import structlog
 
 from app.config import get_settings
 from app.core.llm import ChatMessage, get_llm_client
-from app.parsers.base import ParsedDocument
+from app.extraction.rule_extractor import RuleBasedExtractor
 from app.extraction.types import (
-    ExtractionResult,
     ExtractedEntity,
     ExtractedRelation,
+    ExtractionResult,
     ExtractionStats,
 )
-from app.extraction.rule_extractor import RuleBasedExtractor
+from app.parsers.base import ParsedDocument
 
 logger = structlog.get_logger()
 

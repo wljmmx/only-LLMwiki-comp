@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import hashlib
-import structlog
 from typing import Callable
+
+import structlog
 
 from app.parsers.base import DocumentParser, ElementType, ParsedDocument, ParsedElement
 

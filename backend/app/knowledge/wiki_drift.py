@@ -25,7 +25,7 @@ from pathlib import Path
 import structlog
 import yaml
 
-from app.knowledge.wiki_index import list_wiki_pages, _key_from_slug
+from app.knowledge.wiki_index import _key_from_slug, list_wiki_pages
 from app.storage import get_document_store
 from app.storage.version_control import get_version_control
 
@@ -370,8 +370,8 @@ async def auto_recompile_stale(*, push_review: bool = True) -> RecompileBatchRes
         RecompileBatchResult
     """
     # 延迟导入避免循环依赖
-    from app.knowledge.wiki_compiler import get_wiki_compiler
     from app.knowledge.review_queue import get_review_queue
+    from app.knowledge.wiki_compiler import get_wiki_compiler
 
     stale_pages = list_stale_pages()
     if not stale_pages:

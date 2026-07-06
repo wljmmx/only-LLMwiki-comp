@@ -14,11 +14,11 @@ from datetime import datetime, timezone
 import structlog
 import yaml
 
-from app.storage.version_control import get_version_control
 from app.knowledge.wikilink import (
     get_orphan_slugs,
     update_backlinks,
 )
+from app.storage.version_control import get_version_control
 
 logger = structlog.get_logger()
 

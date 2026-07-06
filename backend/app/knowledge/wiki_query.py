@@ -22,12 +22,12 @@ from dataclasses import dataclass, field
 import structlog
 
 from app.config import get_settings
-from app.core.llm import ChatMessage, get_llm_client, embed_query, embed_texts
+from app.core.llm import ChatMessage, embed_query, embed_texts, get_llm_client
+from app.knowledge.wiki_index import _key_from_slug, list_wiki_pages
 from app.knowledge.wikilink import (
-    render_wikilinks_text,
     get_backlinks,
+    render_wikilinks_text,
 )
-from app.knowledge.wiki_index import list_wiki_pages, _key_from_slug
 from app.storage.version_control import get_version_control
 
 logger = structlog.get_logger()
