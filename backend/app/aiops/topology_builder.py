@@ -60,7 +60,10 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             occurrences INTEGER DEFAULT 0,
             source_docs TEXT DEFAULT '[]',      -- JSON list of doc_ids
             first_seen TEXT,
-            last_seen TEXT
+            last_seen TEXT,
+            -- P2-4.6 节点 metadata 扩展（JSON）
+            -- 字段：ip / version / owner / env / region / capacity / replicas / ...
+            metadata TEXT DEFAULT '{}'
         );
         CREATE INDEX IF NOT EXISTS idx_node_type ON topology_nodes(node_type);
         CREATE INDEX IF NOT EXISTS idx_node_name ON topology_nodes(name);
@@ -97,6 +100,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     """)
     # 旧库迁移：补齐 P2-4.1 新增列（必须在 idx_edge_inferred 之前）
     _migrate_topology_columns(conn)
+    # 旧库迁移：补齐 P2-4.6 节点 metadata 列
+    _migrate_node_metadata(conn)
     # idx_edge_inferred 依赖 inferred 列，迁移后再创建
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_edge_inferred ON topology_edges(inferred)"
@@ -122,6 +127,19 @@ def _migrate_topology_columns(conn: sqlite3.Connection) -> None:
                 conn.execute(
                     "UPDATE topology_edges SET confidence = 1.0 WHERE confidence IS NULL"
                 )
+
+
+def _migrate_node_metadata(conn: sqlite3.Connection) -> None:
+    """P2-4.6 对历史 topology_nodes 表补齐 metadata 列"""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(topology_nodes)")}
+    if "metadata" not in cols:
+        conn.execute(
+            "ALTER TABLE topology_nodes ADD COLUMN metadata TEXT DEFAULT '{}'"
+        )
+        # 已有节点 metadata 初始化为空 dict
+        conn.execute(
+            "UPDATE topology_nodes SET metadata = '{}' WHERE metadata IS NULL"
+        )
 
 
 NODE_TYPES = ("Host", "Service", "Component")
@@ -267,6 +285,8 @@ class TopologyBuilder:
         for r in node_rows:
             d = dict(r)
             d["source_docs"] = json.loads(d.get("source_docs") or "[]")
+            # P2-4.6 反序列化 metadata
+            d["metadata"] = json.loads(d.get("metadata") or "{}")
             nodes.append(d)
 
         # 边
@@ -352,9 +372,10 @@ class TopologyBuilder:
                     all_edges.append(dict(r))
             current_layer = next_layer
 
-        # 序列化 source_docs
+        # 序列化 source_docs + metadata（P2-4.6）
         for n in all_nodes:
             n["source_docs"] = json.loads(n.get("source_docs") or "[]")
+            n["metadata"] = json.loads(n.get("metadata") or "{}")
         for e in all_edges:
             e["source_docs"] = json.loads(e.get("source_docs") or "[]")
 
@@ -410,6 +431,73 @@ class TopologyBuilder:
                 "impacted_count": len(neighbors["downstream"]),
                 "root_cause_candidates": len(neighbors["upstream"]),
             },
+        }
+
+    # ────────── P2-4.6 节点 metadata 扩展 ──────────
+
+    def get_node(self, node_id: str) -> dict | None:
+        """P2-4.6 按 node_id 获取节点详情（含 metadata）"""
+        conn = _get_db()
+        r = conn.execute(
+            "SELECT * FROM topology_nodes WHERE node_id = ?",
+            (node_id,),
+        ).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        d["source_docs"] = json.loads(d.get("source_docs") or "[]")
+        d["metadata"] = json.loads(d.get("metadata") or "{}")
+        return d
+
+    def update_node_metadata(
+        self,
+        node_id: str,
+        metadata: dict,
+        merge: bool = True,
+    ) -> dict:
+        """P2-4.6 更新节点 metadata（手动补充或修正）
+
+        Args:
+            node_id: 节点 ID（如 "Host:web1"）
+            metadata: 要写入的 metadata 字段
+            merge: True=合并（保留旧字段，新字段覆盖同名）；False=整体替换
+
+        Returns:
+            {"node_id": str, "metadata": dict, "updated_fields": list[str]}
+        """
+        conn = _get_db()
+        r = conn.execute(
+            "SELECT metadata FROM topology_nodes WHERE node_id = ?",
+            (node_id,),
+        ).fetchone()
+        if not r:
+            return {"node_id": node_id, "error": f"节点不存在: {node_id}"}
+
+        old_meta = json.loads(r["metadata"] or "{}")
+        if merge:
+            updated_fields = [
+                k for k in metadata if metadata[k] != old_meta.get(k)
+            ]
+            new_meta = {**old_meta, **metadata}
+        else:
+            updated_fields = list(set(metadata.keys()) | set(old_meta.keys()))
+            new_meta = dict(metadata)
+
+        conn.execute(
+            "UPDATE topology_nodes SET metadata = ? WHERE node_id = ?",
+            (json.dumps(new_meta, ensure_ascii=False), node_id),
+        )
+        conn.commit()
+        logger.info(
+            "topology_node_metadata_updated",
+            node_id=node_id,
+            updated_fields=updated_fields,
+            merge=merge,
+        )
+        return {
+            "node_id": node_id,
+            "metadata": new_meta,
+            "updated_fields": updated_fields,
         }
 
     # ────────── 内部实现 ──────────
@@ -469,14 +557,24 @@ class TopologyBuilder:
         parsed = parser.parse(doc_meta.get("stored_path", ""), doc_meta["doc_id"])
         entities, relations = self.extractor.extract(parsed)
 
-        # 节点：仅保留 Host/Service/Component
+        # 节点：仅保留 Host/Service/Component，附带 P2-4.6 metadata
         nodes = []
         for e in entities:
             if e.entity_type in NODE_TYPES:
+                # P2-4.6 从 properties 中提取 metadata 字段
+                # 已知 metadata 字段：ip / version / owner / env / region / capacity / replicas
+                # 其他 properties（component_type / category / hostname / source_section / tier）保留在原字段
+                props = e.properties or {}
+                meta_keys = (
+                    "ip", "version", "owner", "env", "region",
+                    "capacity", "replicas",
+                )
+                metadata = {k: props[k] for k in meta_keys if k in props}
                 nodes.append(
                     {
                         "node_type": e.entity_type,
                         "name": e.name,
+                        "metadata": metadata,
                     }
                 )
         # 边：从抽取的 relations（DEPENDS_ON）+ 推断的 RUNS_ON/USES
@@ -526,6 +624,7 @@ class TopologyBuilder:
         now = datetime.now(timezone.utc).isoformat()
         for n in nodes:
             node_id = f"{n['node_type']}:{n['name'].lower()}"
+            new_meta = n.get("metadata", {}) or {}
             existing = conn.execute(
                 "SELECT * FROM topology_nodes WHERE node_id = ?", (node_id,)
             ).fetchone()
@@ -533,18 +632,28 @@ class TopologyBuilder:
                 docs = json.loads(existing["source_docs"] or "[]")
                 if doc_id not in docs:
                     docs.append(doc_id)
+                # P2-4.6 合并 metadata：旧值优先（已存在则不覆盖），
+                # 新字段补充进去；这样多次抽取的元数据互补累积
+                old_meta = json.loads(existing["metadata"] or "{}")
+                merged_meta = {**new_meta, **old_meta}  # old 优先
                 conn.execute(
                     """UPDATE topology_nodes
-                       SET occurrences = ?, source_docs = ?, last_seen = ?
+                       SET occurrences = ?, source_docs = ?, last_seen = ?, metadata = ?
                        WHERE node_id = ?""",
-                    (existing["occurrences"] + 1, json.dumps(docs), now, node_id),
+                    (
+                        existing["occurrences"] + 1,
+                        json.dumps(docs),
+                        now,
+                        json.dumps(merged_meta, ensure_ascii=False),
+                        node_id,
+                    ),
                 )
             else:
                 conn.execute(
                     """INSERT INTO topology_nodes
                        (node_id, node_type, name, occurrences, source_docs,
-                        first_seen, last_seen)
-                       VALUES (?, ?, ?, 1, ?, ?, ?)""",
+                        first_seen, last_seen, metadata)
+                       VALUES (?, ?, ?, 1, ?, ?, ?, ?)""",
                     (
                         node_id,
                         n["node_type"],
@@ -552,6 +661,7 @@ class TopologyBuilder:
                         json.dumps([doc_id]),
                         now,
                         now,
+                        json.dumps(new_meta, ensure_ascii=False),
                     ),
                 )
 

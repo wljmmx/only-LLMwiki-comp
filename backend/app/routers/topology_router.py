@@ -1,4 +1,4 @@
-"""服务拓扑 API（P2-4 + P2-4.1 + P2-4.2 + P2-4.3 + P2-4.4）。
+"""服务拓扑 API（P2-4 + P2-4.1 + P2-4.2 + P2-4.3 + P2-4.4 + P2-4.6）。
 
 端点：
 - POST /topology/rebuild
@@ -12,6 +12,8 @@
 - GET  /topology/export        (P2-4.4) Mermaid/Cytoscape 导出
 - GET  /topology/nodes/{node_name}
 - GET  /topology/impact/{node_name}
+- GET  /topology/node/{node_id}                 (P2-4.6) 节点详情
+- PATCH /topology/node/{node_id}/metadata       (P2-4.6) 更新 metadata
 """
 
 from __future__ import annotations
@@ -166,3 +168,44 @@ async def topology_impact(node_name: str) -> dict:
     """影响分析：给定节点故障，分析受影响的上下游"""
     builder = get_topology_builder()
     return builder.impact_analysis(node_name)
+
+
+# ────────── P2-4.6 节点 metadata 扩展 ──────────
+
+
+@router.get("/topology/node/{node_id}")
+async def topology_get_node(node_id: str) -> dict:
+    """P2-4.6 获取节点详情（含 metadata）
+
+    Path:
+        node_id: 节点 ID（如 "Host:web1"），URL 中冒号需编码为 %3A
+    """
+    builder = get_topology_builder()
+    node = builder.get_node(node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail=f"节点不存在: {node_id}")
+    return node
+
+
+@router.patch("/topology/node/{node_id}/metadata", dependencies=[Depends(verify_token)])
+async def topology_update_node_metadata(
+    node_id: str,
+    metadata: dict,
+    merge: bool = True,
+) -> dict:
+    """P2-4.6 更新节点 metadata（手动补充或修正）
+
+    Path:
+        node_id: 节点 ID（如 "Host:web1"），URL 中冒号需编码为 %3A
+
+    Body:
+        metadata: 要写入的 metadata 字段（JSON 对象）
+        merge: True=合并（旧字段保留，新字段覆盖同名）；False=整体替换
+
+    支持字段：ip / version / owner / env / region / capacity / replicas / 任意自定义字段
+    """
+    builder = get_topology_builder()
+    result = builder.update_node_metadata(node_id, metadata, merge=merge)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result

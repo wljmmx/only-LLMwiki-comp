@@ -86,6 +86,45 @@ HOST_LABEL_RE = re.compile(
 SERVICE_LABEL_RE = re.compile(
     r"(?:服务|service|service_id)[:：]\s*([^\s,，)]+)", re.IGNORECASE
 )
+# P2-4.6 节点 metadata 抽取模式
+# 版本号：v1.2.3 / version: 1.20.1 / nginx 1.20.1
+VERSION_RE = re.compile(
+    r"(?:^|[\s：(,:])"
+    r"(?:version|版本|ver|v)[:：\s]*"
+    r"(v?\d+(?:\.\d+){1,3}(?:-[a-z0-9.]+)?)",
+    re.IGNORECASE,
+)
+COMPONENT_VERSION_RE = re.compile(
+    r"\b(nginx|redis|mysql|postgresql|kafka|rabbitmq|mongodb|elasticsearch|"
+    r"prometheus|grafana|docker|kubernetes|k8s|java|python|nodejs)\s+"
+    r"(v?\d+(?:\.\d+){1,3})",
+    re.IGNORECASE,
+)
+# 负责人 / owner：owner: xxx / 负责人：xxx / 负责团队: xxx
+OWNER_RE = re.compile(
+    r"(?:owner|负责人|负责团队|maintainer|team)[:：]\s*([^\s,，)]{2,40})",
+    re.IGNORECASE,
+)
+# 环境：env: prod / 环境：测试 / environment: staging
+ENV_RE = re.compile(
+    r"(?:env|environment|环境|部署环境)[:：]\s*([^\s,，)]+)",
+    re.IGNORECASE,
+)
+# 环境 inline 关键词（在主机名或文档中出现 prod/test/staging/dev）
+ENV_INLINE_RE = re.compile(
+    r"\b(prod|production|test|testing|staging|dev|development)\b",
+    re.IGNORECASE,
+)
+# region / 地区：region: cn-east-1 / 地区：华东 / 区域: us-west-2
+REGION_RE = re.compile(
+    r"(?:region|地区|区域|机房|zone|az)[:：]\s*([^\s,，)]{2,40})",
+    re.IGNORECASE,
+)
+# P2-4.7 容量元数据：capacity / replicas / 副本数
+CAPACITY_RE = re.compile(
+    r"(?:capacity|容量| replicas|副本数|实例数|instances)[:：]\s*(\d+)",
+    re.IGNORECASE,
+)
 # 故障关键词
 INCIDENT_KEYWORDS = ("故障", "告警", "异常", "事故", "incident", "alert", "outage")
 PROCEDURE_KEYWORDS = (
@@ -189,14 +228,24 @@ class RuleBasedExtractor:
         entities: list[ExtractedEntity] = []
         relations: list[ExtractedRelation] = []
 
+        # P2-4.6 提前抽取本 element 的全局 metadata（version/owner/env/region/capacity）
+        # 这些字段会附加到本 element 抽取出的 Host/Service/Component 实体
+        global_meta = self._extract_metadata_from_text(text, section)
+
         # 1. Host
         for m in HOSTNAME_RE.finditer(text):
             name = m.group(1).lower()
             if self._is_likely_hostname(name):
+                props = {"hostname": name, "source_section": section}
+                # 主机名中可能含环境信息（xxx-prod-01 → env=prod）
+                env_from_name = self._env_from_name(name)
+                if env_from_name:
+                    props["env"] = env_from_name
+                props.update(global_meta)
                 self._hostnames[name] = self._make_entity(
                     "Host",
                     name,
-                    {"hostname": name, "source_section": section},
+                    props,
                     confidence=0.78,
                     evidence=m.group(0),
                     doc_id=doc_id,
@@ -206,10 +255,12 @@ class RuleBasedExtractor:
         for m in IPV4_RE.finditer(text):
             ip = m.group(1)
             name = ip.split(":")[0]
+            props = {"ip": ip, "source_section": section}
+            props.update(global_meta)
             self._hostnames[name] = self._make_entity(
                 "Host",
                 name,
-                {"ip": ip, "source_section": section},
+                props,
                 confidence=0.82,
                 evidence=ip,
                 doc_id=doc_id,
@@ -219,10 +270,15 @@ class RuleBasedExtractor:
         for m in HOST_LABEL_RE.finditer(text):
             name = m.group(1).strip().lower()
             if name and not name.startswith("$"):
+                props = {"source_section": section}
+                env_from_name = self._env_from_name(name)
+                if env_from_name:
+                    props["env"] = env_from_name
+                props.update(global_meta)
                 self._hostnames[name] = self._make_entity(
                     "Host",
                     name,
-                    {"source_section": section},
+                    props,
                     confidence=0.85,
                     evidence=m.group(0),
                     doc_id=doc_id,
@@ -233,10 +289,15 @@ class RuleBasedExtractor:
         for m in SERVICE_LABEL_RE.finditer(text):
             name = m.group(1).strip().lower()
             if name and not name.startswith("$") and len(name) < 60:
+                props = {"source_section": section, "tier": "unknown"}
+                env_from_name = self._env_from_name(name)
+                if env_from_name:
+                    props["env"] = env_from_name
+                props.update(global_meta)
                 self._services[name] = self._make_entity(
                     "Service",
                     name,
-                    {"source_section": section, "tier": "unknown"},
+                    props,
                     confidence=0.82,
                     evidence=m.group(0),
                     doc_id=doc_id,
@@ -247,10 +308,16 @@ class RuleBasedExtractor:
         lower = text.lower()
         for kw, props in COMPONENT_KEYWORDS.items():
             if re.search(rf"\b{re.escape(kw)}\b", lower):
+                merged = {**props, "source_section": section}
+                merged.update(global_meta)
+                # 组件 + 版本号共现 → 抓版本
+                cv_match = COMPONENT_VERSION_RE.search(lower)
+                if cv_match and cv_match.group(1).lower() == kw:
+                    merged["version"] = cv_match.group(2)
                 self._components[kw] = self._make_entity(
                     "Component",
                     kw,
-                    {**props, "source_section": section},
+                    merged,
                     confidence=0.80,
                     evidence=kw,
                     doc_id=doc_id,
@@ -380,6 +447,65 @@ class RuleBasedExtractor:
                             )
                         )
         return relations
+
+    @staticmethod
+    def _extract_metadata_from_text(text: str, section: str) -> dict:
+        """P2-4.6 从文本中抽取节点 metadata 字段
+
+        返回 dict，可能含：version / owner / env / region / capacity / replicas
+        每个字段只取首次匹配。
+        """
+        meta: dict = {}
+        # 版本号（version: 1.20.1 / 版本：v1.2.3）
+        m = VERSION_RE.search(text)
+        if m:
+            meta["version"] = m.group(1).strip()
+        # 负责人
+        m = OWNER_RE.search(text)
+        if m:
+            meta["owner"] = m.group(1).strip()
+        # 环境（显式 env: xxx 标注优先）
+        m = ENV_RE.search(text)
+        if m:
+            meta["env"] = m.group(1).strip().lower()
+        else:
+            # 否则从文本中的 inline 关键词推断（取首个，避免噪音）
+            m = ENV_INLINE_RE.search(text)
+            if m:
+                env = m.group(1).lower()
+                # 归一化：production → prod, testing → test, development → dev
+                env_norm = {
+                    "production": "prod",
+                    "testing": "test",
+                    "development": "dev",
+                }.get(env, env)
+                meta["env"] = env_norm
+        # region
+        m = REGION_RE.search(text)
+        if m:
+            meta["region"] = m.group(1).strip()
+        # 容量 / 副本数（P2-4.7 使用）
+        m = CAPACITY_RE.search(text)
+        if m:
+            meta["capacity"] = int(m.group(1))
+            meta["replicas"] = int(m.group(1))
+        return meta
+
+    @staticmethod
+    def _env_from_name(name: str) -> str | None:
+        """从主机名/服务名推断环境（xxx-prod-01 → prod）"""
+        if not name:
+            return None
+        lower = name.lower()
+        for env in ("prod", "production", "test", "testing", "staging", "dev", "development"):
+            if env in lower.split("-") or f"-{env}-" in lower or lower.endswith(f"-{env}"):
+                # 归一化
+                return {
+                    "production": "prod",
+                    "testing": "test",
+                    "development": "dev",
+                }.get(env, env)
+        return None
 
     def _find_service(self, name: str) -> ExtractedEntity | None:
         return self._services.get(name)
