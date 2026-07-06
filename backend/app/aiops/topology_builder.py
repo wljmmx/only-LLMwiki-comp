@@ -1,4 +1,4 @@
-"""服务拓扑自动构建（P2-4 + P2-4.1 共现推断）
+"""服务拓扑自动构建（P2-4 + P2-4.1 共现推断 + P2-4.3 快照 diff）
 
 从已上传文档中扫描抽取 Host/Service/Component 实体和它们之间的关系
 （RUNS_ON / DEPENDS_ON / USES），聚合形成服务拓扑图。
@@ -14,7 +14,12 @@ P2-4.1 共现推断：
 - 推断边标记 inferred=1 并附带 confidence（0~1）
 - 显式抽取的边 inferred=0, confidence=1.0
 
-持久化到 SQLite（topology_nodes / topology_edges 表），支持增量更新。
+P2-4.3 快照与 diff：
+- save_snapshot(label) 将当前拓扑序列化为 JSON 存入 topology_snapshots 表
+- list_snapshots / get_snapshot 查询历史快照
+- diff_snapshots(a, b) 对比两个快照，输出 added/removed/changed 节点与边
+
+持久化到 SQLite（topology_nodes / topology_edges / topology_snapshots 表），支持增量更新。
 """
 
 from __future__ import annotations
@@ -77,6 +82,18 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_edge_source ON topology_edges(source);
         CREATE INDEX IF NOT EXISTS idx_edge_target ON topology_edges(target);
         CREATE INDEX IF NOT EXISTS idx_edge_relation ON topology_edges(relation);
+
+        -- P2-4.3 拓扑快照表
+        CREATE TABLE IF NOT EXISTS topology_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            nodes_json TEXT NOT NULL,           -- JSON 序列化的节点列表
+            edges_json TEXT NOT NULL,           -- JSON 序列化的边列表
+            node_count INTEGER DEFAULT 0,
+            edge_count INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_snapshot_created ON topology_snapshots(created_at);
     """)
     # 旧库迁移：补齐 P2-4.1 新增列（必须在 idx_edge_inferred 之前）
     _migrate_topology_columns(conn)
@@ -985,6 +1002,262 @@ class TopologyBuilder:
             ensure_ascii=False,
             indent=2,
         )
+
+    # ────────── P2-4.3 拓扑快照与 diff ──────────
+
+    def save_snapshot(self, label: str) -> dict:
+        """P2-4.3 保存当前拓扑快照
+
+        将当前 topology_nodes / topology_edges 序列化为 JSON 存入
+        topology_snapshots 表，用于后续 diff 对比。
+
+        Args:
+            label: 快照标签（如 "v1.0"、"pre-rebuild"）
+
+        Returns:
+            {
+                "snapshot_id": int,
+                "label": str,
+                "created_at": str,
+                "node_count": int,
+                "edge_count": int,
+            }
+        """
+        topo = self.get_topology()
+        nodes = topo["nodes"]
+        edges = topo["edges"]
+        now = datetime.now(timezone.utc).isoformat()
+        conn = _get_db()
+        cur = conn.execute(
+            """INSERT INTO topology_snapshots
+               (label, created_at, nodes_json, edges_json,
+                node_count, edge_count)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                label,
+                now,
+                json.dumps(nodes, ensure_ascii=False),
+                json.dumps(edges, ensure_ascii=False),
+                len(nodes),
+                len(edges),
+            ),
+        )
+        conn.commit()
+        snapshot_id = cur.lastrowid
+        logger.info(
+            "topology_snapshot_saved",
+            snapshot_id=snapshot_id,
+            label=label,
+            nodes=len(nodes),
+            edges=len(edges),
+        )
+        return {
+            "snapshot_id": snapshot_id,
+            "label": label,
+            "created_at": now,
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+        }
+
+    def list_snapshots(self, limit: int = 20) -> list[dict]:
+        """P2-4.3 列出历史快照（按时间倒序）
+
+        Args:
+            limit: 返回条数上限
+
+        Returns:
+            [{"snapshot_id": int, "label": str, "created_at": str,
+              "node_count": int, "edge_count": int}, ...]
+        """
+        conn = _get_db()
+        rows = conn.execute(
+            """SELECT id, label, created_at, node_count, edge_count
+               FROM topology_snapshots
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "snapshot_id": r["id"],
+                "label": r["label"],
+                "created_at": r["created_at"],
+                "node_count": r["node_count"],
+                "edge_count": r["edge_count"],
+            }
+            for r in rows
+        ]
+
+    def get_snapshot(self, snapshot_id: int) -> dict | None:
+        """P2-4.3 获取单个快照详情（含 nodes/edges）"""
+        conn = _get_db()
+        r = conn.execute(
+            "SELECT * FROM topology_snapshots WHERE id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        if not r:
+            return None
+        return {
+            "snapshot_id": r["id"],
+            "label": r["label"],
+            "created_at": r["created_at"],
+            "node_count": r["node_count"],
+            "edge_count": r["edge_count"],
+            "nodes": json.loads(r["nodes_json"]),
+            "edges": json.loads(r["edges_json"]),
+        }
+
+    def diff_snapshots(self, snapshot_id_a: int, snapshot_id_b: int) -> dict:
+        """P2-4.3 对比两个拓扑快照的差异
+
+        对比维度：
+        - 节点：按 node_id 索引，输出 added / removed / changed
+          - changed：occurrences 或 source_docs 不同
+        - 边：按 (source, target, relation) 索引，输出 added / removed / changed
+          - changed：occurrences / source_docs / inferred / confidence 不同
+
+        Args:
+            snapshot_id_a: 旧快照 ID（基线）
+            snapshot_id_b: 新快照 ID（对比）
+
+        Returns:
+            {
+                "snapshot_a": {"id", "label", "created_at", "node_count", "edge_count"},
+                "snapshot_b": {...},
+                "nodes": {"added": [...], "removed": [...], "changed": [...]},
+                "edges": {"added": [...], "removed": [...], "changed": [...]},
+                "summary": {
+                    "nodes_added": int, "nodes_removed": int, "nodes_changed": int,
+                    "edges_added": int, "edges_removed": int, "edges_changed": int,
+                }
+            }
+        """
+        snap_a = self.get_snapshot(snapshot_id_a)
+        snap_b = self.get_snapshot(snapshot_id_b)
+        if not snap_a:
+            return {"error": f"快照不存在: {snapshot_id_a}"}
+        if not snap_b:
+            return {"error": f"快照不存在: {snapshot_id_b}"}
+
+        # 节点 diff（按 node_id 索引）
+        nodes_a = {n["node_id"]: n for n in snap_a["nodes"]}
+        nodes_b = {n["node_id"]: n for n in snap_b["nodes"]}
+        node_added = []
+        node_removed = []
+        node_changed = []
+        for nid, n in nodes_b.items():
+            if nid not in nodes_a:
+                node_added.append(n)
+            else:
+                old = nodes_a[nid]
+                if (
+                    n.get("occurrences") != old.get("occurrences")
+                    or sorted(n.get("source_docs", []))
+                    != sorted(old.get("source_docs", []))
+                ):
+                    node_changed.append({
+                        "node_id": nid,
+                        "name": n.get("name"),
+                        "node_type": n.get("node_type"),
+                        "before": {
+                            "occurrences": old.get("occurrences", 0),
+                            "source_docs": old.get("source_docs", []),
+                        },
+                        "after": {
+                            "occurrences": n.get("occurrences", 0),
+                            "source_docs": n.get("source_docs", []),
+                        },
+                    })
+        for nid, n in nodes_a.items():
+            if nid not in nodes_b:
+                node_removed.append(n)
+
+        # 边 diff（按 (source, target, relation) 索引）
+        def _edge_key(e: dict) -> tuple[str, str, str]:
+            return (e["source"], e["target"], e["relation"])
+
+        edges_a = {_edge_key(e): e for e in snap_a["edges"]}
+        edges_b = {_edge_key(e): e for e in snap_b["edges"]}
+        edge_added = []
+        edge_removed = []
+        edge_changed = []
+        for k, e in edges_b.items():
+            if k not in edges_a:
+                edge_added.append(e)
+            else:
+                old = edges_a[k]
+                if (
+                    e.get("occurrences") != old.get("occurrences")
+                    or sorted(e.get("source_docs", []))
+                    != sorted(old.get("source_docs", []))
+                    or e.get("inferred") != old.get("inferred")
+                    or abs(
+                        float(e.get("confidence", 1.0))
+                        - float(old.get("confidence", 1.0))
+                    ) > 1e-6
+                ):
+                    edge_changed.append({
+                        "source": k[0],
+                        "target": k[1],
+                        "relation": k[2],
+                        "before": {
+                            "occurrences": old.get("occurrences", 0),
+                            "source_docs": old.get("source_docs", []),
+                            "inferred": old.get("inferred", 0),
+                            "confidence": old.get("confidence", 1.0),
+                        },
+                        "after": {
+                            "occurrences": e.get("occurrences", 0),
+                            "source_docs": e.get("source_docs", []),
+                            "inferred": e.get("inferred", 0),
+                            "confidence": e.get("confidence", 1.0),
+                        },
+                    })
+        for k, e in edges_a.items():
+            if k not in edges_b:
+                edge_removed.append(e)
+
+        result = {
+            "snapshot_a": {
+                "id": snap_a["snapshot_id"],
+                "label": snap_a["label"],
+                "created_at": snap_a["created_at"],
+                "node_count": snap_a["node_count"],
+                "edge_count": snap_a["edge_count"],
+            },
+            "snapshot_b": {
+                "id": snap_b["snapshot_id"],
+                "label": snap_b["label"],
+                "created_at": snap_b["created_at"],
+                "node_count": snap_b["node_count"],
+                "edge_count": snap_b["edge_count"],
+            },
+            "nodes": {
+                "added": node_added,
+                "removed": node_removed,
+                "changed": node_changed,
+            },
+            "edges": {
+                "added": edge_added,
+                "removed": edge_removed,
+                "changed": edge_changed,
+            },
+            "summary": {
+                "nodes_added": len(node_added),
+                "nodes_removed": len(node_removed),
+                "nodes_changed": len(node_changed),
+                "edges_added": len(edge_added),
+                "edges_removed": len(edge_removed),
+                "edges_changed": len(edge_changed),
+            },
+        }
+        logger.info(
+            "topology_snapshot_diff",
+            snapshot_a=snapshot_id_a,
+            snapshot_b=snapshot_id_b,
+            **result["summary"],
+        )
+        return result
 
     @staticmethod
     def _infer_relation(type_a: str, type_b: str) -> str | None:

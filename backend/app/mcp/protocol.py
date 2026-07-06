@@ -15,6 +15,8 @@
 - get_topology: 获取服务拓扑
 - infer_topology: 基于共现强度推断缺失的拓扑边（P2-4.1）
 - merge_topology_aliases: 合并别名节点（P2-4.2）
+- save_topology_snapshot: 保存拓扑快照（P2-4.3）
+- diff_topology_snapshots: 对比两个拓扑快照（P2-4.3）
 - impact_analysis: 影响分析
 - list_documents: 列出已上传文档
 
@@ -234,6 +236,46 @@ TOOLS: list[dict] = [
         },
     },
     {
+        "name": "save_topology_snapshot",
+        "description": (
+            "P2-4.3 保存当前拓扑快照。将当前 topology_nodes / topology_edges "
+            "序列化为 JSON 存入 topology_snapshots 表，便于后续 diff 对比。"
+            "建议在重大变更（rebuild / merge / infer）前后各保存一次。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "快照标签（如 'pre-rebuild'、'v1.0'），默认 'manual'",
+                    "default": "manual",
+                },
+            },
+        },
+    },
+    {
+        "name": "diff_topology_snapshots",
+        "description": (
+            "P2-4.3 对比两个拓扑快照的差异。输出 added / removed / changed "
+            "的节点和边（节点按 node_id 索引，边按 source+target+relation 索引）。"
+            "建议先调用 save_topology_snapshot 保存快照。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "snapshot_id_a": {
+                    "type": "integer",
+                    "description": "旧快照 ID（基线）",
+                },
+                "snapshot_id_b": {
+                    "type": "integer",
+                    "description": "新快照 ID（对比）",
+                },
+            },
+            "required": ["snapshot_id_a", "snapshot_id_b"],
+        },
+    },
+    {
         "name": "impact_analysis",
         "description": "影响分析：给定节点故障，分析受影响的上下游服务。",
         "inputSchema": {
@@ -265,17 +307,19 @@ TOOLS: list[dict] = [
 # - destructiveHint: 工具可能破坏性修改状态（删除/覆盖）
 # - idempotentHint: 重复调用效果相同（幂等）
 _TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
-    "search_knowledge":        {"readOnlyHint": True},
-    "generate_runbook":        {"readOnlyHint": True},   # 生成内容不修改状态
-    "list_incidents":          {"readOnlyHint": True},
-    "get_incident":            {"readOnlyHint": True},
-    "transition_incident":     {"destructiveHint": True, "idempotentHint": True},  # 改状态但幂等
-    "suggest_rollback":        {"readOnlyHint": True},
-    "get_topology":            {"readOnlyHint": True},
-    "infer_topology":          {"idempotentHint": True},  # INSERT OR IGNORE 幂等
-    "merge_topology_aliases":  {"destructiveHint": True, "idempotentHint": True},  # 删节点但幂等
-    "impact_analysis":         {"readOnlyHint": True},
-    "list_documents":          {"readOnlyHint": True},
+    "search_knowledge":            {"readOnlyHint": True},
+    "generate_runbook":            {"readOnlyHint": True},   # 生成内容不修改状态
+    "list_incidents":              {"readOnlyHint": True},
+    "get_incident":                {"readOnlyHint": True},
+    "transition_incident":         {"destructiveHint": True, "idempotentHint": True},  # 改状态但幂等
+    "suggest_rollback":            {"readOnlyHint": True},
+    "get_topology":                {"readOnlyHint": True},
+    "infer_topology":              {"idempotentHint": True},  # INSERT OR IGNORE 幂等
+    "merge_topology_aliases":      {"destructiveHint": True, "idempotentHint": True},  # 删节点但幂等
+    "save_topology_snapshot":      {"idempotentHint": False},  # 每次产生新快照（非幂等）
+    "diff_topology_snapshots":     {"readOnlyHint": True},     # 纯对比，不改状态
+    "impact_analysis":             {"readOnlyHint": True},
+    "list_documents":              {"readOnlyHint": True},
 }
 
 # 应用 annotations 到 TOOLS
@@ -495,6 +539,77 @@ def _tool_impact_analysis(args: dict) -> str:
     )
 
 
+def _tool_save_topology_snapshot(args: dict) -> str:
+    label = str(args.get("label", "manual")) or "manual"
+    builder = get_topology_builder()
+    result = builder.save_snapshot(label)
+    # 同时返回当前快照列表，便于查看 ID
+    snapshots = builder.list_snapshots(limit=5)
+    return json.dumps(
+        {
+            "saved": result,
+            "recent_snapshots": snapshots,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _tool_diff_topology_snapshots(args: dict) -> str:
+    try:
+        snap_a = int(args["snapshot_id_a"])
+        snap_b = int(args["snapshot_id_b"])
+    except (KeyError, TypeError, ValueError):
+        return json.dumps(
+            {"error": "snapshot_id_a 和 snapshot_id_b 必须为整数"},
+            ensure_ascii=False,
+        )
+    builder = get_topology_builder()
+    result = builder.diff_snapshots(snap_a, snap_b)
+    if "error" in result:
+        return json.dumps(result, ensure_ascii=False)
+    # 精简输出：added/removed/changed 列表只保留关键字段
+    def _slim_nodes(items: list[dict]) -> list[dict]:
+        return [
+            {
+                "node_id": n.get("node_id"),
+                "name": n.get("name"),
+                "node_type": n.get("node_type"),
+                "occurrences": n.get("occurrences", 0),
+            }
+            for n in items
+        ]
+
+    def _slim_edges(items: list[dict]) -> list[dict]:
+        return [
+            {
+                "source": e.get("source"),
+                "target": e.get("target"),
+                "relation": e.get("relation"),
+                "inferred": e.get("inferred", 0),
+                "confidence": e.get("confidence", 1.0),
+            }
+            for e in items
+        ]
+
+    slimmed = {
+        "snapshot_a": result["snapshot_a"],
+        "snapshot_b": result["snapshot_b"],
+        "nodes": {
+            "added": _slim_nodes(result["nodes"]["added"]),
+            "removed": _slim_nodes(result["nodes"]["removed"]),
+            "changed": result["nodes"]["changed"][:50],  # changed 含 before/after，原样返回
+        },
+        "edges": {
+            "added": _slim_edges(result["edges"]["added"]),
+            "removed": _slim_edges(result["edges"]["removed"]),
+            "changed": result["edges"]["changed"][:50],
+        },
+        "summary": result["summary"],
+    }
+    return json.dumps(slimmed, ensure_ascii=False, indent=2)
+
+
 def _tool_list_documents(args: dict) -> str:
     limit = int(args.get("limit", 20))
     docs = get_document_store().list(limit=limit)
@@ -528,6 +643,8 @@ TOOL_HANDLERS = {
     "get_topology": _tool_get_topology,
     "infer_topology": _tool_infer_topology,
     "merge_topology_aliases": _tool_merge_topology_aliases,
+    "save_topology_snapshot": _tool_save_topology_snapshot,
+    "diff_topology_snapshots": _tool_diff_topology_snapshots,
     "impact_analysis": _tool_impact_analysis,
     "list_documents": _tool_list_documents,
 }

@@ -1,9 +1,13 @@
-"""服务拓扑 API（P2-4 + P2-4.1 + P2-4.2 + P2-4.4）。
+"""服务拓扑 API（P2-4 + P2-4.1 + P2-4.2 + P2-4.3 + P2-4.4）。
 
 端点：
 - POST /topology/rebuild
 - POST /topology/infer         (P2-4.1) 共现推断
 - POST /topology/merge-aliases (P2-4.2) 节点别名合并
+- POST /topology/snapshots     (P2-4.3) 保存快照
+- GET  /topology/snapshots     (P2-4.3) 列出快照
+- GET  /topology/snapshots/{id} (P2-4.3) 快照详情
+- POST /topology/diff          (P2-4.3) 对比两个快照
 - GET  /topology
 - GET  /topology/export        (P2-4.4) Mermaid/Cytoscape 导出
 - GET  /topology/nodes/{node_name}
@@ -70,6 +74,61 @@ async def topology_get(
     """
     builder = get_topology_builder()
     return builder.get_topology(node_type=node_type, relation=relation)
+
+
+# ────────── P2-4.3 拓扑快照与 diff ──────────
+
+
+@router.post("/topology/snapshots", dependencies=[Depends(verify_token)])
+async def topology_save_snapshot(label: str = "manual") -> dict:
+    """P2-4.3 保存当前拓扑快照
+
+    Query:
+        label: 快照标签（默认 "manual"）
+    """
+    builder = get_topology_builder()
+    return builder.save_snapshot(label)
+
+
+@router.get("/topology/snapshots")
+async def topology_list_snapshots(limit: int = 20) -> dict:
+    """P2-4.3 列出历史快照（按时间倒序）
+
+    Query:
+        limit: 返回条数上限（默认 20）
+    """
+    builder = get_topology_builder()
+    return {"snapshots": builder.list_snapshots(limit=limit)}
+
+
+@router.get("/topology/snapshots/{snapshot_id}")
+async def topology_get_snapshot(snapshot_id: int) -> dict:
+    """P2-4.3 获取单个快照详情（含 nodes/edges）"""
+    builder = get_topology_builder()
+    snap = builder.get_snapshot(snapshot_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail=f"快照不存在: {snapshot_id}")
+    return snap
+
+
+@router.post("/topology/diff", dependencies=[Depends(verify_token)])
+async def topology_diff_snapshots(
+    snapshot_id_a: int,
+    snapshot_id_b: int,
+) -> dict:
+    """P2-4.3 对比两个拓扑快照的差异
+
+    Query:
+        snapshot_id_a: 旧快照 ID（基线）
+        snapshot_id_b: 新快照 ID（对比）
+
+    返回 added / removed / changed 的节点与边。
+    """
+    builder = get_topology_builder()
+    result = builder.diff_snapshots(snapshot_id_a, snapshot_id_b)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
 
 
 @router.get("/topology/export")
