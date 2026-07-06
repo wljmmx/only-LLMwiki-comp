@@ -277,7 +277,7 @@ TOOLS: list[dict] = [
     },
     {
         "name": "impact_analysis",
-        "description": "影响分析：给定节点故障，分析受影响的上下游服务。",
+        "description": "影响分析：给定节点故障，分析受影响的上下游服务。P2-4.7 增强冗余度分析：基于节点 metadata.replicas/capacity 计算 per-downstream 的 severity（critical=spof / degraded / minor）、blast_radius_score 与 single_points_of_failure。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -521,6 +521,8 @@ def _tool_impact_analysis(args: dict) -> str:
     if not node_name:
         return json.dumps({"error": "node_name 不能为空"}, ensure_ascii=False)
     result = get_topology_builder().impact_analysis(node_name)
+    # P2-4.7 增加 redundancy 字段输出
+    redundancy = result.get("redundancy", {})
     return json.dumps(
         {
             "node": result.get("node"),
@@ -533,6 +535,12 @@ def _tool_impact_analysis(args: dict) -> str:
                 for n in result.get("potential_root_cause", [])
             ],
             "summary": result.get("summary", {}),
+            # P2-4.7 冗余度影响分析
+            "redundancy": {
+                "node_replicas": redundancy.get("node_replicas", 1),
+                "node_is_spof": redundancy.get("node_is_spof", False),
+                "downstream_impacts": redundancy.get("downstream_impacts", []),
+            },
         },
         ensure_ascii=False,
         indent=2,

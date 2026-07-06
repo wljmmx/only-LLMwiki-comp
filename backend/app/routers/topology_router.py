@@ -1,4 +1,4 @@
-"""服务拓扑 API（P2-4 + P2-4.1 + P2-4.2 + P2-4.3 + P2-4.4 + P2-4.6）。
+"""服务拓扑 API（P2-4 + P2-4.1 + P2-4.2 + P2-4.3 + P2-4.4 + P2-4.6 + P2-4.7）。
 
 端点：
 - POST /topology/rebuild
@@ -11,7 +11,7 @@
 - GET  /topology
 - GET  /topology/export        (P2-4.4) Mermaid/Cytoscape 导出
 - GET  /topology/nodes/{node_name}
-- GET  /topology/impact/{node_name}
+- GET  /topology/impact/{node_name}    (P2-4.7) 影响分析含冗余度
 - GET  /topology/node/{node_id}                 (P2-4.6) 节点详情
 - PATCH /topology/node/{node_id}/metadata       (P2-4.6) 更新 metadata
 """

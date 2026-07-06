@@ -1,12 +1,12 @@
-"""服务拓扑自动构建（P2-4 + P2-4.1 共现推断 + P2-4.3 快照 diff）
+"""服务拓扑自动构建（P2-4 + P2-4.1 共现推断 + P2-4.3 快照 diff + P2-4.6 metadata + P2-4.7 冗余度影响分析）
 
 从已上传文档中扫描抽取 Host/Service/Component 实体和它们之间的关系
 （RUNS_ON / DEPENDS_ON / USES），聚合形成服务拓扑图。
 
 输出：
-- nodes: 节点列表（type, name, occurrences, source_docs）
+- nodes: 节点列表（type, name, occurrences, source_docs, metadata）
 - edges: 边列表（source, target, relation, occurrences, source_docs, inferred, confidence）
-- 邻接关系 + 影响分析（给定服务，找上下游依赖链）
+- 邻居查询 + 影响分析（给定服务，找上下游依赖链）
 
 P2-4.1 共现推断：
 - 基于节点 source_docs 计算两两共现强度（overlap coefficient）
@@ -18,6 +18,16 @@ P2-4.3 快照与 diff：
 - save_snapshot(label) 将当前拓扑序列化为 JSON 存入 topology_snapshots 表
 - list_snapshots / get_snapshot 查询历史快照
 - diff_snapshots(a, b) 对比两个快照，输出 added/removed/changed 节点与边
+
+P2-4.6 节点 metadata 扩展：
+- topology_nodes 新增 metadata JSON 列（ip/version/owner/env/region/capacity/replicas）
+- _merge_to_db 旧值优先合并；get_node/update_node_metadata 支持 API 修正
+
+P2-4.7 影响分析结合冗余度：
+- impact_analysis 返回 redundancy 字段，含 per-downstream 的 capacity_lost/remaining/impact_ratio/severity
+- severity 三档：critical（SPOF, replicas<=1）/ degraded（impact_ratio>=0.5）/ minor
+- summary 新增 critical_count/degraded_count/minor_count/blast_radius_score/single_points_of_failure
+- 标注本节点是否为 SPOF（replicas<=1 且有 dependents）
 
 持久化到 SQLite（topology_nodes / topology_edges / topology_snapshots 表），支持增量更新。
 """
@@ -404,7 +414,7 @@ class TopologyBuilder:
         ]
 
         return {
-            "node": dict(node),
+            "node": all_nodes[0] if all_nodes else dict(node),
             "neighbors": all_nodes,
             "edges": all_edges,
             "upstream": upstream,
@@ -415,12 +425,27 @@ class TopologyBuilder:
     def impact_analysis(self, node_name: str) -> dict:
         """影响分析：给定节点故障，分析受影响的上游/下游
 
+        P2-4.7 增强：结合节点 metadata 中的 replicas/capacity 字段，
+        对每个下游节点计算冗余度影响：
+        - capacity_lost: 因本节点故障损失的容量（默认 1）
+        - capacity_remaining: max(0, replicas - capacity_lost)
+        - impact_ratio: capacity_lost / replicas（0~1）
+        - severity: critical（SPOF, replicas<=1）/ degraded（ratio>=0.5）/ minor
+        - is_spof: replicas <= 1
+
+        本节点若 replicas<=1 且有 dependents，则 node_is_spof=True。
+
         - 下游（依赖此节点的）：直接受影响
         - 上游（此节点依赖的）：可能根因候选
         """
         neighbors = self.get_neighbors(node_name, depth=2)
         if not neighbors["node"]:
             return {"node": None, "error": f"未找到节点: {node_name}"}
+
+        # P2-4.7 冗余度分析
+        redundancy = self._redundancy_analysis(
+            neighbors["node"], neighbors["downstream"]
+        )
 
         return {
             "node": neighbors["node"],
@@ -430,7 +455,104 @@ class TopologyBuilder:
             "summary": {
                 "impacted_count": len(neighbors["downstream"]),
                 "root_cause_candidates": len(neighbors["upstream"]),
+                # P2-4.7 冗余度汇总
+                "critical_count": redundancy["critical_count"],
+                "degraded_count": redundancy["degraded_count"],
+                "minor_count": redundancy["minor_count"],
+                "single_points_of_failure": redundancy["spof_count"],
+                "blast_radius_score": round(redundancy["blast_radius_score"], 4),
             },
+            # P2-4.7 详细的冗余度分析
+            "redundancy": {
+                "node_replicas": redundancy["node_replicas"],
+                "node_is_spof": redundancy["node_is_spof"],
+                "downstream_impacts": redundancy["downstream_impacts"],
+            },
+        }
+
+    @staticmethod
+    def _redundancy_analysis(
+        node: dict, downstream: list[dict]
+    ) -> dict:
+        """P2-4.7 计算冗余度影响分析
+
+        Args:
+            node: 故障节点（含 metadata）
+            downstream: 受影响的下游节点列表（每个含 metadata）
+
+        Returns:
+            {
+                "node_replicas": int,        # 本节点 replicas（默认 1）
+                "node_is_spof": bool,        # 本节点是否为 SPOF
+                "downstream_impacts": [      # 每个下游的影响详情
+                    {
+                        "node_id", "name", "node_type",
+                        "replicas", "capacity_lost", "capacity_remaining",
+                        "impact_ratio", "severity", "is_spof"
+                    }
+                ],
+                "critical_count": int, "degraded_count": int, "minor_count": int,
+                "spof_count": int, "blast_radius_score": float
+            }
+        """
+        node_meta = node.get("metadata") or {}
+        # 本节点 replicas：优先 replicas，其次 capacity，默认 1
+        node_replicas = int(
+            node_meta.get("replicas")
+            or node_meta.get("capacity")
+            or 1
+        )
+        node_is_spof = node_replicas <= 1 and len(downstream) > 0
+
+        downstream_impacts = []
+        critical = degraded = minor = spof = 0
+        blast_radius = 0.0
+
+        for dn in downstream:
+            dn_meta = dn.get("metadata") or {}
+            replicas = int(dn_meta.get("replicas") or dn_meta.get("capacity") or 1)
+            # 假设本节点故障导致下游损失 1 个副本
+            capacity_lost = 1
+            capacity_remaining = max(0, replicas - capacity_lost)
+            impact_ratio = capacity_lost / replicas if replicas > 0 else 1.0
+            is_spof = replicas <= 1
+
+            if is_spof:
+                severity = "critical"
+                critical += 1
+                spof += 1
+            elif impact_ratio >= 0.5:
+                severity = "degraded"
+                degraded += 1
+            else:
+                severity = "minor"
+                minor += 1
+
+            blast_radius += impact_ratio
+
+            downstream_impacts.append(
+                {
+                    "node_id": dn.get("node_id"),
+                    "name": dn.get("name"),
+                    "node_type": dn.get("node_type"),
+                    "replicas": replicas,
+                    "capacity_lost": capacity_lost,
+                    "capacity_remaining": capacity_remaining,
+                    "impact_ratio": round(impact_ratio, 4),
+                    "severity": severity,
+                    "is_spof": is_spof,
+                }
+            )
+
+        return {
+            "node_replicas": node_replicas,
+            "node_is_spof": node_is_spof,
+            "downstream_impacts": downstream_impacts,
+            "critical_count": critical,
+            "degraded_count": degraded,
+            "minor_count": minor,
+            "spof_count": spof,
+            "blast_radius_score": blast_radius,
         }
 
     # ────────── P2-4.6 节点 metadata 扩展 ──────────
