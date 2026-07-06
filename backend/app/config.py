@@ -89,6 +89,13 @@ class Settings(BaseSettings):
     # SAML 严格模式（生产环境推荐 true：验证签名 + 不允许未签名的 assertion）
     saml_strict: bool = True
 
+    # LDAP / Active Directory 认证（S13-2 企业级 SSO 补齐）
+    # ldap_providers 是 JSON 字符串，格式见 backend/app/auth/ldap.py 模块文档
+    # 留空则关闭 LDAP 认证
+    ldap_providers: str = ""
+    # LDAP 用户默认角色（首次登录自动创建）
+    ldap_default_role: str = "viewer"
+
     # HA 高可用（P3-4）
     # 实例 ID 用于多实例区分；不传则用 hostname + pid 自动生成
     instance_id: str = ""

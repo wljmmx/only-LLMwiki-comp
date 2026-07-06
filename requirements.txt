@@ -24,6 +24,8 @@ opentelemetry-instrumentation-httpx>=0.60
 opentelemetry-exporter-otlp>=1.40
 # SAML 2.0 SSO（S13-1 企业级 SSO 补齐，默认关闭，SAML_PROVIDERS 配置后启用）
 python3-saml>=1.16
+# LDAP / Active Directory 认证（S13-2 企业级 SSO 补齐，默认关闭，LDAP_PROVIDERS 配置后启用）
+ldap3>=2.9
 # 开发依赖（CI / lint / test）
 pytest>=8.0
 ruff>=0.6

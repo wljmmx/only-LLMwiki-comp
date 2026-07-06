@@ -21,6 +21,7 @@ from app.routers.events_router import router as events_router
 from app.routers.export_router import router as export_router
 from app.routers.extraction_router import router as extraction_router
 from app.routers.graph_router import router as graph_router
+from app.routers.ldap_router import router as ldap_router
 from app.routers.llm_wiki_router import router as llm_wiki_router
 from app.routers.mcp_router import router as mcp_router
 from app.routers.oidc_router import router as oidc_router
@@ -151,6 +152,7 @@ async def tracing_status() -> dict[str, object]:
 app.include_router(auth_router)
 app.include_router(oidc_router)
 app.include_router(saml_router)
+app.include_router(ldap_router)
 app.include_router(documents_router)
 app.include_router(parsers_router)
 app.include_router(search_router)
