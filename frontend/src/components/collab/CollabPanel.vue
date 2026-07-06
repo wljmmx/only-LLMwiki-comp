@@ -15,9 +15,10 @@
  * - 错误提示
  */
 import { computed, onMounted, onUnmounted, watch } from 'vue'
-import { NAvatar, NButton, NTag, NSpace, NTooltip, NText } from 'naive-ui'
+import { NAvatar, NButton, NTag, NSpace, NTooltip, NText, NCollapse, NCollapseItem } from 'naive-ui'
 import { useCollab } from '@/composables/useCollab'
 import type { ConnectionState } from '@/composables/useCollab'
+import type { CollabEvent } from '@/api/realtime'
 
 const props = defineProps<{
   slug: string
@@ -33,6 +34,7 @@ const {
   lockHolder,
   connectionState,
   lastError,
+  events,
   hasLock,
   onlineCount,
   connect,
@@ -91,6 +93,26 @@ const canAcquire = computed(
 const canRelease = computed(
   () => connectionState.value === 'connected' && hasLock.value,
 )
+
+// S16-3：事件流
+// 按时间倒序展示（最新在最上），最多展示 MAX_EVENTS 条
+const reversedEvents = computed(() => [...events.value].reverse())
+
+// 事件类型 → 标签颜色（用于左侧圆点）
+const eventTypeColor: Record<CollabEvent['type'], string> = {
+  user_joined: '#3b82f6',     // 蓝：进入
+  user_left: '#9ca3af',        // 灰：离开
+  lock_acquired: '#f59e0b',    // 橙：获锁
+  lock_released: '#10b981',    // 绿：释锁
+  lock_denied: '#ef4444',      // 红：拒锁
+}
+
+/** 把毫秒时间戳格式化为 HH:MM:SS */
+function formatTime(ms: number): string {
+  const d = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
 
 onMounted(() => {
   connect()
@@ -174,6 +196,30 @@ onUnmounted(() => {
           申请编辑锁
         </NButton>
       </div>
+    </div>
+
+    <!-- S16-3：事件流区域 -->
+    <div class="collab-section">
+      <div class="section-label">事件流</div>
+      <NCollapse :default-expanded-names="['events']" display-directive="show">
+        <NCollapseItem title="最近事件" name="events">
+          <div v-if="reversedEvents.length === 0" class="empty-hint">暂无事件</div>
+          <div v-else class="event-list">
+            <div
+              v-for="(ev, i) in reversedEvents"
+              :key="`${ev.timestamp}-${i}`"
+              class="event-item"
+            >
+              <span
+                class="event-dot"
+                :style="{ background: eventTypeColor[ev.type] }"
+              ></span>
+              <span class="event-time">{{ formatTime(ev.timestamp) }}</span>
+              <span class="event-msg">{{ ev.message }}</span>
+            </div>
+          </div>
+        </NCollapseItem>
+      </NCollapse>
     </div>
   </div>
 </template>
@@ -271,5 +317,47 @@ onUnmounted(() => {
 
 .lock-free {
   color: var(--n-text-color-3, #6b7280);
+}
+
+/* S16-3：事件流 */
+.event-list {
+  max-height: 200px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.event-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 12px;
+  border-bottom: 1px solid var(--n-border-color, #f3f4f6);
+}
+
+.event-item:last-child {
+  border-bottom: none;
+}
+
+.event-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.event-time {
+  color: var(--n-text-color-3, #9ca3af);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.event-msg {
+  color: var(--n-text-color, #1f2937);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

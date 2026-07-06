@@ -40,18 +40,40 @@ export type ClientMessage =
   | { type: 'cursor'; payload: { line: number; col: number } }
 
 /** 服务端 → 客户端 消息 */
+// S16-3：所有事件类消息由后端 broadcast / _send_to 统一注入 timestamp（秒），
+// 前端事件流据此打时间；非事件消息（presence / heartbeat_ack）的 timestamp 字段不被使用。
 export type ServerMessage =
-  | { type: 'presence'; users: CollabUser[]; lock_holder: string | null }
-  | { type: 'user_joined'; user: CollabUser }
-  | { type: 'user_left'; user_id: string; reason?: string }
-  | { type: 'lock_acquired'; user_id: string }
-  | { type: 'lock_released'; user_id: string; reason?: string }
-  | { type: 'lock_denied'; reason: string; holder?: Partial<CollabUser> }
-  | { type: 'lock_acquired_ack'; user_id: string }
-  | { type: 'edit_event'; user_id: string; payload: Record<string, unknown> }
-  | { type: 'cursor'; user_id: string; payload: { line: number; col: number } }
-  | { type: 'heartbeat_ack' }
-  | { type: 'error'; message: string }
+  | { type: 'presence'; users: CollabUser[]; lock_holder: string | null; timestamp?: number }
+  | { type: 'user_joined'; user: CollabUser; timestamp?: number }
+  | { type: 'user_left'; user_id: string; reason?: string; timestamp?: number }
+  | { type: 'lock_acquired'; user_id: string; timestamp?: number }
+  | { type: 'lock_released'; user_id: string; reason?: string; timestamp?: number }
+  | { type: 'lock_denied'; reason: string; holder?: Partial<CollabUser>; timestamp?: number }
+  | { type: 'lock_acquired_ack'; user_id: string; timestamp?: number }
+  | { type: 'edit_event'; user_id: string; payload: Record<string, unknown>; timestamp?: number }
+  | { type: 'cursor'; user_id: string; payload: { line: number; col: number }; timestamp?: number }
+  | { type: 'heartbeat_ack'; timestamp?: number }
+  | { type: 'error'; message: string; timestamp?: number }
+
+/**
+ * 协作事件流条目（S16-3）
+ *
+ * useCollab 在收到 user_joined / user_left / lock_acquired / lock_released / lock_denied
+ * 五类事件消息时，把消息归一化为 CollabEvent 追加到 events ref（cap 50）。
+ * CollabPanel 据此渲染"事件流"区域，按时间倒序展示。
+ */
+export interface CollabEvent {
+  /** 毫秒时间戳（后端 timestamp 秒 × 1000，或前端 Date.now() 兜底） */
+  timestamp: number
+  /** 事件类型 */
+  type: 'user_joined' | 'user_left' | 'lock_acquired' | 'lock_released' | 'lock_denied'
+  /** 事件主体 user_id */
+  userId: string
+  /** 展示名（user_joined 直接取 msg.user.display_name；其他从 onlineUsers 反查，失败回退 userId） */
+  displayName: string
+  /** 已拼好的中文描述，UI 直接渲染 */
+  message: string
+}
 
 // ────────── HTTP 端点 ──────────
 

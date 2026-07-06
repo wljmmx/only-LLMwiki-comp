@@ -21,6 +21,7 @@ import { ref, computed, readonly } from 'vue'
 import {
   createCollabSocket,
   type CollabUser,
+  type CollabEvent,
   type ServerMessage,
   type ClientMessage,
 } from '@/api/realtime'
@@ -35,6 +36,8 @@ const HEARTBEAT_INTERVAL_MS = 30_000
 const MAX_RECONNECT_ATTEMPTS = 5
 /** 重连基础延迟（毫秒），实际延迟 = base * 2^attempt */
 const RECONNECT_BASE_DELAY_MS = 1_000
+/** 事件流容量上限（S16-3）— 超出后保留最新 N 条 */
+const MAX_EVENTS = 50
 
 export function useCollab(slug: string) {
   const authStore = useAuthStore()
@@ -44,6 +47,8 @@ export function useCollab(slug: string) {
   const lockHolder = ref<string | null>(null)
   const connectionState = ref<ConnectionState>('disconnected')
   const lastError = ref<string | null>(null)
+  // S16-3：事件流（按消息到达顺序追加，cap MAX_EVENTS，UI 渲染时倒序）
+  const events = ref<CollabEvent[]>([])
 
   // ────────── 内部状态（非响应式） ──────────
   let socket: WebSocket | null = null
@@ -79,6 +84,35 @@ export function useCollab(slug: string) {
     }
     const username = authStore.user?.username
     return username ? `user:${username}` : null
+  }
+
+  // ────────── 事件流辅助（S16-3） ──────────
+
+  /**
+   * 从 onlineUsers 反查 display_name，找不到时回退 user_id
+   * 注意：user_left 时需在从 onlineUsers 移除之前调用
+   */
+  function lookupDisplayName(userId: string): string {
+    const u = onlineUsers.value.find((x) => x.user_id === userId)
+    return u?.display_name || u?.username || userId
+  }
+
+  /**
+   * 追加一条事件到 events，超出 MAX_EVENTS 时保留最新 N 条
+   * timestamp 优先取后端注入的 msg.timestamp（秒 × 1000），缺失时用 Date.now() 兜底
+   */
+  function appendEvent(
+    type: CollabEvent['type'],
+    userId: string,
+    displayName: string,
+    message: string,
+    serverTimestamp?: number,
+  ): void {
+    const ts = typeof serverTimestamp === 'number' ? serverTimestamp * 1000 : Date.now()
+    const ev: CollabEvent = { timestamp: ts, type, userId, displayName, message }
+    // cap：保留最新 MAX_EVENTS 条（按到达顺序）
+    const next = events.value.length >= MAX_EVENTS ? [...events.value.slice(1), ev] : [...events.value, ev]
+    events.value = next
   }
 
   function setConnectionState(state: ConnectionState, error?: string) {
@@ -156,28 +190,76 @@ export function useCollab(slug: string) {
         break
       case 'user_joined':
         // presence 消息会同步完整列表，这里仅做日志
+        // S16-3：追加事件流条目
+        appendEvent(
+          'user_joined',
+          msg.user.user_id,
+          msg.user.display_name || msg.user.username || msg.user.user_id,
+          `${msg.user.display_name || msg.user.username || msg.user.user_id} 加入了协作`,
+          msg.timestamp,
+        )
         break
-      case 'user_left':
+      case 'user_left': {
+        // S16-3：先反查 display_name（移除前），再更新 onlineUsers
+        const leftName = lookupDisplayName(msg.user_id)
         onlineUsers.value = onlineUsers.value.filter((u) => u.user_id !== msg.user_id)
         if (lockHolder.value === msg.user_id) {
           lockHolder.value = null
         }
+        appendEvent(
+          'user_left',
+          msg.user_id,
+          leftName,
+          `${leftName} 离开了协作`,
+          msg.timestamp,
+        )
         break
-      case 'lock_acquired':
+      }
+      case 'lock_acquired': {
+        // S16-3：锁被获取（自己或他人）
         lockHolder.value = msg.user_id
+        const acqName = lookupDisplayName(msg.user_id)
+        appendEvent(
+          'lock_acquired',
+          msg.user_id,
+          acqName,
+          `${acqName} 申请了编辑锁`,
+          msg.timestamp,
+        )
         break
-      case 'lock_released':
+      }
+      case 'lock_released': {
+        // S16-3：锁被释放
         if (lockHolder.value === msg.user_id) {
           lockHolder.value = null
         }
+        const relName = lookupDisplayName(msg.user_id)
+        appendEvent(
+          'lock_released',
+          msg.user_id,
+          relName,
+          `${relName} 释放了编辑锁`,
+          msg.timestamp,
+        )
         break
+      }
       case 'lock_acquired_ack':
-        // 自己请求锁成功
+        // 自己请求锁成功（lockHolder 已是自己的回执）
         lockHolder.value = msg.user_id
         break
-      case 'lock_denied':
-        // 自己请求锁失败，lockHolder 不变（仍是他人）
+      case 'lock_denied': {
+        // S16-3：自己申请锁被拒，holder 是当前持锁者
+        const holderName = msg.holder?.display_name || msg.holder?.username || '他人'
+        const myId = myUserId() || 'me'
+        appendEvent(
+          'lock_denied',
+          myId,
+          myId,
+          `你申请编辑锁被拒（${holderName} 正在编辑）`,
+          msg.timestamp,
+        )
         break
+      }
       case 'heartbeat_ack':
         // 心跳回执，无需处理
         break
@@ -228,6 +310,8 @@ export function useCollab(slug: string) {
       // 清空本地状态（避免显示陈旧数据）
       onlineUsers.value = []
       lockHolder.value = null
+      // S16-3：连接断开清空事件流（重连后会从新状态开始）
+      events.value = []
       if (manuallyClosed) {
         setConnectionState('disconnected')
       } else {
@@ -258,6 +342,8 @@ export function useCollab(slug: string) {
     }
     onlineUsers.value = []
     lockHolder.value = null
+    // S16-3：主动断开同样清空事件流
+    events.value = []
     setConnectionState('disconnected')
   }
 
@@ -287,6 +373,8 @@ export function useCollab(slug: string) {
     lockHolder: readonly(lockHolder),
     connectionState: readonly(connectionState),
     lastError: readonly(lastError),
+    // S16-3：事件流（只读）
+    events: readonly(events),
     // 计算属性
     hasLock,
     onlineCount,

@@ -319,6 +319,9 @@ class CollabHub:
         self, slug: str, message: dict[str, Any], exclude_user: str | None = None
     ) -> int:
         """向房间内所有连接广播消息。返回实际送达数。"""
+        # S16-3：统一注入服务端时间戳（秒），便于前端事件流展示
+        if "timestamp" not in message:
+            message = {**message, "timestamp": time.time()}
         room = self.rooms.get(slug)
         if not room:
             return 0
@@ -346,6 +349,9 @@ class CollabHub:
         self, slug: str, user_id: str, message: dict[str, Any]
     ) -> bool:
         """向指定用户发送消息"""
+        # S16-3：单播消息也注入时间戳，保持与广播一致
+        if "timestamp" not in message:
+            message = {**message, "timestamp": time.time()}
         room = self.rooms.get(slug)
         if not room or user_id not in room.connections:
             return False
