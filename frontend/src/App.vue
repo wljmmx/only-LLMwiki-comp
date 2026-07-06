@@ -3,6 +3,7 @@ import {
   NConfigProvider,
   NMessageProvider,
   NDialogProvider,
+  NLoadingBarProvider,
   darkTheme,
   zhCN,
   dateZhCN,
@@ -10,6 +11,7 @@ import {
 import { computed } from 'vue'
 import { useAppStore } from '@/stores/app'
 import ErrorBoundary from '@/components/common/ErrorBoundary.vue'
+import LoadingBarBridge from '@/components/common/LoadingBarBridge'
 
 const appStore = useAppStore()
 const theme = computed(() => (appStore.darkMode ? darkTheme : null))
@@ -17,12 +19,15 @@ const theme = computed(() => (appStore.darkMode ? darkTheme : null))
 
 <template>
   <NConfigProvider :theme="theme" :locale="zhCN" :date-locale="dateZhCN">
-    <NMessageProvider>
-      <NDialogProvider>
-        <ErrorBoundary>
-          <router-view />
-        </ErrorBoundary>
-      </NDialogProvider>
-    </NMessageProvider>
+    <NLoadingBarProvider>
+      <LoadingBarBridge />
+      <NMessageProvider>
+        <NDialogProvider>
+          <ErrorBoundary>
+            <router-view />
+          </ErrorBoundary>
+        </NDialogProvider>
+      </NMessageProvider>
+    </NLoadingBarProvider>
   </NConfigProvider>
 </template>
