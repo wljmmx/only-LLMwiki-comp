@@ -45,8 +45,11 @@ from app.knowledge.wiki_drift import (
 )
 from app.knowledge.wiki_index import (
     INDEX_SLUG,
+    SHARD_THRESHOLD,
     get_all_slugs,
     get_index,
+    get_index_shard,
+    list_index_shards,
     list_wiki_pages,
     rebuild_index,
 )
@@ -55,6 +58,7 @@ from app.knowledge.wiki_lint import (
     SEV_INFO,
     SEV_WARN,
     TYPE_CONTRADICTION,
+    TYPE_CONTRADICTION_SEMANTIC,
     TYPE_DEADLINK,
     TYPE_EMPTY_SECTION,
     TYPE_MISSING_CONCEPT,
@@ -64,6 +68,7 @@ from app.knowledge.wiki_lint import (
     LintIssue,
     LintReport,
     lint_all,
+    lint_all_async,
     suggest_missing_pages,
 )
 from app.knowledge.wiki_query import (
@@ -120,9 +125,12 @@ __all__ = [
     "get_all_deadlinks",
     "rebuild_index",
     "get_index",
+    "get_index_shard",
+    "list_index_shards",
     "list_wiki_pages",
     "get_all_slugs",
     "INDEX_SLUG",
+    "SHARD_THRESHOLD",
     "WikiCompiler",
     "WikiPage",
     "WikiCompileResult",
@@ -147,8 +155,10 @@ __all__ = [
     "LintIssue",
     "LintReport",
     "lint_all",
+    "lint_all_async",
     "suggest_missing_pages",
     "TYPE_CONTRADICTION",
+    "TYPE_CONTRADICTION_SEMANTIC",
     "TYPE_STALE",
     "TYPE_ORPHAN",
     "TYPE_DEADLINK",
