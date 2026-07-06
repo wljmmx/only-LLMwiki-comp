@@ -66,6 +66,8 @@ class WikiQueryResult:
     recalled_pages: list[WikiPageHit] = field(default_factory=list)
     insufficient_knowledge: bool = False
     error: str = ""
+    # S12-1 知识复利：回写的新事实记录
+    writebacks: list[dict] = field(default_factory=list)
 
 
 # ────────── 关键词分词（极简，无外部依赖）──────────
@@ -478,6 +480,7 @@ class WikiQAEngine:
         *,
         recall_limit: int = 5,
         expand_backlinks: bool = True,
+        writeback: bool = True,
     ) -> WikiQueryResult:
         """回答用户问题
 
@@ -486,6 +489,7 @@ class WikiQAEngine:
             2. 若召回为空 → 提示知识库不足
             3. 加载页面正文作为上下文
             4. LLM 基于上下文回答，引用 [[slug]]
+            5. S12-1 知识复利：从回答中提取新事实回写 wiki（writeback=True 时）
         """
         # 1. 召回
         recalled = await recall_pages(question, limit=recall_limit)
@@ -550,12 +554,214 @@ class WikiQAEngine:
                 f"- [[{h.slug}]] {h.title}" for h in recalled
             )
 
-        return WikiQueryResult(
+        result = WikiQueryResult(
             question=question,
             answer=answer,
             cited_slugs=cited,
             recalled_pages=recalled,
         )
+
+        # 5. S12-1 知识复利：回写新事实
+        if writeback and answer and cited:
+            try:
+                writebacks = await self.writeback_new_facts(
+                    question=question,
+                    answer=answer,
+                    cited_slugs=cited,
+                    contexts=contexts,
+                )
+                result.writebacks = writebacks
+            except Exception as e:
+                logger.warning("wiki_writeback_failed", error=str(e))
+
+        return result
+
+    # ────────── S12-1 知识复利：新事实回写 ──────────
+
+    async def writeback_new_facts(
+        self,
+        question: str,
+        answer: str,
+        cited_slugs: list[str],
+        contexts: list[str],
+    ) -> list[dict]:
+        """从 LLM 回答中提取新事实，回写到对应 wiki 页面（知识复利）
+
+        流程（AGENTS.md §六 "知识复利"）：
+            1. LLM 对比 answer 与 contexts，提取"回答中包含但 wiki 中没有的新事实"
+            2. 每个新事实归属到一个 cited_slug
+            3. 将新事实追加到对应 wiki 页面的「## 知识复利补充」章节
+            4. 更新页面 frontmatter review_status: review_needed
+            5. 返回回写记录列表
+
+        容错：LLM 不可用 / 无新事实 / 写入失败 → 静默跳过，不抛异常
+
+        Returns:
+            [{slug, fact, version, status, reason}]
+        """
+        # 1. LLM 提取新事实
+        new_facts = await self._extract_new_facts(question, answer, contexts)
+        if not new_facts:
+            logger.info("wiki_writeback_no_new_facts", question=question[:50])
+            return []
+
+        # 2. 逐条回写到归属页面
+        writebacks: list[dict] = []
+        for fact in new_facts:
+            slug = fact.get("slug", "")
+            text = fact.get("fact", "").strip()
+            if not slug or not text or slug not in cited_slugs:
+                continue
+            try:
+                record = self._append_fact_to_page(slug, text, question)
+                if record:
+                    writebacks.append(record)
+            except Exception as e:
+                logger.warning(
+                    "wiki_writeback_page_failed",
+                    slug=slug,
+                    error=str(e),
+                )
+                writebacks.append(
+                    {"slug": slug, "fact": text, "status": "failed", "reason": str(e)}
+                )
+
+        if writebacks:
+            logger.info(
+                "wiki_writeback_done",
+                question=question[:50],
+                count=len(writebacks),
+            )
+        return writebacks
+
+    async def _extract_new_facts(
+        self,
+        question: str,
+        answer: str,
+        contexts: list[str],
+    ) -> list[dict]:
+        """让 LLM 对比 answer 与 wiki 上下文，提取新事实
+
+        Returns:
+            [{slug, fact}] — slug 为新事实应归属的 wiki 页面 slug
+        """
+        system = (
+            "你是 OpsKG Wiki 管理员。对比用户的回答与已有 wiki 上下文，"
+            "提取回答中包含但 wiki 上下文中尚未记录的「新事实」。"
+            "只提取有价值的、可复用的事实性信息（如参数值、处置步骤、配置项）。"
+            "忽略主观判断、复述 wiki 的内容、以及无法验证的断言。"
+            "每个新事实需指明应归属的 wiki slug（来自上下文中出现的 [[slug]]）。"
+            "若无新事实，返回空数组。"
+        )
+        prompt = (
+            f"# 用户问题\n{question}\n\n"
+            f"# LLM 回答\n{answer}\n\n"
+            f"# 已有 wiki 上下文\n"
+            + "\n\n".join(contexts)
+            + "\n\n# 输出要求\n"
+            "返回 JSON 数组，每个元素：{\"slug\": \"页面slug\", \"fact\": \"新事实（1-2 句）\"}\n"
+            "只返回 JSON，不要其他文字。若无新事实返回 []"
+        )
+        try:
+            messages = [
+                ChatMessage(role="system", content=system),
+                ChatMessage(role="user", content=prompt),
+            ]
+            resp = await self.llm.chat(
+                messages=messages,
+                temperature=0.1,
+                max_tokens=1024,
+            )
+            raw = (resp.text or "").strip()
+            # 容忍 LLM 返回非纯 JSON（包了 markdown code fence）
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            import json
+
+            facts = json.loads(raw)
+            if not isinstance(facts, list):
+                return []
+            # 校验结构
+            valid = []
+            for f in facts:
+                if isinstance(f, dict) and f.get("slug") and f.get("fact"):
+                    valid.append({"slug": str(f["slug"]), "fact": str(f["fact"])})
+            return valid
+        except Exception as e:
+            logger.warning("wiki_extract_facts_failed", error=str(e))
+            return []
+
+    def _append_fact_to_page(
+        self,
+        slug: str,
+        fact: str,
+        question: str,
+    ) -> dict | None:
+        """将新事实追加到 wiki 页面的「知识复利补充」章节
+
+        - 在页面正文末尾追加 `## 知识复利补充` 章节（若不存在）
+        - 每条事实格式：`- [问题] 事实内容（待审查）`
+        - 更新 frontmatter review_status: review_needed
+        - 通过 VersionControl 保存新版本
+
+        Returns:
+            {slug, fact, version, status} 或 None（页面不存在）
+        """
+        from datetime import datetime, timezone
+
+        from app.knowledge.wiki_index import _parse_frontmatter
+
+        doc_key = _key_from_slug(slug)
+        latest = self.vc.get_latest(doc_key)
+        if not latest:
+            return None
+
+        content = latest["content"]
+        meta, body = _parse_frontmatter(content)
+
+        # 追加知识复利补充章节
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        fact_line = f"- [{now} 来自提问「{question[:40]}」] {fact}（待审查）"
+
+        section_header = "## 知识复利补充"
+        if section_header in body:
+            # 章节已存在，追加到章节末尾（下一个 ## 之前）
+            idx = body.index(section_header)
+            section_start = idx + len(section_header)
+            # 找下一个二级标题
+            next_section = body.find("\n## ", section_start)
+            insert_pos = next_section if next_section > 0 else len(body)
+            body = body[:insert_pos].rstrip() + "\n" + fact_line + "\n" + body[insert_pos:]
+        else:
+            # 章节不存在，追加到正文末尾
+            body = body.rstrip() + f"\n\n{section_header}\n\n{fact_line}\n"
+
+        # 更新 frontmatter
+        meta["review_status"] = "review_needed"
+        meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        # 重建完整内容
+        new_content = _rebuild_frontmatter(meta, body)
+
+        # 保存新版本
+        title = meta.get("title") or slug
+        result = self.vc.save_version(
+            doc_key=doc_key,
+            title=title,
+            content=new_content,
+            author="wiki-qa-writeback",
+            change_summary=f"知识复利：回写新事实（来自提问「{question[:30]}」）",
+        )
+
+        version = result.get("version", latest.get("version", 0))
+        skipped = result.get("skipped", False)
+        return {
+            "slug": slug,
+            "fact": fact,
+            "version": version,
+            "status": "skipped" if skipped else "written",
+            "review_status": "review_needed",
+        }
 
     async def _llm_answer(self, question: str, contexts: list[str]) -> str:
         """让 LLM 基于 wiki 上下文回答"""
@@ -600,6 +806,24 @@ def _strip_frontmatter(md: str) -> str:
     if len(parts) < 3:
         return md
     return parts[2].lstrip("\n")
+
+
+def _rebuild_frontmatter(meta: dict, body: str) -> str:
+    """根据 meta dict 与 body 重建带 frontmatter 的完整内容
+
+    用于 S12-1 知识复利回写时重建页面。
+    """
+    import yaml
+
+    # 确保 body 末尾有换行
+    body = body.rstrip() + "\n"
+    if not meta:
+        return body
+    # yaml.safe_dump 保留顺序（sort_keys=False），allow_unicode 中文不转义
+    front = yaml.safe_dump(
+        meta, sort_keys=False, allow_unicode=True, default_flow_style=False
+    ).strip()
+    return f"---\n{front}\n---\n\n{body}"
 
 
 # ────────── 单例 ──────────
