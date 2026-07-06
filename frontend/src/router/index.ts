@@ -91,6 +91,18 @@ const routes = [
         component: () => import('@/views/GraphView.vue'),
         meta: { title: '知识图谱', icon: 'graph' },
       },
+      {
+        path: 'export',
+        name: 'export',
+        component: () => import('@/views/ExportView.vue'),
+        meta: { title: '导出中心', icon: 'export' },
+      },
+      {
+        path: 'mcp',
+        name: 'mcp',
+        component: () => import('@/views/McpView.vue'),
+        meta: { title: 'MCP 浏览器', icon: 'mcp' },
+      },
     ],
   },
 ]

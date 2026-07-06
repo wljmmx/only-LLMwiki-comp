@@ -69,6 +69,16 @@ const menuItems: MenuOption[] = [
         key: '/versions',
         icon: () => h('span', { style: 'font-size: 16px' }, '🕒'),
       },
+      {
+        label: '导出中心',
+        key: '/export',
+        icon: () => h('span', { style: 'font-size: 16px' }, '📤'),
+      },
+      {
+        label: 'MCP 浏览器',
+        key: '/mcp',
+        icon: () => h('span', { style: 'font-size: 16px' }, '🔌'),
+      },
     ],
   },
   {
