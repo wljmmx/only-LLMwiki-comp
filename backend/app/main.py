@@ -27,6 +27,7 @@ from app.routers.oidc_router import router as oidc_router
 from app.routers.parsers_router import router as parsers_router
 from app.routers.review_router import router as review_router
 from app.routers.runbook_router import router as runbook_router
+from app.routers.saml_router import router as saml_router
 from app.routers.search_router import router as search_router
 from app.routers.templates_router import router as templates_router
 from app.routers.topology_router import router as topology_router
@@ -149,6 +150,7 @@ async def tracing_status() -> dict[str, object]:
 # ────────── 业务域 APIRouter 聚合注册 ──────────
 app.include_router(auth_router)
 app.include_router(oidc_router)
+app.include_router(saml_router)
 app.include_router(documents_router)
 app.include_router(parsers_router)
 app.include_router(search_router)

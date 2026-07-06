@@ -80,6 +80,15 @@ class Settings(BaseSettings):
     # 前端登录后的回调页（后端完成 OIDC 后重定向到此 URL 并附带 ?token=...&redirect=...）
     frontend_base_url: str = "http://localhost:5173"
 
+    # SAML 2.0 SSO（S13-1 企业级 SSO 补齐）
+    # saml_providers 是 JSON 字符串，格式见 backend/app/auth/saml.py 模块文档
+    # 留空则关闭 SAML SSO
+    saml_providers: str = ""
+    # SAML 用户默认角色（首次登录自动创建）
+    saml_default_role: str = "viewer"
+    # SAML 严格模式（生产环境推荐 true：验证签名 + 不允许未签名的 assertion）
+    saml_strict: bool = True
+
     # HA 高可用（P3-4）
     # 实例 ID 用于多实例区分；不传则用 hostname + pid 自动生成
     instance_id: str = ""
