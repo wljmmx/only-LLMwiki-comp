@@ -126,8 +126,12 @@ class WebhookManager:
     def dispatch_event(self, event_type: str, payload: dict[str, Any]) -> int:
         """分发事件到所有匹配订阅（fire-and-forget，不阻塞调用方）
 
+        S15-2: 投递前先过 AlertRouter：
+        1. 静默窗口命中 → 直接返回 0
+        2. 路由规则收窄订阅范围（无规则时行为不变，向后兼容）
+
         Returns:
-            命中的订阅数量
+            命中并投递的订阅数量
         """
         try:
             subs = self.store.list_subscriptions(active_only=True)
@@ -138,6 +142,27 @@ class WebhookManager:
         matched = [s for s in subs if _event_matches(s.get("events", []), event_type)]
         if not matched:
             return 0
+
+        # S15-2: 告警路由引擎（静默 + 规则）
+        try:
+            from app.webhooks.alert_router import AlertRouter
+
+            router = AlertRouter(self.store)
+            if router.is_silenced(event_type, payload):
+                logger.info(
+                    "webhook.dispatch.silenced", event_type=event_type
+                )
+                return 0
+            matched = router.route(event_type, payload, matched)
+            if not matched:
+                return 0
+        except Exception as e:  # noqa: BLE001
+            # 路由引擎异常不应阻断投递（向后兼容降级）
+            logger.warning(
+                "webhook.dispatch.router_failed_fallback",
+                err=str(e),
+                event_type=event_type,
+            )
 
         # 注入事件信封字段
         envelope = {

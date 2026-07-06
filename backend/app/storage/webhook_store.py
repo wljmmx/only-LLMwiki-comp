@@ -65,6 +65,39 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_delivery_sub ON webhook_deliveries(subscription_id);
         CREATE INDEX IF NOT EXISTS idx_delivery_status ON webhook_deliveries(status);
         CREATE INDEX IF NOT EXISTS idx_delivery_retry ON webhook_deliveries(status, next_retry_at);
+
+        -- S15-2: 告警路由规则表（severity / payload_matchers / target_subscription_ids）
+        CREATE TABLE IF NOT EXISTS alert_rules (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            event_type_pattern TEXT NOT NULL,
+            severity TEXT DEFAULT '',
+            payload_matchers TEXT DEFAULT '[]',
+            target_subscription_ids TEXT DEFAULT '[]',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            priority INTEGER NOT NULL DEFAULT 100,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled ON alert_rules(enabled);
+        CREATE INDEX IF NOT EXISTS idx_alert_rules_priority ON alert_rules(priority);
+
+        -- S15-2: 静默窗口表（维护期间不投递）
+        CREATE TABLE IF NOT EXISTS silence_windows (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            event_type_pattern TEXT NOT NULL,
+            reason TEXT DEFAULT '',
+            start_time TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+            payload_matchers TEXT DEFAULT '[]',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_silence_enabled ON silence_windows(enabled);
+        CREATE INDEX IF NOT EXISTS idx_silence_time ON silence_windows(start_time, end_time);
         """
     )
 
@@ -383,6 +416,360 @@ class WebhookStore:
         finally:
             conn.close()
 
+    # ────────── 告警路由规则 CRUD（S15-2） ──────────
+
+    def create_alert_rule(
+        self,
+        name: str,
+        event_type_pattern: str,
+        description: str = "",
+        severity: str = "",
+        payload_matchers: list[dict] | None = None,
+        target_subscription_ids: list[str] | None = None,
+        enabled: bool = True,
+        priority: int = 100,
+    ) -> dict[str, Any]:
+        """创建告警路由规则
+
+        Args:
+            name: 规则名称
+            event_type_pattern: 事件匹配模式（精确 / `incident.*` / `*`）
+            description: 描述
+            severity: 严重等级过滤（critical/warning/info/空=不限）
+            payload_matchers: payload 匹配条件列表 [{"field","op","value"}]
+            target_subscription_ids: 目标订阅 ID 列表（空=匹配所有订阅）
+            enabled: 是否启用
+            priority: 优先级（数字越小越高）
+
+        Returns:
+            规则记录
+        """
+        if not name or not event_type_pattern:
+            raise ValueError("name 和 event_type_pattern 必填")
+        rule_id = _gen_id("rule")
+        now = _now_iso()
+        conn = _get_db()
+        try:
+            conn.execute(
+                """INSERT INTO alert_rules
+                   (id, name, description, event_type_pattern, severity,
+                    payload_matchers, target_subscription_ids, enabled, priority,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    rule_id,
+                    name,
+                    description,
+                    event_type_pattern,
+                    severity,
+                    json.dumps(payload_matchers or [], ensure_ascii=False),
+                    json.dumps(target_subscription_ids or [], ensure_ascii=False),
+                    1 if enabled else 0,
+                    int(priority),
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        logger.info(
+            "alert_rule.created", rule_id=rule_id, name=name, pattern=event_type_pattern
+        )
+        return {
+            "id": rule_id,
+            "name": name,
+            "description": description,
+            "event_type_pattern": event_type_pattern,
+            "severity": severity,
+            "payload_matchers": payload_matchers or [],
+            "target_subscription_ids": target_subscription_ids or [],
+            "enabled": enabled,
+            "priority": int(priority),
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def list_alert_rules(self, enabled_only: bool = False) -> list[dict[str, Any]]:
+        """列出告警路由规则（默认按 priority 升序）"""
+        conn = _get_db()
+        try:
+            sql = "SELECT * FROM alert_rules"
+            if enabled_only:
+                sql += " WHERE enabled = 1"
+            sql += " ORDER BY priority ASC, created_at DESC"
+            rows = conn.execute(sql).fetchall()
+            return [self._row_to_rule(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_alert_rule(self, rule_id: str) -> dict[str, Any] | None:
+        conn = _get_db()
+        try:
+            row = conn.execute(
+                "SELECT * FROM alert_rules WHERE id = ?", (rule_id,)
+            ).fetchone()
+            return self._row_to_rule(row) if row else None
+        finally:
+            conn.close()
+
+    def update_alert_rule(
+        self,
+        rule_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        event_type_pattern: str | None = None,
+        severity: str | None = None,
+        payload_matchers: list[dict] | None = None,
+        target_subscription_ids: list[str] | None = None,
+        enabled: bool | None = None,
+        priority: int | None = None,
+    ) -> dict[str, Any] | None:
+        conn = _get_db()
+        try:
+            row = conn.execute(
+                "SELECT * FROM alert_rules WHERE id = ?", (rule_id,)
+            ).fetchone()
+            if not row:
+                return None
+            now = _now_iso()
+            new_name = name if name is not None else row["name"]
+            new_desc = description if description is not None else row["description"]
+            new_pattern = (
+                event_type_pattern
+                if event_type_pattern is not None
+                else row["event_type_pattern"]
+            )
+            if not new_name or not new_pattern:
+                raise ValueError("name 和 event_type_pattern 不能为空")
+            new_severity = severity if severity is not None else row["severity"]
+            new_matchers = (
+                json.dumps(payload_matchers, ensure_ascii=False)
+                if payload_matchers is not None
+                else row["payload_matchers"]
+            )
+            new_targets = (
+                json.dumps(target_subscription_ids, ensure_ascii=False)
+                if target_subscription_ids is not None
+                else row["target_subscription_ids"]
+            )
+            new_enabled = (
+                (1 if enabled else 0) if enabled is not None else row["enabled"]
+            )
+            new_priority = (
+                int(priority) if priority is not None else row["priority"]
+            )
+            conn.execute(
+                """UPDATE alert_rules
+                   SET name = ?, description = ?, event_type_pattern = ?,
+                       severity = ?, payload_matchers = ?, target_subscription_ids = ?,
+                       enabled = ?, priority = ?, updated_at = ?
+                   WHERE id = ?""",
+                (
+                    new_name,
+                    new_desc,
+                    new_pattern,
+                    new_severity,
+                    new_matchers,
+                    new_targets,
+                    new_enabled,
+                    new_priority,
+                    now,
+                    rule_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_alert_rule(rule_id)
+
+    def delete_alert_rule(self, rule_id: str) -> bool:
+        conn = _get_db()
+        try:
+            cur = conn.execute(
+                "DELETE FROM alert_rules WHERE id = ?", (rule_id,)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    # ────────── 静默窗口 CRUD（S15-2） ──────────
+
+    def create_silence_window(
+        self,
+        name: str,
+        event_type_pattern: str,
+        start_time: str,
+        end_time: str,
+        reason: str = "",
+        payload_matchers: list[dict] | None = None,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        """创建静默窗口
+
+        Args:
+            name: 窗口名称
+            event_type_pattern: 事件匹配模式
+            start_time: 起始时间（ISO8601 UTC）
+            end_time: 结束时间（ISO8601 UTC）
+            reason: 静默原因
+            payload_matchers: payload 匹配条件（同 alert_rules）
+            enabled: 是否启用
+
+        Returns:
+            静默窗口记录
+        """
+        if not name or not event_type_pattern:
+            raise ValueError("name 和 event_type_pattern 必填")
+        if not start_time or not end_time:
+            raise ValueError("start_time 和 end_time 必填")
+        # 校验时间格式合法（容错：解析失败抛错）
+        datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+        win_id = _gen_id("silence")
+        now = _now_iso()
+        conn = _get_db()
+        try:
+            conn.execute(
+                """INSERT INTO silence_windows
+                   (id, name, event_type_pattern, reason, start_time, end_time,
+                    payload_matchers, enabled, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    win_id,
+                    name,
+                    event_type_pattern,
+                    reason,
+                    start_time,
+                    end_time,
+                    json.dumps(payload_matchers or [], ensure_ascii=False),
+                    1 if enabled else 0,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        logger.info(
+            "silence_window.created",
+            win_id=win_id,
+            name=name,
+            start=start_time,
+            end=end_time,
+        )
+        return {
+            "id": win_id,
+            "name": name,
+            "event_type_pattern": event_type_pattern,
+            "reason": reason,
+            "start_time": start_time,
+            "end_time": end_time,
+            "payload_matchers": payload_matchers or [],
+            "enabled": enabled,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def list_silence_windows(self, enabled_only: bool = False) -> list[dict[str, Any]]:
+        """列出静默窗口（按 start_time 升序）"""
+        conn = _get_db()
+        try:
+            sql = "SELECT * FROM silence_windows"
+            if enabled_only:
+                sql += " WHERE enabled = 1"
+            sql += " ORDER BY start_time ASC"
+            rows = conn.execute(sql).fetchall()
+            return [self._row_to_silence(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_silence_window(self, win_id: str) -> dict[str, Any] | None:
+        conn = _get_db()
+        try:
+            row = conn.execute(
+                "SELECT * FROM silence_windows WHERE id = ?", (win_id,)
+            ).fetchone()
+            return self._row_to_silence(row) if row else None
+        finally:
+            conn.close()
+
+    def update_silence_window(
+        self,
+        win_id: str,
+        name: str | None = None,
+        event_type_pattern: str | None = None,
+        reason: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        payload_matchers: list[dict] | None = None,
+        enabled: bool | None = None,
+    ) -> dict[str, Any] | None:
+        conn = _get_db()
+        try:
+            row = conn.execute(
+                "SELECT * FROM silence_windows WHERE id = ?", (win_id,)
+            ).fetchone()
+            if not row:
+                return None
+            now = _now_iso()
+            new_name = name if name is not None else row["name"]
+            new_pattern = (
+                event_type_pattern
+                if event_type_pattern is not None
+                else row["event_type_pattern"]
+            )
+            if not new_name or not new_pattern:
+                raise ValueError("name 和 event_type_pattern 不能为空")
+            new_reason = reason if reason is not None else row["reason"]
+            new_start = start_time if start_time is not None else row["start_time"]
+            new_end = end_time if end_time is not None else row["end_time"]
+            if start_time is not None:
+                datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            if end_time is not None:
+                datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+            new_matchers = (
+                json.dumps(payload_matchers, ensure_ascii=False)
+                if payload_matchers is not None
+                else row["payload_matchers"]
+            )
+            new_enabled = (
+                (1 if enabled else 0) if enabled is not None else row["enabled"]
+            )
+            conn.execute(
+                """UPDATE silence_windows
+                   SET name = ?, event_type_pattern = ?, reason = ?, start_time = ?,
+                       end_time = ?, payload_matchers = ?, enabled = ?, updated_at = ?
+                   WHERE id = ?""",
+                (
+                    new_name,
+                    new_pattern,
+                    new_reason,
+                    new_start,
+                    new_end,
+                    new_matchers,
+                    new_enabled,
+                    now,
+                    win_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_silence_window(win_id)
+
+    def delete_silence_window(self, win_id: str) -> bool:
+        conn = _get_db()
+        try:
+            cur = conn.execute(
+                "DELETE FROM silence_windows WHERE id = ?", (win_id,)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
     # ────────── 工具方法 ──────────
 
     @staticmethod
@@ -421,6 +808,55 @@ class WebhookStore:
             "attempts": row["attempts"],
             "max_attempts": row["max_attempts"],
             "next_retry_at": row["next_retry_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _row_to_rule(row: sqlite3.Row) -> dict[str, Any]:
+        """alert_rules 行 → dict（payload_matchers / target_subscription_ids 反序列化）"""
+        try:
+            matchers = json.loads(row["payload_matchers"]) if row["payload_matchers"] else []
+        except (json.JSONDecodeError, TypeError):
+            matchers = []
+        try:
+            targets = (
+                json.loads(row["target_subscription_ids"])
+                if row["target_subscription_ids"]
+                else []
+            )
+        except (json.JSONDecodeError, TypeError):
+            targets = []
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row["description"] or "",
+            "event_type_pattern": row["event_type_pattern"],
+            "severity": row["severity"] or "",
+            "payload_matchers": matchers,
+            "target_subscription_ids": targets,
+            "enabled": bool(row["enabled"]),
+            "priority": int(row["priority"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _row_to_silence(row: sqlite3.Row) -> dict[str, Any]:
+        """silence_windows 行 → dict"""
+        try:
+            matchers = json.loads(row["payload_matchers"]) if row["payload_matchers"] else []
+        except (json.JSONDecodeError, TypeError):
+            matchers = []
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "event_type_pattern": row["event_type_pattern"],
+            "reason": row["reason"] or "",
+            "start_time": row["start_time"],
+            "end_time": row["end_time"],
+            "payload_matchers": matchers,
+            "enabled": bool(row["enabled"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
