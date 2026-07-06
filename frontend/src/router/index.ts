@@ -85,6 +85,12 @@ const routes = [
         component: () => import('@/views/VersionsView.vue'),
         meta: { title: '版本控制', icon: 'versions' },
       },
+      {
+        path: 'graph',
+        name: 'graph',
+        component: () => import('@/views/GraphView.vue'),
+        meta: { title: '知识图谱', icon: 'graph' },
+      },
     ],
   },
 ]

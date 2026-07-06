@@ -43,6 +43,11 @@ const menuItems: MenuOption[] = [
         key: '/wiki-health',
         icon: () => h('span', { style: 'font-size: 16px' }, '🩺'),
       },
+      {
+        label: '知识图谱',
+        key: '/graph',
+        icon: () => h('span', { style: 'font-size: 16px' }, '🕸️'),
+      },
     ],
   },
   {
