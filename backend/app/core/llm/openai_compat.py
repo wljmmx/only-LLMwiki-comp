@@ -15,6 +15,22 @@ from app.core.llm.base import ChatMessage, LLMResponse
 logger = structlog.get_logger()
 
 
+def _tracing_span(name: str, **attrs):
+    """惰性导入 tracing span，避免循环依赖。未启用时为 no-op。"""
+    try:
+        from app.observability import span
+
+        return span(name, **attrs)
+    except Exception:  # noqa: BLE001
+        import contextlib
+
+        @contextlib.contextmanager
+        def _noop():
+            yield None
+
+        return _noop()
+
+
 class OpenAICompatClient:
     backend_name = "openai_compat"
 
@@ -47,25 +63,31 @@ class OpenAICompatClient:
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        resp = await self._client.chat.completions.create(
+        with _tracing_span(
+            "llm.chat",
+            backend=self._label,
             model=self._model,
-            messages=[{"role": m.role, "content": m.content} for m in messages],
-            temperature=temperature
-            if temperature is not None
-            else self._default_temperature,
-            max_tokens=max_tokens or self._default_max_tokens,
-            **kwargs,
-        )
-        choice = resp.choices[0]
-        usage = resp.usage
-        return LLMResponse(
-            text=choice.message.content or "",
-            model=resp.model,
-            prompt_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
-            completion_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
-            finish_reason=choice.finish_reason,
-            raw=resp.model_dump(),
-        )
+            message_count=len(messages),
+        ):
+            resp = await self._client.chat.completions.create(
+                model=self._model,
+                messages=[{"role": m.role, "content": m.content} for m in messages],
+                temperature=temperature
+                if temperature is not None
+                else self._default_temperature,
+                max_tokens=max_tokens or self._default_max_tokens,
+                **kwargs,
+            )
+            choice = resp.choices[0]
+            usage = resp.usage
+            return LLMResponse(
+                text=choice.message.content or "",
+                model=resp.model,
+                prompt_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
+                completion_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+                finish_reason=choice.finish_reason,
+                raw=resp.model_dump(),
+            )
 
     async def stream(
         self,

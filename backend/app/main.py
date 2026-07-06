@@ -125,6 +125,27 @@ async def ready() -> dict[str, object]:
     return result
 
 
+@app.get("/tracing/status")
+async def tracing_status() -> dict[str, object]:
+    """追踪状态：是否启用 + 当前 trace_id/span_id（便于调试）。
+
+    - `enabled`: OPSKG_TRACING_ENABLED=1 且 opentelemetry 已安装
+    - `trace_id` / `span_id`: 当前请求的 span 上下文（启用时才有值）
+    """
+    from app.observability import (
+        get_current_span_id,
+        get_current_trace_id,
+        get_tracer,
+    )
+
+    tracer = get_tracer()
+    return {
+        "enabled": tracer is not None,
+        "trace_id": get_current_trace_id(),
+        "span_id": get_current_span_id(),
+    }
+
+
 # ────────── 业务域 APIRouter 聚合注册 ──────────
 app.include_router(auth_router)
 app.include_router(oidc_router)
