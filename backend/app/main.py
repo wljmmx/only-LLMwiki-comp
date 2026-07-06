@@ -14,6 +14,7 @@ import structlog
 from fastapi import FastAPI
 
 from app.config import get_settings
+from app.routers.anomaly_router import router as anomaly_router
 from app.routers.auth_router import router as auth_router
 from app.routers.changes_router import router as changes_router
 from app.routers.documents_router import router as documents_router
@@ -170,3 +171,4 @@ app.include_router(versions_router)
 app.include_router(export_router)
 app.include_router(mcp_router)
 app.include_router(webhook_router)
+app.include_router(anomaly_router)
