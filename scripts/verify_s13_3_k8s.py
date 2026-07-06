@@ -353,53 +353,115 @@ def test_ingress() -> None:
     section("5. Ingress 路由规则")
     manifests = load_all_manifests()
 
-    ingress = None
+    ingresses: list[dict] = []
     for fname, docs in manifests.items():
         for doc in docs:
             if doc.get("kind") == "Ingress":
-                ingress = doc
-                break
+                ingresses.append(doc)
 
-    check("找到 Ingress", ingress is not None)
-    if not ingress:
-        return
+    check("至少 2 个 Ingress（拆分 api/web）", len(ingresses) >= 2, f"got {len(ingresses)}")
 
-    # annotations
-    ann = ingress.get("metadata", {}).get("annotations", {})
-    check(
-        "ingress.class=nginx 注解",
-        ann.get("kubernetes.io/ingress.class") == "nginx"
-        or ingress.get("spec", {}).get("ingressClassName") == "nginx",
+    # 收集所有 Ingress 的 paths
+    all_paths: list[tuple[str, str, str, dict]] = []  # (ingress_name, path, svc, ann)
+    for ing in ingresses:
+        ann = ing.get("metadata", {}).get("annotations", {})
+        name = ing.get("metadata", {}).get("name", "")
+        rules = ing.get("spec", {}).get("rules", [])
+        for r in rules:
+            for p in r.get("http", {}).get("paths", []):
+                path = p.get("path", "")
+                svc = p.get("backend", {}).get("service", {}).get("name", "")
+                all_paths.append((name, path, svc, ann))
+
+    # 检查 nginx ingress class
+    nginx_class_count = sum(
+        1 for ing in ingresses
+        if ing.get("metadata", {}).get("annotations", {}).get("kubernetes.io/ingress.class") == "nginx"
+        or ing.get("spec", {}).get("ingressClassName") == "nginx"
     )
     check(
-        "proxy-body-size 配置（文件上传）",
-        "nginx.ingress.kubernetes.io/proxy-body-size" in ann,
+        "所有 Ingress 使用 nginx class",
+        nginx_class_count == len(ingresses),
+        f"{nginx_class_count}/{len(ingresses)}",
+    )
+
+    # 检查 proxy-body-size / proxy-read-timeout
+    body_size_count = sum(
+        1 for ing in ingresses
+        if "nginx.ingress.kubernetes.io/proxy-body-size" in ing.get("metadata", {}).get("annotations", {})
     )
     check(
-        "proxy-read-timeout 配置（LLM 长响应）",
-        "nginx.ingress.kubernetes.io/proxy-read-timeout" in ann,
+        "所有 Ingress 配置 proxy-body-size",
+        body_size_count == len(ingresses),
+        f"{body_size_count}/{len(ingresses)}",
+    )
+    read_timeout_count = sum(
+        1 for ing in ingresses
+        if "nginx.ingress.kubernetes.io/proxy-read-timeout" in ing.get("metadata", {}).get("annotations", {})
+    )
+    check(
+        "所有 Ingress 配置 proxy-read-timeout",
+        read_timeout_count == len(ingresses),
+        f"{read_timeout_count}/{len(ingresses)}",
     )
 
-    # 路由规则
-    rules = ingress.get("spec", {}).get("rules", [])
-    check("rules 非空", len(rules) >= 1)
-    if not rules:
-        return
+    # 检查 /api 路由（带 rewrite）
+    api_ingress = next(
+        (ing for ing in ingresses if ing.get("metadata", {}).get("name") == "opskg-ingress-api"),
+        None,
+    )
+    check("找到 opskg-ingress-api", api_ingress is not None)
+    if api_ingress:
+        ann = api_ingress.get("metadata", {}).get("annotations", {})
+        check(
+            "api Ingress 含 rewrite-target 注解",
+            "nginx.ingress.kubernetes.io/rewrite-target" in ann,
+            f"got {ann.get('nginx.ingress.kubernetes.io/rewrite-target')}",
+        )
+        check(
+            "api Ingress rewrite-target=/$2",
+            ann.get("nginx.ingress.kubernetes.io/rewrite-target") == "/$2",
+        )
+        check(
+            "api Ingress use-regex=true",
+            ann.get("nginx.ingress.kubernetes.io/use-regex") == "true",
+        )
+        # 路径应为 /api(/|$)(.*)
+        rules = api_ingress.get("spec", {}).get("rules", [])
+        if rules:
+            paths = rules[0].get("http", {}).get("paths", [])
+            api_path = paths[0].get("path", "") if paths else ""
+            check(
+                "api Ingress path 含 /api 正则",
+                "/api" in api_path and "(/|$)" in api_path,
+                f"got {api_path}",
+            )
+            check(
+                "api Ingress pathType=ImplementationSpecific",
+                paths[0].get("pathType") == "ImplementationSpecific" if paths else False,
+            )
+            check(
+                "api Ingress backend=opskg-backend",
+                paths[0].get("backend", {}).get("service", {}).get("name") == "opskg-backend" if paths else False,
+            )
 
-    paths = rules[0].get("http", {}).get("paths", [])
-    path_backends: list[tuple[str, str]] = []
-    for p in paths:
-        path = p.get("path", "")
-        svc = p.get("backend", {}).get("service", {}).get("name", "")
-        path_backends.append((path, svc))
-
-    path_map = {p: s for p, s in path_backends}
-    check("/api → opskg-backend", path_map.get("/api") == "opskg-backend")
-    check("/auth → opskg-backend", path_map.get("/auth") == "opskg-backend")
-    check("/health → opskg-backend", path_map.get("/health") == "opskg-backend")
-    check("/ready → opskg-backend", path_map.get("/ready") == "opskg-backend")
-    check("/metrics → opskg-backend", path_map.get("/metrics") == "opskg-backend")
-    check("/ → opskg-frontend", path_map.get("/") == "opskg-frontend")
+    # 检查 web Ingress 路由
+    web_ingress = next(
+        (ing for ing in ingresses if ing.get("metadata", {}).get("name") == "opskg-ingress-web"),
+        None,
+    )
+    check("找到 opskg-ingress-web", web_ingress is not None)
+    if web_ingress:
+        rules = web_ingress.get("spec", {}).get("rules", [])
+        check("web Ingress rules 非空", len(rules) >= 1)
+        if rules:
+            paths = rules[0].get("http", {}).get("paths", [])
+            path_map = {p.get("path", ""): p.get("backend", {}).get("service", {}).get("name", "") for p in paths}
+            check("/auth → opskg-backend", path_map.get("/auth") == "opskg-backend")
+            check("/health → opskg-backend", path_map.get("/health") == "opskg-backend")
+            check("/ready → opskg-backend", path_map.get("/ready") == "opskg-backend")
+            check("/metrics → opskg-backend", path_map.get("/metrics") == "opskg-backend")
+            check("/ → opskg-frontend", path_map.get("/") == "opskg-frontend")
 
     # TLS 占位（注释存在即可，不强求启用）
     ingress_text = (K8S_DIR / "ingress.yaml").read_text(encoding="utf-8")

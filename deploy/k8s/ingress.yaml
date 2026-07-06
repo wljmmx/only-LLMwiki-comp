@@ -1,62 +1,48 @@
-# OpsKG Ingress（S13-3 K8s 部署）
+# OpsKG Ingress（S13-3 + S13-4 K8s 部署）
 #
 # 路由规则：
-#   /                  → opskg-frontend:80      （SPA 静态资源 + 入口）
-#   /api/              → opskg-backend:8000     （REST API）
-#   /auth/             → opskg-backend:8000     （OIDC / SAML / LDAP SSO 端点）
-#   /health            → opskg-backend:8000     （Liveness 探针）
-#   /ready             → opskg-backend:8000     （Readiness 探针）
-#   /metrics           → opskg-backend:8000     （Prometheus 指标）
-#   /tracing/status    → opskg-backend:8000     （追踪状态）
+#   /api/*              → opskg-backend:8000/*       （strip /api 前缀）
+#   /auth/*             → opskg-backend:8000/auth/*   （不 strip，SSO 回调路径必须保留）
+#   /health             → opskg-backend:8000/health
+#   /ready              → opskg-backend:8000/ready
+#   /metrics            → opskg-backend:8000/metrics
+#   /tracing/*          → opskg-backend:8000/tracing/*
+#   /                   → opskg-frontend:80           （SPA 静态资源）
+#
+# 拆分两个 Ingress 的原因：
+#   nginx-ingress 的 rewrite-target 注解作用于整个 Ingress。/api 需要 strip 前缀，
+#   而 /auth /health /ready /metrics 不能 strip（后端原样暴露）。
+#   因此将需要 rewrite 的 /api 单独成 Ingress，其余路由放另一个 Ingress。
 #
 # 前置要求：
-#   1. 集群已安装 Ingress controller（nginx-ingress / traefik / HAProxy）
+#   1. 集群已安装 Ingress controller（nginx-ingress）
 #   2. DNS 已将 opskg.example.com 解析到 Ingress controller 的外网 IP
 #   3. 已配置 TLS 证书（推荐 cert-manager 自动签发 Let's Encrypt）
-#
-# 启用 HTTPS：
-#   1. 安装 cert-manager：https://cert-manager.io/docs/installation/
-#   2. 创建 ClusterIssuer：
-#      apiVersion: cert-manager.io/v1
-#      kind: ClusterIssuer
-#      metadata:
-#        name: letsencrypt-prod
-#      spec:
-#        acme:
-#          server: https://acme-v02.api.letsencrypt.org/directory
-#          email: your-email@example.com
-#          privateKeySecretRef:
-#            name: letsencrypt-prod
-#          solvers:
-#            - http01:
-#                ingress:
-#                  class: nginx
-#   3. 在下方 Ingress 添加 annotations + tls 段（已注释，取消注释即可）
+---
+# ────────── Ingress 1: /api/* → backend（strip /api 前缀）──────────
+# 与 Docker 单镜像 nginx.conf + vite dev proxy 行为一致
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: opskg-ingress
+  name: opskg-ingress-api
   namespace: opskg
   labels:
     app.kubernetes.io/name: opskg-ingress
+    app.kubernetes.io/component: api-routing
     app.kubernetes.io/part-of: opskg-platform
   annotations:
-    # nginx-ingress controller 配置
     kubernetes.io/ingress.class: "nginx"
-    # 客户端上传文件大小限制（默认 1M，文档上传需调大）
+    # 启用正则路径匹配
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    # /api(/|$)(.*) 匹配 /api/xxx，$2 捕获 xxx，rewrite-target /$2 → backend /xxx
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    # 客户端上传文件大小限制
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-    # 后端长连接（LLM 流式响应可能耗时较长）
+    # LLM 长响应（流式生成、抽取等可能耗时较长）
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
-    # WebSocket 支持（用于未来实时推送）
-    nginx.ingress.kubernetes.io/websocket-services: "opskg-backend"
-    # HSTS（生产推荐开启）
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    # cert-manager 自动签发（取消注释启用）
-    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
 spec:
   ingressClassName: nginx
-  # TLS 配置（取消注释并替换为实际域名）
   # tls:
   #   - hosts:
   #       - opskg.example.com
@@ -65,15 +51,46 @@ spec:
     - host: opskg.example.com
       http:
         paths:
-          # 后端 API
-          - path: /api
-            pathType: Prefix
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
             backend:
               service:
                 name: opskg-backend
                 port:
                   name: http
-          # SSO 端点（OIDC / SAML / LDAP）
+---
+# ────────── Ingress 2: /auth/* /health /ready /metrics /tracing/* / → 各 Service（无 rewrite）──────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opskg-ingress-web
+  namespace: opskg
+  labels:
+    app.kubernetes.io/name: opskg-ingress
+    app.kubernetes.io/component: web-routing
+    app.kubernetes.io/part-of: opskg-platform
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # WebSocket 支持
+    nginx.ingress.kubernetes.io/websocket-services: "opskg-backend"
+    # HSTS（生产推荐开启）
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # cert-manager 自动签发（取消注释启用）
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  # tls:
+  #   - hosts:
+  #       - opskg.example.com
+  #     secretName: opskg-tls
+  rules:
+    - host: opskg.example.com
+      http:
+        paths:
+          # SSO 端点（OIDC / SAML / LDAP，IdP 回调路径，不能 strip）
           - path: /auth
             pathType: Prefix
             backend:
