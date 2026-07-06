@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from app.parsers.base import DocumentParser
+from app.parsers.base import DocumentParser, ParsedDocument
 
 _registry: dict[str, Callable[[], DocumentParser]] = {}
 
@@ -34,6 +34,28 @@ def get_parser(fmt: str) -> DocumentParser:
 
 def supported_formats() -> list[str]:
     return sorted(_registry.keys())
+
+
+def parse_document(fmt: str, path: str, doc_id: str) -> ParsedDocument:
+    """解析文档（S15-1b：带 tracing span）。
+
+    便捷函数：查找解析器并执行解析，全程用 OpenTelemetry span 包裹，
+    使文档解析过程可被追踪。未启用 tracing 时为 no-op，不影响业务。
+
+    参数：
+        fmt: 文档格式（如 "pdf"、"docx"、"markdown"）
+        path: 文档在磁盘上的路径
+        doc_id: 文档唯一标识
+
+    返回：
+        ParsedDocument
+    """
+    # 惰性导入避免循环依赖
+    from app.observability import span
+
+    with span("document.parse", format=fmt, doc_id=doc_id, path=path):
+        parser = get_parser(fmt)
+        return parser.parse(path, doc_id)
 
 
 def _register_builtin() -> None:

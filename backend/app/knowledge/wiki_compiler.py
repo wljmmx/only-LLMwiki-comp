@@ -34,6 +34,7 @@ from app.extraction.types import EntityType, ExtractedEntity
 from app.knowledge.wiki_drift import clear_stale, record_compiled_checksum
 from app.knowledge.wiki_index import _key_from_slug, list_wiki_pages, rebuild_index
 from app.knowledge.wikilink import WIKILINK_RE, update_backlinks
+from app.observability import span
 from app.parsers import get_parser
 from app.storage import get_document_store
 from app.storage.version_control import get_version_control
@@ -199,96 +200,123 @@ class WikiCompiler:
         """
         result = WikiCompileResult(doc_id=doc_id)
 
-        # 1. 读取 raw
-        meta = self.store.get(doc_id)
-        if not meta:
-            result.errors.append(f"文档不存在: {doc_id}")
-            return result
+        # S15-1c: 知识编译 span 埋点，覆盖整个编译流程
+        with span("wiki.compile", doc_id=doc_id) as _sp:
+            # 1. 读取 raw
+            meta = self.store.get(doc_id)
+            if not meta:
+                result.errors.append(f"文档不存在: {doc_id}")
+                return result
 
-        raw_bytes = self.store.read_content(doc_id)
-        if not raw_bytes:
-            result.errors.append(f"原始文件读取失败: {doc_id}")
-            return result
+            # 设置 format 属性（span 对象可能为 None，需容错）
+            try:
+                if _sp is not None:
+                    _sp.set_attribute("format", meta.get("format", ""))
+            except Exception:  # noqa: BLE001
+                pass
 
-        # 2. 解析 + 抽取
-        try:
-            parser = get_parser(meta["format"])
-            doc = parser.parse(meta["stored_path"], doc_id)
-        except Exception as e:
-            result.errors.append(f"解析失败: {e}")
-            return result
+            raw_bytes = self.store.read_content(doc_id)
+            if not raw_bytes:
+                result.errors.append(f"原始文件读取失败: {doc_id}")
+                return result
 
-        try:
-            extraction = await self.extractor.extract(doc)
-        except Exception as e:
-            result.errors.append(f"抽取失败: {e}")
-            return result
+            # 2. 解析 + 抽取
+            try:
+                parser = get_parser(meta["format"])
+                # S15-1c: 文档解析 span 埋点
+                with span(
+                    "document.parse",
+                    doc_id=doc_id,
+                    format=meta.get("format", ""),
+                ):
+                    doc = parser.parse(meta["stored_path"], doc_id)
+            except Exception as e:
+                result.errors.append(f"解析失败: {e}")
+                return result
 
-        entities = list(extraction.auto_accepted_entities) + list(
-            extraction.review_entities
-        )
-        if not entities:
-            logger.info("wiki_compiler_no_entities", doc_id=doc_id)
-            # 无实体也更新状态
+            try:
+                extraction = await self.extractor.extract(doc)
+            except Exception as e:
+                result.errors.append(f"抽取失败: {e}")
+                return result
+
+            entities = list(extraction.auto_accepted_entities) + list(
+                extraction.review_entities
+            )
+            if not entities:
+                logger.info("wiki_compiler_no_entities", doc_id=doc_id)
+                # 无实体也更新状态
+                self.store.update_status(doc_id, "compiled")
+                return result
+
+            # 3. 逐个编译
+            source_entry = {
+                "doc_id": doc_id,
+                "title": meta.get("title") or meta.get("filename", doc_id),
+                "checksum": meta.get("checksum", ""),
+            }
+
+            for entity in entities:
+                try:
+                    page = await self._compile_entity_page(entity, source_entry)
+                    if page is None:
+                        continue
+                    outcome = self._save_page(page, force=force)
+                    result.slugs.append(page.slug)
+                    if outcome == "created":
+                        result.pages_created += 1
+                    elif outcome == "updated":
+                        result.pages_updated += 1
+                        if page.stale_items:
+                            result.stale_marked.append(page.slug)
+                    else:
+                        result.pages_unchanged += 1
+                    if page.review_status == "review_needed":
+                        result.review_needed.append(page.slug)
+                except Exception as e:
+                    logger.exception("wiki_compiler_page_failed", slug=entity.name)
+                    result.errors.append(f"{entity.name}: {e}")
+
+            # 4. 状态推进
             self.store.update_status(doc_id, "compiled")
+
+            # 5. 记录编译时 checksum（供 P1-1 漂移检测使用），清除已重编译页面的 stale
+            try:
+                record_compiled_checksum(doc_id, meta.get("checksum", ""))
+                for slug in result.slugs:
+                    clear_stale(slug)
+            except Exception as e:
+                result.errors.append(f"checksum/stale 同步失败: {e}")
+
+            # 6. 重建 index
+            if rebuild_index_after and result.pages_created + result.pages_updated > 0:
+                try:
+                    rebuild_index()
+                    result.index_rebuilt = True
+                except Exception as e:
+                    result.errors.append(f"index 重建失败: {e}")
+
+            # 设置 page_count 属性（编译完成后）
+            try:
+                if _sp is not None:
+                    _sp.set_attribute(
+                        "page_count",
+                        result.pages_created
+                        + result.pages_updated
+                        + result.pages_unchanged,
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+
+            logger.info(
+                "wiki_compiled",
+                doc_id=doc_id,
+                created=result.pages_created,
+                updated=result.pages_updated,
+                unchanged=result.pages_unchanged,
+                errors=len(result.errors),
+            )
             return result
-
-        # 3. 逐个编译
-        source_entry = {
-            "doc_id": doc_id,
-            "title": meta.get("title") or meta.get("filename", doc_id),
-            "checksum": meta.get("checksum", ""),
-        }
-
-        for entity in entities:
-            try:
-                page = await self._compile_entity_page(entity, source_entry)
-                if page is None:
-                    continue
-                outcome = self._save_page(page, force=force)
-                result.slugs.append(page.slug)
-                if outcome == "created":
-                    result.pages_created += 1
-                elif outcome == "updated":
-                    result.pages_updated += 1
-                    if page.stale_items:
-                        result.stale_marked.append(page.slug)
-                else:
-                    result.pages_unchanged += 1
-                if page.review_status == "review_needed":
-                    result.review_needed.append(page.slug)
-            except Exception as e:
-                logger.exception("wiki_compiler_page_failed", slug=entity.name)
-                result.errors.append(f"{entity.name}: {e}")
-
-        # 4. 状态推进
-        self.store.update_status(doc_id, "compiled")
-
-        # 5. 记录编译时 checksum（供 P1-1 漂移检测使用），清除已重编译页面的 stale
-        try:
-            record_compiled_checksum(doc_id, meta.get("checksum", ""))
-            for slug in result.slugs:
-                clear_stale(slug)
-        except Exception as e:
-            result.errors.append(f"checksum/stale 同步失败: {e}")
-
-        # 6. 重建 index
-        if rebuild_index_after and result.pages_created + result.pages_updated > 0:
-            try:
-                rebuild_index()
-                result.index_rebuilt = True
-            except Exception as e:
-                result.errors.append(f"index 重建失败: {e}")
-
-        logger.info(
-            "wiki_compiled",
-            doc_id=doc_id,
-            created=result.pages_created,
-            updated=result.pages_updated,
-            unchanged=result.pages_unchanged,
-            errors=len(result.errors),
-        )
-        return result
 
     # ── 单实体编译 ──
 

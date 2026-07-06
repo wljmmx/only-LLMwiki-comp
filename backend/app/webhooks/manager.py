@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 import structlog
 
+from app.observability import span
 from app.storage.webhook_store import WebhookStore, get_webhook_store
 
 logger = structlog.get_logger()
@@ -183,94 +184,102 @@ class WebhookManager:
         envelope: dict[str, Any],
     ) -> None:
         """执行单次投递，失败则记录重试信息"""
-        secret = self.store.get_subscription_secret(sub["id"])
-        if not secret:
-            # 订阅已禁用或删除
-            self.store.update_delivery(deliv["id"], status="skipped")
-            return
-
-        url = sub["url"]
-        payload_raw = json.dumps(envelope, ensure_ascii=False).encode("utf-8")
-        signature = _sign(payload_raw, secret)
-        headers = {
-            "Content-Type": "application/json",
-            "X-Webhook-Event": envelope["event_type"],
-            "X-Webhook-Event-Id": envelope["event_id"],
-            "X-Webhook-Signature": signature,
-            "X-Webhook-Timestamp": envelope["timestamp"],
-            "User-Agent": "OpsKG-Webhook/1.0",
-        }
-
-        attempts = deliv["attempts"]
-        try:
-            client = await self._get_client()
-            resp = await client.post(url, content=payload_raw, headers=headers)
-            code = resp.status_code
-            body = resp.text
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "webhook.delivery.error",
-                deliv_id=deliv["id"],
-                url=url,
-                err=str(e),
-            )
-            code = None
-            body = str(e)[:1000]
-        else:
-            if 200 <= code < 300:
-                self.store.update_delivery(
-                    deliv["id"],
-                    status="success",
-                    response_code=code,
-                    response_body=body,
-                    attempts=attempts + 1,
-                    next_retry_at=None,
-                )
-                _record_delivery_metric("success", envelope["event_type"])
-                logger.info(
-                    "webhook.delivery.success",
-                    deliv_id=deliv["id"],
-                    sub_id=sub["id"],
-                    code=code,
-                )
+        # S15-1d: webhook 投递 span 埋点，覆盖整个投递流程
+        with span(
+            "webhook.deliver",
+            event_type=envelope.get("event_type", ""),
+            url=sub.get("url", ""),
+            sub_id=sub.get("id", ""),
+            attempt=deliv.get("attempts", 0),
+        ):
+            secret = self.store.get_subscription_secret(sub["id"])
+            if not secret:
+                # 订阅已禁用或删除
+                self.store.update_delivery(deliv["id"], status="skipped")
                 return
 
-        # 失败处理
-        attempts += 1
-        if attempts >= self.max_attempts:
-            self.store.update_delivery(
-                deliv["id"],
-                status="failed",
-                response_code=code,
-                response_body=body,
-                attempts=attempts,
-                next_retry_at=None,
-            )
-            _record_delivery_metric("failed", envelope["event_type"])
-            logger.warning(
-                "webhook.delivery.failed",
-                deliv_id=deliv["id"],
-                attempts=attempts,
-                code=code,
-            )
-        else:
-            next_retry = _compute_next_retry(attempts)
-            self.store.update_delivery(
-                deliv["id"],
-                status="retry",
-                response_code=code,
-                response_body=body,
-                attempts=attempts,
-                next_retry_at=next_retry or None,
-            )
-            _record_delivery_metric("retry", envelope["event_type"])
-            logger.info(
-                "webhook.delivery.will_retry",
-                deliv_id=deliv["id"],
-                attempts=attempts,
-                next_retry=next_retry,
-                code=code,
-            )
+            url = sub["url"]
+            payload_raw = json.dumps(envelope, ensure_ascii=False).encode("utf-8")
+            signature = _sign(payload_raw, secret)
+            headers = {
+                "Content-Type": "application/json",
+                "X-Webhook-Event": envelope["event_type"],
+                "X-Webhook-Event-Id": envelope["event_id"],
+                "X-Webhook-Signature": signature,
+                "X-Webhook-Timestamp": envelope["timestamp"],
+                "User-Agent": "OpsKG-Webhook/1.0",
+            }
+
+            attempts = deliv["attempts"]
+            try:
+                client = await self._get_client()
+                resp = await client.post(url, content=payload_raw, headers=headers)
+                code = resp.status_code
+                body = resp.text
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "webhook.delivery.error",
+                    deliv_id=deliv["id"],
+                    url=url,
+                    err=str(e),
+                )
+                code = None
+                body = str(e)[:1000]
+            else:
+                if 200 <= code < 300:
+                    self.store.update_delivery(
+                        deliv["id"],
+                        status="success",
+                        response_code=code,
+                        response_body=body,
+                        attempts=attempts + 1,
+                        next_retry_at=None,
+                    )
+                    _record_delivery_metric("success", envelope["event_type"])
+                    logger.info(
+                        "webhook.delivery.success",
+                        deliv_id=deliv["id"],
+                        sub_id=sub["id"],
+                        code=code,
+                    )
+                    return
+
+            # 失败处理
+            attempts += 1
+            if attempts >= self.max_attempts:
+                self.store.update_delivery(
+                    deliv["id"],
+                    status="failed",
+                    response_code=code,
+                    response_body=body,
+                    attempts=attempts,
+                    next_retry_at=None,
+                )
+                _record_delivery_metric("failed", envelope["event_type"])
+                logger.warning(
+                    "webhook.delivery.failed",
+                    deliv_id=deliv["id"],
+                    attempts=attempts,
+                    code=code,
+                )
+            else:
+                next_retry = _compute_next_retry(attempts)
+                self.store.update_delivery(
+                    deliv["id"],
+                    status="retry",
+                    response_code=code,
+                    response_body=body,
+                    attempts=attempts,
+                    next_retry_at=next_retry or None,
+                )
+                _record_delivery_metric("retry", envelope["event_type"])
+                logger.info(
+                    "webhook.delivery.will_retry",
+                    deliv_id=deliv["id"],
+                    attempts=attempts,
+                    next_retry=next_retry,
+                    code=code,
+                )
 
     async def process_pending_retries(self, batch_size: int = 50) -> int:
         """处理到期的重试任务（由后台 worker 周期调用）

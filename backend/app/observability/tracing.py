@@ -39,6 +39,46 @@ _tracer: Any = None  # opentelemetry.trace.Tracer 或 None
 _initialized: bool = False
 
 
+def _configure_structlog_for_tracing() -> None:
+    """注册 tracing_log_processor 到 structlog processor 链（S15-1a）。
+
+    修复 P0 bug：tracing_log_processor 此前已定义但从未被注册到 structlog，
+    导致日志中不会出现 trace_id/span_id，日志与追踪关联失效。
+
+    本函数在 setup_tracing() 成功初始化后调用：
+    - 保留 structlog 现有默认 processor 链（merge_contextvars / add_log_level /
+      StackInfoRenderer / set_exc_info / TimeStamper / ConsoleRenderer）
+    - 在 renderer（最后一个 processor）之前插入 tracing_log_processor
+    - 幂等：已注册则跳过
+    - 保持 cache_logger_on_first_use=False，确保已创建的 logger 也能读取新配置
+    """
+    try:
+        current_config = structlog.get_config()
+        processors = list(current_config.get("processors", []))
+
+        # 幂等：已注册则跳过
+        if any(
+            p is tracing_log_processor
+            or getattr(p, "__name__", None) == "tracing_log_processor"
+            for p in processors
+        ):
+            return
+
+        # 在最后一个 processor（renderer）之前插入 tracing_log_processor
+        insert_idx = len(processors) - 1 if processors else 0
+        processors.insert(insert_idx, tracing_log_processor)
+
+        new_config = dict(current_config)
+        new_config["processors"] = processors
+        # 保持 cache_logger_on_first_use=False，使已创建的 logger 读取新配置
+        new_config["cache_logger_on_first_use"] = False
+        structlog.configure(**new_config)
+        logger.debug("tracing.structlog_configured")
+    except Exception as e:  # noqa: BLE001
+        # structlog 配置失败不影响 tracing 本身
+        logger.warning("tracing.structlog_configure_failed", error=str(e))
+
+
 def setup_tracing(app: Any, *, provider: Any = None) -> None:
     """初始化 OpenTelemetry tracing。在 FastAPI app 创建后调用一次。
 
@@ -107,6 +147,8 @@ def setup_tracing(app: Any, *, provider: Any = None) -> None:
         HTTPXClientInstrumentor().instrument()
 
         _initialized = True
+        # S15-1a: 注册 tracing_log_processor 到 structlog，使日志携带 trace_id/span_id
+        _configure_structlog_for_tracing()
         logger.info("tracing.initialized")
     except Exception as e:  # noqa: BLE001
         logger.warning("tracing.setup_failed", error=str(e))

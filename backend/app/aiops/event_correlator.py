@@ -30,6 +30,23 @@ import structlog
 
 logger = structlog.get_logger()
 
+
+def _tracing_span(name: str, **attrs):
+    """惰性导入 tracing span，避免循环依赖。未启用时为 no-op。"""
+    try:
+        from app.observability import span
+
+        return span(name, **attrs)
+    except Exception:  # noqa: BLE001
+        import contextlib
+
+        @contextlib.contextmanager
+        def _noop():
+            yield None
+
+        return _noop()
+
+
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "events.db"
 
 SEVERITY_RANK = {
@@ -273,10 +290,20 @@ class EventCorrelator:
             return {"incidents": [], "stats": {"total_alerts": 0, "incidents": 0}}
 
         events = [self._row_to_event(r) for r in rows]
-        incidents = self._correlate_events(events)
+        # 用 span 包裹关联核心逻辑；cluster_count 在 span 内动态设置
+        with _tracing_span(
+            "aiops.event_correlate",
+            event_count=len(events),
+        ) as s:
+            incidents = self._correlate_events(events)
+            if s is not None:
+                try:
+                    s.set_attribute("cluster_count", len(incidents))
+                except Exception:  # noqa: BLE001
+                    pass
 
-        # 持久化 incident + 关联事件
-        self._persist_incidents(conn, incidents)
+            # 持久化 incident + 关联事件
+            self._persist_incidents(conn, incidents)
 
         # P2-2.1/P2-2.3: noise_filtered 包含指纹去重数 + 无实体单事件过滤数
         dup_count = getattr(self, "_last_dup_count", 0)

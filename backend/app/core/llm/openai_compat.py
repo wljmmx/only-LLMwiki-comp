@@ -97,27 +97,36 @@ class OpenAICompatClient:
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
-        stream = await self._client.chat.completions.create(
+        # 用 span 包裹整个迭代过程；with + yield 在 async generator 中合法
+        with _tracing_span(
+            "llm.stream",
+            backend=self._label,
             model=self._model,
-            messages=[{"role": m.role, "content": m.content} for m in messages],
-            temperature=temperature
-            if temperature is not None
-            else self._default_temperature,
-            max_tokens=max_tokens or self._default_max_tokens,
-            stream=True,
-            **kwargs,
-        )
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            message_count=len(messages),
+        ):
+            stream = await self._client.chat.completions.create(
+                model=self._model,
+                messages=[{"role": m.role, "content": m.content} for m in messages],
+                temperature=temperature
+                if temperature is not None
+                else self._default_temperature,
+                max_tokens=max_tokens or self._default_max_tokens,
+                stream=True,
+                **kwargs,
+            )
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
 
     async def health(self) -> bool:
-        try:
-            await self._client.models.list()
-            return True
-        except Exception as e:
-            logger.warning("health_check_failed", label=self._label, error=str(e))
-            return False
+        # 用 span 包裹健康检查，便于观测后端可用性
+        with _tracing_span("llm.health", backend=self._label, model=self._model):
+            try:
+                await self._client.models.list()
+                return True
+            except Exception as e:
+                logger.warning("health_check_failed", label=self._label, error=str(e))
+                return False
 
     async def embed(
         self,
@@ -135,14 +144,21 @@ class OpenAICompatClient:
         if not texts:
             return []
         emb_model = model or self._embedding_model or "text-embedding-3-small"
-        resp = await self._client.embeddings.create(
+        # 用 span 包裹 embeddings 调用核心逻辑
+        with _tracing_span(
+            "llm.embed",
+            backend=self._label,
             model=emb_model,
-            input=texts,
-            **kwargs,
-        )
-        # 按 index 排序确保顺序与输入一致
-        sorted_data = sorted(resp.data, key=lambda d: d.index)
-        return [list(d.embedding) for d in sorted_data]
+            text_count=len(texts),
+        ):
+            resp = await self._client.embeddings.create(
+                model=emb_model,
+                input=texts,
+                **kwargs,
+            )
+            # 按 index 排序确保顺序与输入一致
+            sorted_data = sorted(resp.data, key=lambda d: d.index)
+            return [list(d.embedding) for d in sorted_data]
 
 
 def build_vllm_client(settings) -> OpenAICompatClient:
