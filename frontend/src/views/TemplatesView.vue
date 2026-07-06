@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, h } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import {
   NCard,
   NTag,
@@ -16,7 +16,6 @@ import {
   NModal,
   NForm,
   NFormItem,
-  NInput as NFormInput,
   NAlert,
   NCode,
   useMessage,
@@ -97,107 +96,6 @@ const categoryColor: Record<string, string> = {
 function isBuiltin(t: Template): boolean {
   return !!t.is_builtin || Number(t.is_builtin) === 1
 }
-
-const columns = computed(() => [
-  {
-    title: 'Slug',
-    key: 'slug',
-    width: 180,
-    render(row: Template) {
-      return h('code', { style: 'font-size: 13px;' }, row.slug)
-    },
-  },
-  {
-    title: '名称',
-    key: 'name',
-    ellipsis: { tooltip: true },
-  },
-  {
-    title: '分类',
-    key: 'category',
-    width: 120,
-    render(row: Template) {
-      const color = categoryColor[row.category] || '#999'
-      return h(
-        NTag,
-        { size: 'small', bordered: false, style: { color, background: 'transparent' } },
-        { default: () => row.category },
-      )
-    },
-  },
-  {
-    title: '类型',
-    key: 'is_builtin',
-    width: 90,
-    render(row: Template) {
-      return isBuiltin(row)
-        ? h(NTag, { size: 'small', type: 'info' }, { default: () => '内置' })
-        : h(NTag, { size: 'small', type: 'success' }, { default: () => '自定义' })
-    },
-  },
-  {
-    title: '描述',
-    key: 'description',
-    ellipsis: { tooltip: true },
-  },
-  {
-    title: '更新时间',
-    key: 'updated_at',
-    width: 170,
-    render(row: Template) {
-      return formatDate(row.updated_at || '')
-    },
-  },
-  {
-    title: '操作',
-    key: 'actions',
-    width: 280,
-    render(row: Template) {
-      const builtin = isBuiltin(row)
-      return h(NSpace, { size: 'small' }, {
-        default: () => [
-          h(
-            NButton,
-            { size: 'small', quaternary: true, onClick: () => openDetail(row) },
-            { default: () => '查看' },
-          ),
-          h(
-            NButton,
-            {
-              size: 'small',
-              quaternary: true,
-              type: 'info',
-              onClick: () => openRender(row),
-            },
-            { default: () => '渲染' },
-          ),
-          h(
-            NButton,
-            {
-              size: 'small',
-              quaternary: true,
-              type: 'warning',
-              disabled: !isAuthenticated.value,
-              onClick: () => openEditor(row, 'edit'),
-            },
-            { default: () => '编辑' },
-          ),
-          h(
-            NButton,
-            {
-              size: 'small',
-              quaternary: true,
-              type: 'error',
-              disabled: !isAuthenticated.value || builtin,
-              onClick: () => handleDelete(row),
-            },
-            { default: () => '删除' },
-          ),
-        ],
-      })
-    },
-  },
-])
 
 function formatDate(dateStr: string) {
   if (!dateStr) return '-'
@@ -359,7 +257,11 @@ onMounted(() => {
     <div class="page-header">
       <h2 class="page-title">模板管理</h2>
       <p class="page-desc">
-        内置运维 / 故障 / 配置等模板，支持 Mustache 风格变量占位渲染（{{ '{{variable}}' }} / {{ '{{#list}}...{{/list}}' }}）
+        <span>内置运维 / 故障 / 配置等模板，支持 Mustache 风格变量占位渲染（</span>
+        <code v-pre>{{variable}}</code>
+        <span> / </span>
+        <code v-pre>{{#list}}...{{/list}}</code>
+        <span>）</span>
       </p>
     </div>
 
