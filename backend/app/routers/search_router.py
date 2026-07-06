@@ -48,6 +48,10 @@ async def search(
         query_embedding,
         fusion=fusion,  # type: ignore[arg-type]
     )
+    # 业务指标埋点
+    from app.observability import record_business_metric
+
+    record_business_metric("search_queries_total")
     return {
         "query": q,
         "results": results,

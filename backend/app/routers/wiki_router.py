@@ -93,6 +93,10 @@ async def wiki_publish(
             "change_summary": change_summary,
         },
     )
+    # 业务指标埋点
+    from app.observability import record_business_metric
+
+    record_business_metric("wiki_published_total")
     return result
 
 

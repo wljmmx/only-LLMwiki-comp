@@ -105,6 +105,13 @@ async def parse_batch(files: list[UploadFile] = File(..., alias="files")) -> dic
             },
         )
 
+        # 业务指标埋点
+        from app.observability import record_business_metric
+
+        record_business_metric(
+            "documents_uploaded_total", 1.0, format=fmt
+        )
+
         try:
             parser = get_parser(fmt)
             doc = parser.parse(stored_path, doc_meta["doc_id"])
@@ -155,6 +162,13 @@ async def parse_file(fmt: str, file: UploadFile = File(...)) -> dict:
             "size_bytes": doc_meta.get("size_bytes"),
             "checksum": doc_meta.get("checksum"),
         },
+    )
+
+    # 业务指标埋点
+    from app.observability import record_business_metric
+
+    record_business_metric(
+        "documents_uploaded_total", 1.0, format=fmt
     )
 
     try:

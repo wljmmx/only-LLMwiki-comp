@@ -101,6 +101,14 @@ async def events_correlate(payload: dict = None) -> dict:
                 "services": inc.get("services", []),
             },
         )
+    # 业务指标埋点
+    from app.observability import record_business_metric
+
+    incidents_created = len(result.get("incidents", []))
+    if incidents_created > 0:
+        record_business_metric(
+            "incidents_created_total", float(incidents_created)
+        )
     return result
 
 

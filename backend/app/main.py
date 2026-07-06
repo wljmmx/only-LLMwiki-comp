@@ -42,14 +42,28 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     from app.webhooks import get_webhook_manager
 
     await get_webhook_manager().start_retry_worker(interval_seconds=15)
+    # 启动可观测性业务指标采集器
+    from app.observability import start_metrics_collector
+
+    collector_task = await start_metrics_collector(interval_seconds=30)
     try:
         yield
     finally:
+        collector_task.cancel()
+        try:
+            await collector_task
+        except Exception:  # noqa: BLE001
+            pass
         await get_webhook_manager().stop_retry_worker()
         logger.info("backend.stopping")
 
 
 app = FastAPI(title="OpsKG Backend", version="0.1.0", lifespan=lifespan)
+
+# 注册 Prometheus 指标中间件 + /metrics 端点
+from app.observability import setup_metrics_middleware  # noqa: E402
+
+setup_metrics_middleware(app)
 
 
 @app.get("/health")

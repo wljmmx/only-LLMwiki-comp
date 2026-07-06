@@ -90,6 +90,20 @@ def _sign(payload_raw: bytes, secret: str) -> str:
     return f"sha256={mac.hexdigest()}"
 
 
+def _record_delivery_metric(status: str, event_type: str) -> None:
+    """记录 webhook 投递业务指标（容错，失败不抛）"""
+    try:
+        from app.observability import record_business_metric
+
+        record_business_metric(
+            "webhook_deliveries_total",
+            status=status,
+            event_type=event_type,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class WebhookManager:
     """Webhook 事件分发管理器"""
 
@@ -212,6 +226,7 @@ class WebhookManager:
                     attempts=attempts + 1,
                     next_retry_at=None,
                 )
+                _record_delivery_metric("success", envelope["event_type"])
                 logger.info(
                     "webhook.delivery.success",
                     deliv_id=deliv["id"],
@@ -231,6 +246,7 @@ class WebhookManager:
                 attempts=attempts,
                 next_retry_at=None,
             )
+            _record_delivery_metric("failed", envelope["event_type"])
             logger.warning(
                 "webhook.delivery.failed",
                 deliv_id=deliv["id"],
@@ -247,6 +263,7 @@ class WebhookManager:
                 attempts=attempts,
                 next_retry_at=next_retry or None,
             )
+            _record_delivery_metric("retry", envelope["event_type"])
             logger.info(
                 "webhook.delivery.will_retry",
                 deliv_id=deliv["id"],
