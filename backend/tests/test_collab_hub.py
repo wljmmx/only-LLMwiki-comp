@@ -361,8 +361,13 @@ class TestBroadcast:
 
         delivered = _run(fresh_hub.broadcast("slug", {"type": "test"}))
         assert delivered == 2
-        assert ws1.sent == [{"type": "test"}]
-        assert ws2.sent == [{"type": "test"}]
+        # S16-3：broadcast 自动注入 timestamp，断言 type 与 timestamp 字段
+        assert len(ws1.sent) == 1
+        assert ws1.sent[0]["type"] == "test"
+        assert "timestamp" in ws1.sent[0]
+        assert len(ws2.sent) == 1
+        assert ws2.sent[0]["type"] == "test"
+        assert "timestamp" in ws2.sent[0]
 
     def test_broadcast_excludes_user(self, fresh_hub):
         ws1 = MockWebSocket()
@@ -377,7 +382,9 @@ class TestBroadcast:
         )
         assert delivered == 1
         assert ws1.sent == []
-        assert ws2.sent == [{"type": "test"}]
+        assert len(ws2.sent) == 1
+        assert ws2.sent[0]["type"] == "test"
+        assert "timestamp" in ws2.sent[0]
 
     def test_broadcast_unknown_room_returns_zero(self, fresh_hub):
         delivered = _run(fresh_hub.broadcast("nonexistent", {"type": "test"}))
@@ -406,7 +413,10 @@ class TestBroadcast:
         ok = _run(fresh_hub._send_to("slug", "u2", {"type": "private"}))
         assert ok
         assert ws1.sent == []
-        assert ws2.sent == [{"type": "private"}]
+        assert len(ws2.sent) == 1
+        assert ws2.sent[0]["type"] == "private"
+        # S16-3：_send_to 也注入 timestamp
+        assert "timestamp" in ws2.sent[0]
 
     def test_send_to_unknown_user_returns_false(self, fresh_hub):
         _make_conn(fresh_hub, "slug", "u1")
@@ -427,6 +437,52 @@ class TestBroadcast:
         assert len(presences) == 1
         assert presences[0]["lock_holder"] == "u1"
         assert len(presences[0]["users"]) == 2
+
+    # ────────── S16-3：timestamp 注入 ──────────
+
+    def test_broadcast_auto_injects_timestamp(self, fresh_hub):
+        """S16-3：broadcast 自动注入 timestamp（秒级 float）"""
+        ws1 = MockWebSocket()
+        _run(fresh_hub.connect("slug", "u1", "alice", "Alice", "admin", ws1))
+        ws1.sent.clear()
+
+        before = time.time()
+        _run(fresh_hub.broadcast("slug", {"type": "test"}))
+        after = time.time()
+
+        assert len(ws1.sent) == 1
+        ts = ws1.sent[0].get("timestamp")
+        assert isinstance(ts, float)
+        # timestamp 应在调用前后区间内
+        assert before <= ts <= after
+
+    def test_broadcast_preserves_existing_timestamp(self, fresh_hub):
+        """S16-3：消息体已有 timestamp 时不再覆盖"""
+        ws1 = MockWebSocket()
+        _run(fresh_hub.connect("slug", "u1", "alice", "Alice", "admin", ws1))
+        ws1.sent.clear()
+
+        fixed_ts = 1234567890.0
+        _run(fresh_hub.broadcast("slug", {"type": "test", "timestamp": fixed_ts}))
+
+        assert ws1.sent[0]["timestamp"] == fixed_ts
+
+    def test_send_to_auto_injects_timestamp(self, fresh_hub):
+        """S16-3：_send_to 单播也注入 timestamp"""
+        ws1 = MockWebSocket()
+        ws2 = MockWebSocket()
+        _run(fresh_hub.connect("slug", "u1", "alice", "Alice", "admin", ws1))
+        _run(fresh_hub.connect("slug", "u2", "bob", "Bob", "viewer", ws2))
+        ws1.sent.clear()
+        ws2.sent.clear()
+
+        before = time.time()
+        _run(fresh_hub._send_to("slug", "u2", {"type": "private"}))
+        after = time.time()
+
+        ts = ws2.sent[0].get("timestamp")
+        assert isinstance(ts, float)
+        assert before <= ts <= after
 
 
 # ═══════════════ 编辑事件 / cursor 转发 ═══════════════

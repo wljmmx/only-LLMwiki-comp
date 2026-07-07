@@ -14,12 +14,14 @@ vi.mock('@/utils/wikiRender', () => ({
 }))
 
 // S16-1：mock useCollab 避免 WikiView 测试触发真实 WebSocket
+// S16-3：mock 需补全 events 字段，否则 CollabPanel 的 reversedEvents computed 报 undefined
 vi.mock('@/composables/useCollab', () => ({
   useCollab: () => ({
     onlineUsers: { value: [] },
     lockHolder: { value: null },
     connectionState: { value: 'disconnected' },
     lastError: { value: '' },
+    events: { value: [] },
     hasLock: { value: false },
     onlineCount: { value: 0 },
     connect: vi.fn(),

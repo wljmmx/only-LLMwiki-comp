@@ -716,4 +716,221 @@ describe('composables/useCollab.ts — S15-5 实时协作 composable', () => {
       expect(lockHolder.value).toBeNull()
     })
   })
+
+  // ────────── 11. 事件流累积（S16-3） ──────────
+
+  describe('事件流累积（S16-3）', () => {
+    it('初始 events 为空数组', () => {
+      const { events } = useCollab('nginx-502')
+      expect(events.value).toEqual([])
+    })
+
+    it('user_joined 消息追加一条事件', () => {
+      const { connect, events } = useCollab('nginx-502')
+      connect()
+      currentSocket.fireOpen()
+      currentSocket.fireMessage({
+        type: 'user_joined',
+        user: { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+        timestamp: 1700000000,
+      })
+      expect(events.value.length).toBe(1)
+      expect(events.value[0].type).toBe('user_joined')
+      expect(events.value[0].userId).toBe('user:alice')
+      expect(events.value[0].displayName).toBe('Alice')
+      expect(events.value[0].message).toContain('Alice')
+      expect(events.value[0].message).toContain('加入了协作')
+      // 后端 timestamp（秒）→ 前端毫秒
+      expect(events.value[0].timestamp).toBe(1700000000 * 1000)
+    })
+
+    it('lock_acquired 事件从 onlineUsers 反查 displayName', () => {
+      const { connect, events } = useCollab('nginx-502')
+      connect()
+      currentSocket.fireOpen()
+      currentSocket.fireMessage({
+        type: 'presence',
+        users: [
+          { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+        ],
+        lock_holder: null,
+      })
+      currentSocket.fireMessage({ type: 'lock_acquired', user_id: 'user:alice', timestamp: 1 })
+      expect(events.value[0].displayName).toBe('Alice')
+      expect(events.value[0].message).toContain('申请了编辑锁')
+    })
+
+    it('user_left 在移除前反查 displayName（不会变成 user_id）', () => {
+      const { connect, events, onlineUsers } = useCollab('nginx-502')
+      connect()
+      currentSocket.fireOpen()
+      currentSocket.fireMessage({
+        type: 'presence',
+        users: [
+          { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+        ],
+        lock_holder: null,
+      })
+      currentSocket.fireMessage({ type: 'user_left', user_id: 'user:alice', timestamp: 2 })
+      expect(onlineUsers.value.length).toBe(0)
+      expect(events.value[0].displayName).toBe('Alice')
+      expect(events.value[0].message).toContain('离开了协作')
+    })
+
+    it('lock_released 事件追加', () => {
+      const { connect, events } = useCollab('nginx-502')
+      connect()
+      currentSocket.fireOpen()
+      currentSocket.fireMessage({
+        type: 'presence',
+        users: [
+          { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+        ],
+        lock_holder: 'user:alice',
+      })
+      currentSocket.fireMessage({ type: 'lock_released', user_id: 'user:alice', timestamp: 3 })
+      expect(events.value[0].type).toBe('lock_released')
+      expect(events.value[0].message).toContain('释放了编辑锁')
+    })
+
+    it('lock_denied 事件使用 holder 信息构造消息', () => {
+      loginAs('bob', 'operator')
+      const { connect, events } = useCollab('nginx-502')
+      connect()
+      currentSocket.fireOpen()
+      currentSocket.fireMessage({
+        type: 'lock_denied',
+        reason: 'held_by_other',
+        holder: { user_id: 'user:alice', display_name: 'Alice' },
+        timestamp: 4,
+      })
+      expect(events.value[0].type).toBe('lock_denied')
+      expect(events.value[0].message).toContain('被拒')
+      expect(events.value[0].message).toContain('Alice')
+    })
+
+    it('五类事件各追加一条，events 顺序与消息到达顺序一致', () => {
+      const { connect, events } = useCollab('nginx-502')
+      connect()
+      currentSocket.fireOpen()
+      currentSocket.fireMessage({
+        type: 'presence',
+        users: [
+          { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+        ],
+        lock_holder: null,
+      })
+      currentSocket.fireMessage({
+        type: 'user_joined',
+        user: { user_id: 'user:bob', username: 'bob', display_name: 'Bob', role: 'viewer' },
+        timestamp: 1,
+      })
+      currentSocket.fireMessage({ type: 'lock_acquired', user_id: 'user:alice', timestamp: 2 })
+      currentSocket.fireMessage({ type: 'lock_released', user_id: 'user:alice', timestamp: 3 })
+      currentSocket.fireMessage({ type: 'user_left', user_id: 'user:bob', timestamp: 4 })
+      expect(events.value.map((e) => e.type)).toEqual([
+        'user_joined',
+        'lock_acquired',
+        'lock_released',
+        'user_left',
+      ])
+    })
+
+    it('events 容量上限 50，超出后保留最新 50 条', () => {
+      const { connect, events } = useCollab('nginx-502')
+      connect()
+      currentSocket.fireOpen()
+      for (let i = 0; i < 55; i++) {
+        currentSocket.fireMessage({
+          type: 'lock_acquired',
+          user_id: `user:${i}`,
+          timestamp: i,
+        })
+      }
+      expect(events.value.length).toBe(50)
+      // 最早的 user:0~4 被淘汰，保留 user:5~54
+      expect(events.value[0].userId).toBe('user:5')
+      expect(events.value[49].userId).toBe('user:54')
+    })
+
+    it('消息无 timestamp 字段时用 Date.now() 兜底', () => {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const { connect, events } = useCollab('nginx-502')
+      connect()
+      currentSocket.fireOpen()
+      currentSocket.fireMessage({
+        type: 'lock_acquired',
+        user_id: 'user:alice',
+        // 注意：没有 timestamp 字段
+      })
+      expect(events.value[0].timestamp).toBe(Date.parse('2026-01-01T00:00:00Z'))
+    })
+
+    it('presence / heartbeat_ack / edit_event / cursor / error 不追加事件', () => {
+      const { connect, events } = useCollab('nginx-502')
+      connect()
+      currentSocket.fireOpen()
+      currentSocket.fireMessage({
+        type: 'presence',
+        users: [],
+        lock_holder: null,
+      })
+      currentSocket.fireMessage({ type: 'heartbeat_ack' })
+      currentSocket.fireMessage({ type: 'error', message: '房间已满' })
+      currentSocket.fireMessage({
+        type: 'edit_event',
+        user_id: 'user:alice',
+        payload: {},
+      })
+      currentSocket.fireMessage({
+        type: 'cursor',
+        user_id: 'user:alice',
+        payload: { line: 1, col: 1 },
+      })
+      expect(events.value).toEqual([])
+    })
+
+    it('disconnect 清空 events', () => {
+      const { connect, disconnect, events } = useCollab('nginx-502')
+      connect()
+      currentSocket.fireOpen()
+      currentSocket.fireMessage({
+        type: 'user_joined',
+        user: { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+        timestamp: 1,
+      })
+      expect(events.value.length).toBe(1)
+      disconnect()
+      expect(events.value).toEqual([])
+    })
+
+    it('onclose 清空 events', () => {
+      const { connect, events } = useCollab('nginx-502')
+      connect()
+      currentSocket.fireOpen()
+      currentSocket.fireMessage({
+        type: 'user_joined',
+        user: { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+        timestamp: 1,
+      })
+      expect(events.value.length).toBe(1)
+      currentSocket.fireClose(1006)
+      expect(events.value).toEqual([])
+    })
+
+    it('events 是 readonly ref（外部赋值不影响内部状态）', () => {
+      const { events } = useCollab('nginx-502')
+      expect(events.value).toEqual([])
+      // readonly ref 在 dev 模式下抛错或 warn，生产模式静默失败
+      // 无论哪种行为，外部赋值都不应改变内部状态
+      try {
+        ;(events as any).value = [
+          { timestamp: 0, type: 'user_joined', userId: 'x', displayName: 'X', message: 'X' },
+        ]
+      } catch {
+        // dev 模式抛错也算通过
+      }
+      expect(events.value).toEqual([])
+    })
+  })
 })

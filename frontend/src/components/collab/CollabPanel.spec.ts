@@ -323,4 +323,159 @@ describe('components/collab/CollabPanel.vue — S16-1 协作面板', () => {
       expect(mockCreateCollabSocket).toHaveBeenCalledWith('reverse-proxy')
     })
   })
+
+  // ────────── 7. 事件流区域（S16-3） ──────────
+
+  describe('事件流区域（S16-3）', () => {
+    it('渲染"事件流"标题与"最近事件"折叠项', async () => {
+      const wrapper = mountPanel()
+      currentSocket.fireOpen()
+      await flushPromises()
+      expect(wrapper.text()).toContain('事件流')
+      expect(wrapper.text()).toContain('最近事件')
+    })
+
+    it('无事件时显示"暂无事件"', async () => {
+      const wrapper = mountPanel()
+      currentSocket.fireOpen()
+      await flushPromises()
+      expect(wrapper.text()).toContain('暂无事件')
+    })
+
+    it('user_joined 事件渲染消息文本', async () => {
+      const wrapper = mountPanel()
+      currentSocket.fireOpen()
+      await flushPromises()
+      currentSocket.fireMessage({
+        type: 'user_joined',
+        user: { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+        timestamp: 1700000000,
+      })
+      await flushPromises()
+      expect(wrapper.text()).toContain('Alice 加入了协作')
+    })
+
+    it('lock_acquired 事件渲染消息文本', async () => {
+      const wrapper = mountPanel()
+      currentSocket.fireOpen()
+      await flushPromises()
+      currentSocket.fireMessage({
+        type: 'presence',
+        users: [
+          { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+        ],
+        lock_holder: null,
+      })
+      currentSocket.fireMessage({ type: 'lock_acquired', user_id: 'user:alice', timestamp: 1 })
+      await flushPromises()
+      expect(wrapper.text()).toContain('Alice 申请了编辑锁')
+    })
+
+    it('lock_released 事件渲染消息文本', async () => {
+      const wrapper = mountPanel()
+      currentSocket.fireOpen()
+      await flushPromises()
+      currentSocket.fireMessage({
+        type: 'presence',
+        users: [
+          { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+        ],
+        lock_holder: 'user:alice',
+      })
+      currentSocket.fireMessage({ type: 'lock_released', user_id: 'user:alice', timestamp: 2 })
+      await flushPromises()
+      expect(wrapper.text()).toContain('Alice 释放了编辑锁')
+    })
+
+    it('user_left 事件渲染消息文本', async () => {
+      const wrapper = mountPanel()
+      currentSocket.fireOpen()
+      await flushPromises()
+      currentSocket.fireMessage({
+        type: 'presence',
+        users: [
+          { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+        ],
+        lock_holder: null,
+      })
+      currentSocket.fireMessage({ type: 'user_left', user_id: 'user:alice', timestamp: 3 })
+      await flushPromises()
+      expect(wrapper.text()).toContain('Alice 离开了协作')
+    })
+
+    it('lock_denied 事件渲染消息文本', async () => {
+      loginAs('bob', 'operator')
+      const wrapper = mountPanel()
+      currentSocket.fireOpen()
+      await flushPromises()
+      currentSocket.fireMessage({
+        type: 'lock_denied',
+        reason: 'held_by_other',
+        holder: { user_id: 'user:alice', display_name: 'Alice' },
+        timestamp: 4,
+      })
+      await flushPromises()
+      expect(wrapper.text()).toContain('被拒')
+      expect(wrapper.text()).toContain('Alice')
+    })
+
+    it('多条事件按时间倒序展示（最新在最上）', async () => {
+      const wrapper = mountPanel()
+      currentSocket.fireOpen()
+      await flushPromises()
+      // 先添加 alice 到 onlineUsers，便于后续 lock_acquired 反查到 displayName
+      currentSocket.fireMessage({
+        type: 'presence',
+        users: [
+          { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+        ],
+        lock_holder: null,
+      })
+      currentSocket.fireMessage({ type: 'lock_acquired', user_id: 'user:alice', timestamp: 1 })
+      currentSocket.fireMessage({ type: 'lock_released', user_id: 'user:alice', timestamp: 2 })
+      await flushPromises()
+      const text = wrapper.text()
+      // 两条事件消息都在
+      expect(text).toContain('Alice 申请了编辑锁')
+      expect(text).toContain('Alice 释放了编辑锁')
+      // 倒序：释放（最新）应在申请（较旧）之前
+      expect(text.indexOf('释放了编辑锁')).toBeLessThan(text.indexOf('申请了编辑锁'))
+    })
+
+    it('事件项渲染时间戳', async () => {
+      // 固定时间便于断言
+      vi.setSystemTime(new Date('2026-01-01T10:30:45Z'))
+      const wrapper = mountPanel()
+      currentSocket.fireOpen()
+      await flushPromises()
+      // 不传 timestamp，走 Date.now() 兜底
+      currentSocket.fireMessage({
+        type: 'user_joined',
+        user: { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+      })
+      await flushPromises()
+      // 时间格式 HH:MM:SS（按本地时区渲染，断言包含冒号分隔即可）
+      const text = wrapper.text()
+      // 至少匹配到 \d{2}:\d{2}:\d{2} 模式
+      expect(/\d{2}:\d{2}:\d{2}/.test(text)).toBe(true)
+    })
+
+    it('断连后事件流清空，"暂无事件"重新显示', async () => {
+      const wrapper = mountPanel()
+      currentSocket.fireOpen()
+      await flushPromises()
+      currentSocket.fireMessage({
+        type: 'user_joined',
+        user: { user_id: 'user:alice', username: 'alice', display_name: 'Alice', role: 'admin' },
+        timestamp: 1,
+      })
+      await flushPromises()
+      expect(wrapper.text()).toContain('Alice 加入了协作')
+      // 模拟服务端断开（非手动 close）
+      currentSocket.fireClose(1006)
+      await flushPromises()
+      expect(wrapper.text()).toContain('暂无事件')
+      expect(wrapper.text()).not.toContain('Alice 加入了协作')
+    })
+  })
 })
