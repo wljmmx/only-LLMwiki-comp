@@ -169,10 +169,29 @@ def collect_readiness() -> dict[str, Any]:
     }
 
 
+def ensure_all_dbs_initialized() -> None:
+    """初始化所有业务 DB 的 schema（首次启动时创建文件 + 表）
+
+    生产首次启动 / CI 测试环境运行前需调用，确保 /health 检测到 DB 存在。
+    幂等：_init_schema 均使用 CREATE TABLE IF NOT EXISTS。
+    """
+    from app.aiops.event_correlator import _get_db as _ev_get_db
+    from app.search.search_engine import _get_db as _se_get_db
+    from app.storage.document_store import _get_db as _doc_get_db
+    from app.storage.version_control import _get_db as _vc_get_db
+    from app.storage.webhook_store import _get_db as _wh_get_db
+    from app.templates.manager import _get_db as _tpl_get_db
+
+    for get_db in (_doc_get_db, _vc_get_db, _wh_get_db, _ev_get_db, _se_get_db, _tpl_get_db):
+        conn = get_db()
+        conn.close()
+
+
 __all__ = [
     "check_db_connection",
     "collect_health",
     "collect_readiness",
+    "ensure_all_dbs_initialized",
     "get_instance_id",
     "get_startup_time",
 ]
