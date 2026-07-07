@@ -19,6 +19,7 @@ import { NAvatar, NButton, NTag, NSpace, NTooltip, NText, NCollapse, NCollapseIt
 import { useCollab } from '@/composables/useCollab'
 import type { ConnectionState } from '@/composables/useCollab'
 import type { CollabEvent } from '@/api/realtime'
+import CollabHistoryPanel from './CollabHistoryPanel.vue'
 
 const props = defineProps<{
   slug: string
@@ -198,7 +199,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- S16-3：事件流区域 -->
+    <!-- S16-3：事件流区域 + S16-6 历史回放 -->
     <div class="collab-section">
       <div class="section-label">事件流</div>
       <NCollapse :default-expanded-names="['events']" display-directive="show">
@@ -218,6 +219,9 @@ onUnmounted(() => {
               <span class="event-msg">{{ ev.message }}</span>
             </div>
           </div>
+        </NCollapseItem>
+        <NCollapseItem title="历史回放" name="history">
+          <CollabHistoryPanel :slug="slug" :realtime-events="events" />
         </NCollapseItem>
       </NCollapse>
     </div>

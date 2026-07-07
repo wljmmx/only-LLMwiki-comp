@@ -5,6 +5,8 @@
  *   WS  /realtime/collab/{slug}?token=<token>
  *   GET /realtime/rooms                  列出所有房间
  *   GET /realtime/rooms/{slug}           获取指定房间状态
+ *   GET /realtime/events/{slug}          查询历史事件（S16-6）
+ *   GET /realtime/events/{slug}/count    统计事件总数（S16-6）
  *
  * WebSocket URL 协议：
  *   - 同源 https → wss://host/api/realtime/collab/{slug}
@@ -85,6 +87,77 @@ export async function listRooms(): Promise<{ rooms: RoomState[]; count: number }
 /** 获取指定房间状态 */
 export async function getRoom(slug: string): Promise<RoomState> {
   return api.get(`/realtime/rooms/${encodeURIComponent(slug)}`) as Promise<RoomState>
+}
+
+// ────────── 历史事件 API（S16-6） ──────────
+
+/**
+ * 历史事件条目（S16-6）
+ *
+ * 后端 collab_events 表的一行。timestamp 为秒级（与 CollabEvent 的毫秒级不同，
+ * composable 层负责 ×1000 转换以统一合并）。
+ */
+export interface CollabHistoryEvent {
+  /** 数据库自增 id（用于分页游标） */
+  id: number
+  /** wiki 页面 slug */
+  slug: string
+  /** 事件发生的秒级时间戳 */
+  timestamp: number
+  /** 事件类型 */
+  event_type: 'user_joined' | 'user_left' | 'lock_acquired' | 'lock_released' | 'lock_denied'
+  /** 触发事件的 user_id */
+  user_id: string
+  /** 用户显示名（可能为空字符串） */
+  display_name: string
+  /** 人类可读描述 */
+  message: string
+  /** 入库时间（ISO8601） */
+  created_at: string
+}
+
+/** 历史事件查询结果 */
+export interface CollabEventListResult {
+  slug: string
+  events: CollabHistoryEvent[]
+  has_more: boolean
+  count: number
+  /** 该 slug 事件总数（用于显示） */
+  total: number
+}
+
+/** 历史事件查询参数 */
+export interface ListCollabEventsParams {
+  /** 返回条数上限（1-500，默认 100） */
+  limit?: number
+  /** 分页游标：仅返回 id < before_id 的事件 */
+  before_id?: number
+  /** 增量同步：仅返回 timestamp > since_timestamp 的事件（秒级） */
+  since_timestamp?: number
+}
+
+/**
+ * 查询某 slug 的协作历史事件（S16-6）
+ *
+ * 两种模式（互斥）：
+ * 1. 分页模式（默认）：传 before_id 游标
+ * 2. 增量模式：传 since_timestamp
+ */
+export async function listCollabEvents(
+  slug: string,
+  params: ListCollabEventsParams = {}
+): Promise<CollabEventListResult> {
+  const query: Record<string, string> = {}
+  if (params.limit !== undefined) query.limit = String(params.limit)
+  if (params.before_id !== undefined) query.before_id = String(params.before_id)
+  if (params.since_timestamp !== undefined)
+    query.since_timestamp = String(params.since_timestamp)
+  return api.get(`/realtime/events/${encodeURIComponent(slug)}`, { params: query }) as Promise<CollabEventListResult>
+}
+
+/** 统计某 slug 的协作事件总数（S16-6，轻量查询） */
+export async function countCollabEvents(slug: string): Promise<{ slug: string; count: number }> {
+  return api.get(`/realtime/events/${encodeURIComponent(slug)}/count`) as Promise<{ slug: string; count: number }>
 }
 
 // ────────── WebSocket URL 构造 ──────────

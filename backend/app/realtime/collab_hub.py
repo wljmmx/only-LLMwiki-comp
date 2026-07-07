@@ -44,6 +44,30 @@ HEARTBEAT_TIMEOUT = 60.0
 CLEANUP_INTERVAL = 30.0
 
 
+def _format_event_message(
+    event_type: str, user_id: str, display_name: str, reason: str = ""
+) -> str:
+    """S16-6：生成事件的人类可读描述（持久化到 collab_events.message 列）。
+
+    与前端 useCollab.ts 中 appendEvent 生成的 message 保持语义一致，
+    便于历史回放与实时事件流在 UI 上无缝衔接。
+    """
+    name = display_name or user_id or "未知用户"
+    if event_type == "user_joined":
+        return f"{name} 加入了协作"
+    if event_type == "user_left":
+        suffix = f"（{reason}）" if reason else ""
+        return f"{name} 离开了协作{suffix}"
+    if event_type == "lock_acquired":
+        return f"{name} 获取了编辑锁"
+    if event_type == "lock_released":
+        suffix = f"（{reason}）" if reason else ""
+        return f"{name} 释放了编辑锁{suffix}"
+    if event_type == "lock_denied":
+        return f"{name} 持有编辑锁，拒绝新请求"
+    return f"{name} 触发了 {event_type}"
+
+
 class CollabRoomFull(Exception):
     """房间已满或全局房间数上限达到时抛出（S16-4 上限守卫）。
 
@@ -429,6 +453,68 @@ class CollabHub:
 
     # ────────── 消息广播 ──────────
 
+    @staticmethod
+    def _persist_event(slug: str, message: dict[str, Any]) -> None:
+        """S16-6：将事件型消息持久化到 collab_event_store。
+
+        仅持久化 5 类事件（user_joined/user_left/lock_acquired/lock_released/
+        lock_denied）。持久化失败静默处理，不影响广播流程。
+
+        从 message 中提取：
+        - timestamp: 秒级时间戳（broadcast/_send_to 已注入）
+        - event_type: message["type"]
+        - user_id: message["user_id"]（user_joined 从 message["user"]["user_id"] 取）
+        - display_name: message["user"]["display_name"] 或 message["holder"]["display_name"]
+        - message: 人类可读描述（根据类型生成）
+        """
+        event_type = str(message.get("type", ""))
+        if event_type not in (
+            "user_joined",
+            "user_left",
+            "lock_acquired",
+            "lock_released",
+            "lock_denied",
+        ):
+            return
+        try:
+            from app.realtime.collab_event_store import get_collab_event_store
+
+            store = get_collab_event_store()
+            ts = float(message.get("timestamp", time.time()))
+
+            # 提取 user_id 与 display_name（不同消息结构不同）
+            user_id = ""
+            display_name = ""
+            if event_type == "user_joined":
+                user_obj = message.get("user") or {}
+                user_id = str(user_obj.get("user_id", ""))
+                display_name = str(user_obj.get("display_name", ""))
+            elif event_type == "user_left":
+                user_id = str(message.get("user_id", ""))
+                display_name = ""
+            elif event_type in ("lock_acquired", "lock_released"):
+                user_id = str(message.get("user_id", ""))
+                display_name = ""
+            elif event_type == "lock_denied":
+                user_id = str(message.get("holder", {}).get("user_id", ""))
+                display_name = str(message.get("holder", {}).get("display_name", ""))
+
+            # 生成人类可读描述
+            reason = message.get("reason", "")
+            msg_text = _format_event_message(event_type, user_id, display_name, reason)
+
+            store.append_event(
+                slug=slug,
+                timestamp=ts,
+                event_type=event_type,
+                user_id=user_id,
+                display_name=display_name,
+                message=msg_text,
+            )
+        except Exception:  # noqa: BLE001
+            # 持久化失败不影响业务流程
+            pass
+
     async def broadcast(
         self, slug: str, message: dict[str, Any], exclude_user: str | None = None
     ) -> int:
@@ -436,6 +522,8 @@ class CollabHub:
         # S16-3：统一注入服务端时间戳（秒），便于前端事件流展示
         if "timestamp" not in message:
             message = {**message, "timestamp": time.time()}
+        # S16-6：持久化事件型消息（在广播前，确保即使无连接也能落库）
+        self._persist_event(slug, message)
         room = self.rooms.get(slug)
         if not room:
             return 0
@@ -471,6 +559,8 @@ class CollabHub:
         # S16-3：单播消息也注入时间戳，保持与广播一致
         if "timestamp" not in message:
             message = {**message, "timestamp": time.time()}
+        # S16-6：持久化事件型消息（lock_denied 通过单播发送）
+        self._persist_event(slug, message)
         room = self.rooms.get(slug)
         if not room or user_id not in room.connections:
             return False

@@ -9,6 +9,10 @@ WebSocket 端点：
 HTTP 状态查询端点：
     GET /realtime/rooms                  列出所有房间状态
     GET /realtime/rooms/{slug}           获取指定房间状态
+
+HTTP 历史事件端点（S16-6）：
+    GET /realtime/events/{slug}          查询历史事件（分页 + 增量同步）
+    GET /realtime/events/{slug}/count    统计事件总数
 """
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from app.auth import verify_token_string
 from app.auth.models import get_auth_store
 from app.realtime import CollabRoomFull, get_collab_hub
+from app.realtime.collab_event_store import get_collab_event_store
 
 router = APIRouter()
 
@@ -42,6 +47,62 @@ async def get_room(slug: str) -> dict:
     if not state:
         raise HTTPException(404, f"房间不存在或无人在线: {slug}")
     return state
+
+
+# ────────── HTTP 历史事件查询（S16-6） ──────────
+
+
+@router.get("/realtime/events/{slug}")
+async def list_collab_events(
+    slug: str,
+    limit: int = Query(default=100, ge=1, le=500, description="返回条数上限（1-500）"),
+    before_id: int | None = Query(
+        default=None, ge=1, description="分页游标：仅返回 id < before_id 的事件"
+    ),
+    since_timestamp: float | None = Query(
+        default=None,
+        ge=0,
+        description="增量同步：仅返回 timestamp > since_timestamp 的事件（秒级）",
+    ),
+) -> dict:
+    """查询某 slug 的协作历史事件（S16-6 协作历史回放）
+
+    两种查询模式（互斥）：
+    1. **分页模式**（默认）：按 id 倒序返回最新事件，配合 before_id 游标实现"加载更多"
+    2. **增量模式**：传入 since_timestamp，按时间升序返回该时间点之后的事件
+
+    返回结构：
+        {
+            "slug": "...",
+            "events": [...],      # 事件列表
+            "has_more": bool,      # 是否还有更多历史
+            "count": int,          # 本次返回条数
+            "total": int           # 该 slug 事件总数（用于显示）
+        }
+    """
+    store = get_collab_event_store()
+
+    if since_timestamp is not None:
+        result = store.list_events_since(slug, since_timestamp, limit=limit)
+    else:
+        result = store.list_events(slug, limit=limit, before_id=before_id)
+
+    total = store.count_events(slug)
+
+    return {
+        "slug": slug,
+        "events": result["events"],
+        "has_more": result["has_more"],
+        "count": result["count"],
+        "total": total,
+    }
+
+
+@router.get("/realtime/events/{slug}/count")
+async def count_collab_events(slug: str) -> dict:
+    """统计某 slug 的协作事件总数（S16-6，轻量查询）"""
+    store = get_collab_event_store()
+    return {"slug": slug, "count": store.count_events(slug)}
 
 
 # ────────── WebSocket 协作端点 ──────────
