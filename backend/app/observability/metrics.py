@@ -17,6 +17,12 @@
    - opskg_search_queries_total  Counter
 
 3. 系统指标（prometheus_client 自带 python_gc_*, process_*）
+
+4. 协作 Hub 指标（S16-4）
+   - opskg_collab_rooms_total  Gauge
+   - opskg_collab_connections_total  Gauge
+   - opskg_collab_messages_total{type}  Counter
+   - opskg_collab_broadcast_duration_seconds  Histogram
 """
 
 from __future__ import annotations
@@ -141,6 +147,29 @@ business_metrics = {
         "opskg_errors_total",
         "应用错误总数",
         ["type"],
+        registry=REGISTRY,
+    ),
+    # S16-4：协作 Hub（CollabHub）指标
+    "collab_rooms_total": Gauge(
+        "opskg_collab_rooms_total",
+        "活跃协作房间数",
+        registry=REGISTRY,
+    ),
+    "collab_connections_total": Gauge(
+        "opskg_collab_connections_total",
+        "协作 WebSocket 总连接数",
+        registry=REGISTRY,
+    ),
+    "collab_messages_total": Counter(
+        "opskg_collab_messages_total",
+        "协作消息累计数",
+        ["type"],
+        registry=REGISTRY,
+    ),
+    "collab_broadcast_duration_seconds": Histogram(
+        "opskg_collab_broadcast_duration_seconds",
+        "协作广播延迟（秒）",
+        buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0),
         registry=REGISTRY,
     ),
 }

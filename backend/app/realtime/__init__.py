@@ -12,6 +12,6 @@
 - WebSocket 鉴权复用 verify_token_string（从 query param 取 token）
 """
 
-from app.realtime.collab_hub import CollabHub, CollabRoom, get_collab_hub
+from app.realtime.collab_hub import CollabHub, CollabRoom, CollabRoomFull, get_collab_hub
 
-__all__ = ["CollabHub", "CollabRoom", "get_collab_hub"]
+__all__ = ["CollabHub", "CollabRoom", "CollabRoomFull", "get_collab_hub"]

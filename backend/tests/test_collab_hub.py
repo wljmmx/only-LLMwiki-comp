@@ -30,6 +30,7 @@ from app.realtime.collab_hub import (  # noqa: E402
     HEARTBEAT_TIMEOUT,
     CollabHub,
     CollabRoom,
+    CollabRoomFull,
     ConnectionInfo,
     get_collab_hub,
 )
@@ -664,3 +665,208 @@ class TestConstants:
     def test_cleanup_interval_less_than_heartbeat_timeout(self):
         # 清理频率必须高于超时时间，否则 stale 连接可能不被及时清理
         assert CLEANUP_INTERVAL <= HEARTBEAT_TIMEOUT
+
+
+# ═══════════════ S16-4 上限守卫 ═══════════════
+
+
+class TestS16_4Limits:
+    """S16-4：CollabHub 上限守卫（max_rooms / max_connections_per_room）"""
+
+    def test_max_rooms_exceeded_rejects_new_room(self, fresh_hub, monkeypatch):
+        # 全局房间数上限设为 1
+        monkeypatch.setattr(
+            CollabHub, "_get_limits", staticmethod(lambda: (1, 50))
+        )
+        ws1 = MockWebSocket()
+        _run(fresh_hub.connect("room1", "u1", "alice", "Alice", "admin", ws1))
+        # 第二个房间应被拒绝
+        ws2 = MockWebSocket()
+        with pytest.raises(CollabRoomFull) as ei:
+            _run(fresh_hub.connect("room2", "u2", "bob", "Bob", "admin", ws2))
+        assert ei.value.reason == "max_rooms_exceeded"
+        assert "room2" not in fresh_hub.rooms
+        assert "room1" in fresh_hub.rooms
+
+    def test_max_rooms_zero_allows_no_new_room(self, fresh_hub, monkeypatch):
+        # 极端：上限为 0 时，第一个新房间就被拒绝
+        monkeypatch.setattr(
+            CollabHub, "_get_limits", staticmethod(lambda: (0, 50))
+        )
+        ws = MockWebSocket()
+        with pytest.raises(CollabRoomFull) as ei:
+            _run(fresh_hub.connect("room1", "u1", "alice", "Alice", "admin", ws))
+        assert ei.value.reason == "max_rooms_exceeded"
+        assert fresh_hub.rooms == {}
+
+    def test_room_full_rejects_new_user(self, fresh_hub, monkeypatch):
+        # 单房间连接上限设为 2
+        monkeypatch.setattr(
+            CollabHub, "_get_limits", staticmethod(lambda: (1000, 2))
+        )
+        ws1 = MockWebSocket()
+        ws2 = MockWebSocket()
+        ws3 = MockWebSocket()
+        _run(fresh_hub.connect("slug", "u1", "alice", "Alice", "admin", ws1))
+        _run(fresh_hub.connect("slug", "u2", "bob", "Bob", "admin", ws2))
+        # 第三个用户应被拒绝
+        with pytest.raises(CollabRoomFull) as ei:
+            _run(fresh_hub.connect("slug", "u3", "carol", "Carol", "admin", ws3))
+        assert ei.value.reason == "room_full"
+        room = fresh_hub.get_room("slug")
+        assert "u3" not in room.connections
+        assert len(room.connections) == 2
+
+    def test_reconnect_does_not_trigger_room_full(self, fresh_hub, monkeypatch):
+        # 同一 user_id 重连替换不应触发 room_full
+        monkeypatch.setattr(
+            CollabHub, "_get_limits", staticmethod(lambda: (1000, 1))
+        )
+        ws1 = MockWebSocket()
+        _run(fresh_hub.connect("slug", "u1", "alice", "Alice", "admin", ws1))
+        # 同 user_id 重连应成功替换
+        ws2 = MockWebSocket()
+        _run(fresh_hub.connect("slug", "u1", "alice", "Alice", "admin", ws2))
+        room = fresh_hub.get_room("slug")
+        assert room.connections["u1"].ws is ws2
+        assert len(room.connections) == 1
+
+    def test_room_full_then_room_cleaned_if_empty(self, fresh_hub, monkeypatch):
+        # 单房间上限 1，第一个用户连入创建房间；新用户被拒后房间应保留（非空）
+        # 但若上限为 0，房间被刚创建立刻拒绝后应被回收
+        monkeypatch.setattr(
+            CollabHub, "_get_limits", staticmethod(lambda: (1000, 0))
+        )
+        ws = MockWebSocket()
+        with pytest.raises(CollabRoomFull) as ei:
+            _run(fresh_hub.connect("slug", "u1", "alice", "Alice", "admin", ws))
+        assert ei.value.reason == "room_full"
+        # 房间因拒绝后被 _remove_room_if_empty 回收
+        assert "slug" not in fresh_hub.rooms
+
+    def test_collab_room_full_attributes(self):
+        # 异常对象属性可读
+        err = CollabRoomFull("room_full", "房间已满")
+        assert err.reason == "room_full"
+        assert err.message == "房间已满"
+        assert str(err) == "房间已满"
+
+
+# ═══════════════ S16-4 指标注入 ═══════════════
+
+
+class TestS16_4Metrics:
+    """S16-4：CollabHub Prometheus 指标注入"""
+
+    @staticmethod
+    def _read_metric(name: str, label_filter: str = "") -> float:
+        """从 REGISTRY 抓取最新文本，找到匹配的 metric 行并返回值。
+
+        Histogram 的 _count 后缀也通过此方法读取。
+        """
+        from prometheus_client import generate_latest
+
+        from app.observability.metrics import REGISTRY
+
+        text = generate_latest(REGISTRY).decode("utf-8")
+        # Histogram 的 sum/count 后缀优先匹配，否则匹配基本名
+        candidates = [f"{name}_count", f"{name}_sum", name]
+        for cand in candidates:
+            for line in text.splitlines():
+                if line.startswith(cand) and label_filter in line:
+                    return float(line.split()[-1])
+        return 0.0
+
+    def test_connect_updates_gauges(self, fresh_hub):
+        # Gauge 全局共享，使用 fresh_hub 当前状态的绝对值断言
+        ws = MockWebSocket()
+        _run(fresh_hub.connect("metric-slug", "u1", "alice", "Alice", "admin", ws))
+        after_rooms = self._read_metric("opskg_collab_rooms_total")
+        after_conns = self._read_metric("opskg_collab_connections_total")
+        # fresh_hub 当前 1 房间 / 1 连接
+        assert after_rooms == 1.0
+        assert after_conns == 1.0
+
+    def test_disconnect_updates_gauges(self, fresh_hub):
+        ws1 = MockWebSocket()
+        _run(fresh_hub.connect("metric-slug", "u1", "alice", "Alice", "admin", ws1))
+        _run(fresh_hub.disconnect("metric-slug", "u1"))
+        after_rooms = self._read_metric("opskg_collab_rooms_total")
+        after_conns = self._read_metric("opskg_collab_connections_total")
+        # fresh_hub 当前 0 房间 / 0 连接（房间空后被回收）
+        assert after_rooms == 0.0
+        assert after_conns == 0.0
+
+    def test_broadcast_increments_message_counter(self, fresh_hub):
+        ws1 = MockWebSocket()
+        ws2 = MockWebSocket()
+        _run(fresh_hub.connect("metric-slug", "u1", "alice", "Alice", "admin", ws1))
+        _run(fresh_hub.connect("metric-slug", "u2", "bob", "Bob", "admin", ws2))
+        ws1.sent.clear()
+        ws2.sent.clear()
+        before = self._read_metric(
+            "opskg_collab_messages_total", 'type="metric_test"'
+        )
+        _run(fresh_hub.broadcast("metric-slug", {"type": "metric_test"}))
+        after = self._read_metric(
+            "opskg_collab_messages_total", 'type="metric_test"'
+        )
+        # 广播到 2 个连接，应 +2
+        assert after - before == 2.0
+
+    def test_broadcast_to_empty_room_no_counter_inc(self, fresh_hub):
+        # 房间不存在时 broadcast 返回 0，不应累加计数器
+        before = self._read_metric(
+            "opskg_collab_messages_total", 'type="empty_room_test"'
+        )
+        delivered = _run(
+            fresh_hub.broadcast("nonexistent-slug", {"type": "empty_room_test"})
+        )
+        assert delivered == 0
+        after = self._read_metric(
+            "opskg_collab_messages_total", 'type="empty_room_test"'
+        )
+        # delivered=0，_inc_collab_messages 跳过
+        assert after - before == 0.0
+
+    def test_broadcast_duration_observed(self, fresh_hub):
+        ws1 = MockWebSocket()
+        _run(fresh_hub.connect("metric-slug", "u1", "alice", "Alice", "admin", ws1))
+        before_count = self._read_metric(
+            "opskg_collab_broadcast_duration_seconds_count"
+        )
+        _run(fresh_hub.broadcast("metric-slug", {"type": "duration_test"}))
+        after_count = self._read_metric(
+            "opskg_collab_broadcast_duration_seconds_count"
+        )
+        assert after_count - before_count == 1.0
+
+    def test_send_to_increments_message_counter(self, fresh_hub):
+        ws1 = MockWebSocket()
+        _run(fresh_hub.connect("metric-slug", "u1", "alice", "Alice", "admin", ws1))
+        before = self._read_metric(
+            "opskg_collab_messages_total", 'type="unicast_test"'
+        )
+        ok = _run(
+            fresh_hub._send_to(
+                "metric-slug", "u1", {"type": "unicast_test"}
+            )
+        )
+        assert ok is True
+        after = self._read_metric(
+            "opskg_collab_messages_total", 'type="unicast_test"'
+        )
+        assert after - before == 1.0
+
+    def test_cleanup_stale_updates_gauges(self, fresh_hub, monkeypatch):
+        monkeypatch.setattr("app.realtime.collab_hub.HEARTBEAT_TIMEOUT", 0.05)
+        ws = MockWebSocket()
+        _run(fresh_hub.connect("metric-slug", "u1", "alice", "Alice", "admin", ws))
+        time.sleep(0.1)
+        removed = _run(fresh_hub.cleanup_stale())
+        assert removed == 1
+        after_rooms = self._read_metric("opskg_collab_rooms_total")
+        after_conns = self._read_metric("opskg_collab_connections_total")
+        # fresh_hub 当前 0 房间 / 0 连接（被 cleanup 回收）
+        assert after_rooms == 0.0
+        assert after_conns == 0.0

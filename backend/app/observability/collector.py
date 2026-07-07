@@ -75,6 +75,22 @@ async def collect_business_metrics() -> None:
     except Exception as e:  # noqa: BLE001
         logger.error("observability.collect_webhooks_failed", err=str(e))
 
+    # S16-4：协作 Hub 房间/连接 Gauge 采集
+    # 注意：collab_hub 内部 connect/disconnect 已主动更新 Gauge，
+    # 这里作为周期性兜底，避免 metric 与状态脱节
+    try:
+        from app.realtime import get_collab_hub
+
+        hub = get_collab_hub()
+        rooms = hub.list_rooms()
+        record_business_metric("collab_rooms_total", float(len(rooms)))
+        record_business_metric(
+            "collab_connections_total",
+            float(sum(r.get("online_count", 0) for r in rooms)),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error("observability.collect_collab_failed", err=str(e))
+
 
 async def start_metrics_collector(
     interval_seconds: int = COLLECT_INTERVAL_SECONDS,

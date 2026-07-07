@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 
 from app.auth import verify_token_string
 from app.auth.models import get_auth_store
-from app.realtime import get_collab_hub
+from app.realtime import CollabRoomFull, get_collab_hub
 
 router = APIRouter()
 
@@ -120,15 +120,24 @@ async def collab_ws(
     hub = get_collab_hub()
     user_id = user["user_id"]
 
-    # 加入房间
-    await hub.connect(
-        slug=slug,
-        user_id=user_id,
-        username=user["username"],
-        display_name=user["display_name"],
-        role=user["role"],
-        ws=websocket,
-    )
+    # 加入房间（S16-4：房间/连接数达上限时拒绝）
+    try:
+        await hub.connect(
+            slug=slug,
+            user_id=user_id,
+            username=user["username"],
+            display_name=user["display_name"],
+            role=user["role"],
+            ws=websocket,
+        )
+    except CollabRoomFull as e:
+        # 推送 error 给客户端，便于前端展示"房间已满"提示
+        try:
+            await websocket.send_json({"type": "error", "reason": e.reason, "message": e.message})
+        except Exception:  # noqa: BLE001
+            pass
+        await websocket.close(code=4029, reason=e.reason)
+        return
 
     try:
         while True:

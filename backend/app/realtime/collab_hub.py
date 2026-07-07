@@ -44,6 +44,20 @@ HEARTBEAT_TIMEOUT = 60.0
 CLEANUP_INTERVAL = 30.0
 
 
+class CollabRoomFull(Exception):
+    """房间已满或全局房间数上限达到时抛出（S16-4 上限守卫）。
+
+    reason 取值：
+    - "max_rooms_exceeded": 全局房间数已达上限
+    - "room_full": 单房间连接数已达上限
+    """
+
+    def __init__(self, reason: str, message: str = "") -> None:
+        self.reason = reason
+        self.message = message or reason
+        super().__init__(self.message)
+
+
 @dataclass
 class ConnectionInfo:
     """单个 WebSocket 连接的状态"""
@@ -94,6 +108,62 @@ class CollabHub:
         self._cleanup_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
+    # ────────── 指标辅助（S16-4） ──────────
+
+    def _update_collab_gauges(self) -> None:
+        """重算 collab_rooms_total / collab_connections_total Gauge。
+
+        在 connect / disconnect / cleanup_stale 后调用。
+        采用全量重算而非增量，避免状态漂移；基于 self 状态而非全局单例，
+        便于测试隔离。
+        """
+        try:
+            from app.observability.metrics import business_metrics
+
+            total_conns = sum(len(r.connections) for r in self.rooms.values())
+            business_metrics["collab_rooms_total"].set(len(self.rooms))
+            business_metrics["collab_connections_total"].set(total_conns)
+        except Exception:  # noqa: BLE001
+            # 指标采集失败不应影响业务路径
+            pass
+
+    @staticmethod
+    def _inc_collab_messages(msg_type: str, count: int) -> None:
+        """累加协作消息计数器（按 type 分桶）"""
+        if count <= 0:
+            return
+        try:
+            from app.observability.metrics import business_metrics
+
+            business_metrics["collab_messages_total"].labels(
+                type=str(msg_type or "unknown")
+            ).inc(count)
+        except Exception:  # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _observe_broadcast_duration(duration_seconds: float) -> None:
+        """观察广播延迟分布"""
+        try:
+            from app.observability.metrics import business_metrics
+
+            business_metrics["collab_broadcast_duration_seconds"].observe(
+                duration_seconds
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _get_limits() -> tuple[int, int]:
+        """读取上限配置 (max_rooms, max_connections_per_room)"""
+        try:
+            from app.config import get_settings
+
+            s = get_settings()
+            return s.collab_max_rooms, s.collab_max_connections_per_room
+        except Exception:  # noqa: BLE001
+            return 1000, 50
+
     # ────────── 房间管理 ──────────
 
     def get_or_create_room(self, slug: str) -> CollabRoom:
@@ -124,9 +194,43 @@ class CollabHub:
         role: str,
         ws: WebSocket,
     ) -> CollabRoom:
-        """加入房间（调用方负责先 ws.accept()）"""
+        """加入房间（调用方负责先 ws.accept()）
+
+        Raises:
+            CollabRoomFull: 房间数达上限或单房间连接数达上限
+        """
+        max_rooms, max_per_room = self._get_limits()
         async with self._lock:
+            # S16-4：全局房间数上限守卫（仅当新房间需创建时触发）
+            if slug not in self.rooms and len(self.rooms) >= max_rooms:
+                logger.warning(
+                    "collab.connect.rejected_max_rooms",
+                    slug=slug,
+                    rooms=len(self.rooms),
+                    max_rooms=max_rooms,
+                )
+                raise CollabRoomFull(
+                    "max_rooms_exceeded",
+                    f"全局协作房间数已达上限 {max_rooms}",
+                )
             room = self.get_or_create_room(slug)
+            # S16-4：单房间连接上限守卫（仅对新加入者触发，重复连接替换不计数）
+            if (
+                user_id not in room.connections
+                and len(room.connections) >= max_per_room
+            ):
+                logger.warning(
+                    "collab.connect.rejected_room_full",
+                    slug=slug,
+                    online=len(room.connections),
+                    max_per_room=max_per_room,
+                )
+                # 房间刚因这次失败连接而创建，若仍空则回收
+                self._remove_room_if_empty(slug)
+                raise CollabRoomFull(
+                    "room_full",
+                    f"房间 {slug} 已满（上限 {max_per_room}）",
+                )
             # 同一 user_id 不允许重复连接（避免状态混乱）
             if user_id in room.connections:
                 old = room.connections[user_id]
@@ -149,6 +253,9 @@ class CollabHub:
                 username=username,
                 online_count=len(room.connections),
             )
+
+        # S16-4：更新 Gauge 指标
+        self._update_collab_gauges()
 
         # 广播 user_joined + presence（在 _lock 之外发送，避免阻塞）
         await self.broadcast(
@@ -185,6 +292,9 @@ class CollabHub:
                 released_lock=was_lock_holder,
             )
             self._remove_room_if_empty(slug)
+
+        # S16-4：更新 Gauge 指标
+        self._update_collab_gauges()
 
         # 广播 user_left + lock_released（如适用）
         if was_lock_holder:
@@ -266,6 +376,10 @@ class CollabHub:
                             room.lock_acquired_at = None
                 self._remove_room_if_empty(slug)
 
+        # S16-4：清理后更新 Gauge
+        if stale:
+            self._update_collab_gauges()
+
         for slug, user_id in stale:
             try:
                 await self.broadcast(
@@ -326,6 +440,8 @@ class CollabHub:
         if not room:
             return 0
         delivered = 0
+        # S16-4：观察广播耗时
+        start = time.perf_counter()
         targets = [
             info
             for uid, info in room.connections.items()
@@ -343,6 +459,9 @@ class CollabHub:
                     user_id=info.user_id,
                     error="send_failed",
                 )
+        # S16-4：记录广播延迟 + 消息计数
+        self._observe_broadcast_duration(time.perf_counter() - start)
+        self._inc_collab_messages(str(message.get("type", "unknown")), delivered)
         return delivered
 
     async def _send_to(
@@ -358,6 +477,8 @@ class CollabHub:
         info = room.connections[user_id]
         try:
             await info.ws.send_json(message)
+            # S16-4：单播消息计数
+            self._inc_collab_messages(str(message.get("type", "unknown")), 1)
             return True
         except Exception:  # noqa: BLE001
             return False

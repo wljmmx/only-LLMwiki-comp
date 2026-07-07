@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     # replicated: 多实例 + 共享存储（需 NFS 或类似方案）
     deployment_mode: str = "standalone"
 
+    # 实时协作 Hub 上限（S16-4 多房间压测防护）
+    # 单实例最大房间数；超过则新房间创建被拒绝
+    collab_max_rooms: int = 1000
+    # 单房间最大连接数；超过则新连接被拒绝（房间满）
+    collab_max_connections_per_room: int = 50
+
 
 @lru_cache
 def get_settings() -> Settings:
