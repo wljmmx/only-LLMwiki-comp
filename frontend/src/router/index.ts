@@ -6,6 +6,8 @@ import type {
 } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useSetupStore } from '@/stores/setup'
+import { getSetupStatus } from '@/api/setup'
 
 /**
  * 路由 meta 类型扩展（S14-1 路由级权限守卫）
@@ -34,6 +36,13 @@ const routes: RouteRecordRaw[] = [
     name: 'login',
     component: () => import('@/views/LoginView.vue'),
     meta: { title: '登录', public: true },
+  },
+  // 开箱配置向导（不在 AppLayout 内，无需认证）
+  {
+    path: '/setup',
+    name: 'setup',
+    component: () => import('@/views/SetupWizardView.vue'),
+    meta: { title: '开箱配置向导', public: true },
   },
   // OIDC 回调页（不在 AppLayout 内）
   {
@@ -176,6 +185,11 @@ const router = createRouter({
 // 已初始化标记：避免每次路由跳转都重新拉 /auth/me
 let authInitialized = false
 
+// Setup status 检查标记：每个会话只检查一次（避免每次导航都打后端）
+let setupChecked = false
+// 是否检测到环境未就绪且未被用户主动跳过
+let setupNeeded = false
+
 /**
  * 检查当前用户角色是否满足路由所需角色
  *
@@ -212,9 +226,30 @@ export function hasRequiredRole(
 export async function navigationGuard(to: RouteLocationNormalized): Promise<NavigationGuardReturn> {
   document.title = `${to.meta.title || 'OpsKG'} · LLM Wiki Console`
 
-  // 公开路由（登录页、回调页、403 页）直接放行
+  // 公开路由（登录页、setup 向导、回调页、403 页）直接放行
   if (to.meta.public) {
     return true
+  }
+
+  // 首次访问受保护路由时检查 setup 完成度
+  // 仅当后端未就绪且用户未主动 dismiss 时跳转到 setup 向导
+  if (!setupChecked) {
+    setupChecked = true
+    try {
+      const setupStore = useSetupStore()
+      const status = await getSetupStatus()
+      setupStore.status = status
+      // 未就绪且用户未主动跳过 → 引导到 setup
+      if (!status.ready && !setupStore.dismissed) {
+        setupNeeded = true
+        return { name: 'setup' }
+      }
+    } catch {
+      // 后端不可达时不阻断主流程（让后续认证守卫处理）
+    }
+  } else if (setupNeeded && to.name !== 'setup') {
+    // 已经判定需要 setup 但用户试图访问非 public 路由 → 仍引导到 setup
+    return { name: 'setup' }
   }
 
   // 首次访问受保护路由时检查认证状态
@@ -259,6 +294,12 @@ export async function navigationGuard(to: RouteLocationNormalized): Promise<Navi
 // 测试辅助：重置 authInitialized 标记（仅用于单元测试隔离）
 export function _resetAuthInitializedForTest(): void {
   authInitialized = false
+}
+
+// 测试辅助：重置 setup 检查标记（仅用于单元测试隔离）
+export function _resetSetupCheckedForTest(): void {
+  setupChecked = false
+  setupNeeded = false
 }
 
 router.beforeEach(navigationGuard)

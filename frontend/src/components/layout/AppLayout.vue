@@ -5,6 +5,7 @@ import OnboardingTour from '@/components/onboarding/OnboardingTour.vue'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { useOnboardingStore } from '@/stores/onboarding'
+import { useSetupStore } from '@/stores/setup'
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -13,6 +14,7 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const onboardingStore = useOnboardingStore()
+const setupStore = useSetupStore()
 const collapsed = computed(() => appStore.sidebarCollapsed)
 const pageTitle = computed(() => route.meta.title || 'OpsKG')
 
@@ -28,6 +30,12 @@ function toggleDark() {
 function restartTour() {
   onboardingStore.resetTour()
   onboardingStore.startTour()
+}
+
+/** 打开开箱配置向导 */
+function openSetupWizard() {
+  setupStore.undismiss()
+  router.push({ name: 'setup' })
 }
 
 /** 注销 */
@@ -47,6 +55,7 @@ const userMenuOptions = computed(() => {
   if (authStore.isAuthenticated) {
     opts.push({ label: '注销', key: 'logout' })
   }
+  opts.push({ label: '开箱配置向导', key: 'setup' })
   opts.push({ label: '重新查看引导', key: 'tour' })
   return opts
 })
@@ -56,10 +65,12 @@ function handleUserMenuSelect(key: string) {
     handleLogout()
   } else if (key === 'tour') {
     restartTour()
+  } else if (key === 'setup') {
+    openSetupWizard()
   }
 }
 
-defineExpose({ restartTour })
+defineExpose({ restartTour, openSetupWizard })
 
 // 首次访问自动启动 tour
 onMounted(() => {

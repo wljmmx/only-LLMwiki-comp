@@ -30,12 +30,19 @@ vi.mock('@/api/auth', () => ({
   checkAuthRequired: vi.fn(),
 }))
 
+// mock api/setup（router 守卫首次访问会拉取 setup status）
+vi.mock('@/api/setup', () => ({
+  getSetupStatus: vi.fn(),
+}))
+
 import * as authApi from '@/api/auth'
+import * as setupApi from '@/api/setup'
 import {
   default as router,
   hasRequiredRole,
   navigationGuard,
   _resetAuthInitializedForTest,
+  _resetSetupCheckedForTest,
 } from '@/router/index'
 
 function makeUser(role: 'admin' | 'operator' | 'viewer') {
@@ -69,6 +76,20 @@ describe('router/index.ts — S14-1 路由级权限守卫', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     _resetAuthInitializedForTest()
+    _resetSetupCheckedForTest()
+    // 默认 mock：setup status 已就绪，不触发向导跳转
+    vi.mocked(setupApi.getSetupStatus).mockResolvedValue({
+      llm_backend: 'openai_compat',
+      llm_configured: true,
+      llm_backend_options: ['openai_compat', 'ollama', 'vllm'],
+      neo4j_uri: 'bolt://localhost:7687',
+      neo4j_configured: true,
+      auth_enabled: false,
+      bootstrap_admin_configured: true,
+      tracing_enabled: false,
+      ready: true,
+      missing: [],
+    })
   })
 
   afterEach(() => {
@@ -235,5 +256,82 @@ describe('router/index.ts — S14-1 路由级权限守卫', () => {
     const to2 = router.resolve({ name: 'users' })
     await navigationGuard(to2 as any)
     expect(authApi.getMe).toHaveBeenCalledTimes(1)
+  })
+
+  // ────────── 10. Setup wizard 跳转逻辑 ──────────
+
+  it('setup 未就绪且未 dismiss → 跳转到 setup', async () => {
+    vi.mocked(setupApi.getSetupStatus).mockResolvedValue({
+      llm_backend: 'openai_compat',
+      llm_configured: false,
+      llm_backend_options: ['openai_compat', 'ollama', 'vllm'],
+      neo4j_uri: '',
+      neo4j_configured: false,
+      auth_enabled: false,
+      bootstrap_admin_configured: false,
+      tracing_enabled: false,
+      ready: false,
+      missing: ['llm', 'neo4j', 'auth'],
+    })
+
+    const to = router.resolve({ name: 'dashboard' })
+    const result: any = await navigationGuard(to as any)
+    expect(result).not.toBe(true)
+    expect(result.name).toBe('setup')
+  })
+
+  it('setup 未就绪但用户已 dismiss → 放行', async () => {
+    vi.mocked(setupApi.getSetupStatus).mockResolvedValue({
+      llm_backend: 'openai_compat',
+      llm_configured: false,
+      llm_backend_options: [],
+      neo4j_uri: '',
+      neo4j_configured: false,
+      auth_enabled: false,
+      bootstrap_admin_configured: false,
+      tracing_enabled: false,
+      ready: false,
+      missing: ['llm'],
+    })
+    // 模拟用户已 dismiss
+    localStorage.setItem('opskg:setup:dismissed', 'true')
+
+    // setup 已 dismiss 时 useStorage 会读到 true，但需要在 store 初始化后生效
+    // 这里通过直接 mount store 触发 useStorage 读取
+    const { useSetupStore } = await import('@/stores/setup')
+    const setupStore = useSetupStore()
+    expect(setupStore.dismissed).toBe(true)
+
+    mockLoggedIn('admin')
+
+    const to = router.resolve({ name: 'dashboard' })
+    const result = await navigationGuard(to as any)
+    expect(result).toBe(true)
+  })
+
+  it('setup status 接口失败 → 不阻断主流程', async () => {
+    vi.mocked(setupApi.getSetupStatus).mockRejectedValue(new Error('network'))
+    mockLoggedIn('admin')
+
+    const to = router.resolve({ name: 'dashboard' })
+    const result = await navigationGuard(to as any)
+    expect(result).toBe(true)
+  })
+
+  it('setup 路由本身为 public，直接放行', () => {
+    const route = router.resolve({ name: 'setup' })
+    expect(route.meta.public).toBe(true)
+  })
+
+  it('第二次导航不重复检查 setup status', async () => {
+    mockLoggedIn('admin')
+
+    const to1 = router.resolve({ name: 'dashboard' })
+    await navigationGuard(to1 as any)
+    expect(setupApi.getSetupStatus).toHaveBeenCalledTimes(1)
+
+    const to2 = router.resolve({ name: 'users' })
+    await navigationGuard(to2 as any)
+    expect(setupApi.getSetupStatus).toHaveBeenCalledTimes(1)
   })
 })
