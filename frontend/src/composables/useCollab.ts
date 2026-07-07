@@ -56,6 +56,8 @@ export function useCollab(slug: string) {
   let reconnectAttempts = 0
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let manuallyClosed = false
+  // S16-5：重连成功后回调列表（调用方注册，用于拉取最新版本 / 检测草稿冲突）
+  const reconnectCallbacks: Array<() => void> = []
 
   // ────────── 计算属性 ──────────
 
@@ -292,9 +294,21 @@ export function useCollab(slug: string) {
     }
 
     socket.onopen = () => {
+      // S16-5：reconnectAttempts > 0 表示这是重连成功（首次连接为 0）
+      const wasReconnect = reconnectAttempts > 0
       reconnectAttempts = 0
       setConnectionState('connected')
       startHeartbeat()
+      // S16-5：重连成功后触发回调（调用方可在此拉取最新版本 / 检测草稿冲突）
+      if (wasReconnect) {
+        for (const cb of reconnectCallbacks) {
+          try {
+            cb()
+          } catch (e) {
+            console.error('[useCollab] onReconnect 回调执行失败:', e)
+          }
+        }
+      }
     }
 
     socket.onmessage = handleMessage
@@ -344,7 +358,35 @@ export function useCollab(slug: string) {
     lockHolder.value = null
     // S16-3：主动断开同样清空事件流
     events.value = []
+    // S16-5：主动断开时清空重连回调（避免组件卸载后回调仍持有引用造成泄漏）
+    reconnectCallbacks.length = 0
     setConnectionState('disconnected')
+  }
+
+  // ────────── 重连回调（S16-5） ──────────
+
+  /**
+   * 注册重连成功回调
+   *
+   * 当 WebSocket 断线后重连成功（非首次连接）时触发。
+   * 调用方可在此：
+   *   1. 拉取最新页面版本，比较本地草稿版本号检测冲突
+   *   2. 重新申请编辑锁（锁状态在断线期间可能已被他人获取）
+   *   3. 同步其他需要与服务器一致的状态
+   *
+   * 回调内的异常会被捕获并 console.error，不会中断其他回调或重连流程。
+   *
+   * @param cb 回调函数（无参，调用方可闭包捕获外部状态）
+   * @returns 注销函数（调用后移除该回调）
+   */
+  function onReconnect(cb: () => void): () => void {
+    reconnectCallbacks.push(cb)
+    return () => {
+      const idx = reconnectCallbacks.indexOf(cb)
+      if (idx >= 0) {
+        reconnectCallbacks.splice(idx, 1)
+      }
+    }
   }
 
   // ────────── 编辑锁操作 ──────────
@@ -381,6 +423,8 @@ export function useCollab(slug: string) {
     // 连接管理
     connect,
     disconnect,
+    // S16-5：重连回调注册
+    onReconnect,
     // 编辑锁
     acquireLock,
     releaseLock,

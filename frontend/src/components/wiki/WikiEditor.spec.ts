@@ -16,6 +16,7 @@ vi.mock('@/utils/wikiRender', () => ({
 
 import WikiEditor from '@/components/wiki/WikiEditor.vue'
 import type { WikiPageUpdateResult } from '@/types/api'
+import { saveDraft, loadDraft, hasDraft } from '@/composables/useEditDraft'
 import '@/test/setup'
 
 describe('components/wiki/WikiEditor.vue — S16-2 Wiki 编辑器', () => {
@@ -25,6 +26,7 @@ describe('components/wiki/WikiEditor.vue — S16-2 Wiki 编辑器', () => {
     pinia = createPinia()
     setActivePinia(pinia)
     vi.clearAllMocks()
+    localStorage.clear()
   })
   afterEach(() => {
     vi.restoreAllMocks()
@@ -240,5 +242,161 @@ describe('components/wiki/WikiEditor.vue — S16-2 Wiki 编辑器', () => {
     expect(mockUpdateWikiPage).toHaveBeenCalledWith('nginx-502', expect.objectContaining({
       expected_version: 5,
     }))
+  })
+
+  // ────────── S16-5 草稿持久化与冲突恢复 ──────────
+
+  describe('S16-5 草稿持久化与冲突恢复', () => {
+    it('无草稿时不显示草稿恢复提示', () => {
+      const wrapper = mountEditor()
+      expect(wrapper.text()).not.toContain('恢复草稿')
+      expect(wrapper.text()).not.toContain('丢弃草稿')
+    })
+
+    it('有草稿（版本一致）→ 显示"恢复未保存草稿"提示 + 恢复/丢弃按钮', () => {
+      // 预先写入草稿（版本与 props.version 一致 = 1）
+      saveDraft('nginx-502', '# 草稿内容', 1, 'old summary')
+      const wrapper = mountEditor({ version: 1 })
+      expect(wrapper.text()).toContain('未保存草稿')
+      expect(wrapper.text()).toContain('恢复草稿')
+      expect(wrapper.text()).toContain('丢弃草稿')
+    })
+
+    it('有草稿（版本不一致）→ 显示冲突提示（含版本号对比）', () => {
+      // 草稿版本 1，但服务器版本已升到 3
+      saveDraft('nginx-502', '# 草稿内容', 1)
+      const wrapper = mountEditor({ version: 3 })
+      expect(wrapper.text()).toContain('冲突')
+      expect(wrapper.text()).toContain('1')
+      expect(wrapper.text()).toContain('3')
+    })
+
+    it('点击"恢复草稿" → editingContent 变为草稿内容 + summary 恢复 + 提示消失', async () => {
+      saveDraft('nginx-502', '# 草稿内容 XYZ', 1, '恢复的摘要')
+      const wrapper = mountEditor({ content: '# 原文', version: 1 })
+      const vm = wrapper.vm as any
+
+      const restoreBtn = wrapper.findAll('button').find((b) => b.text() === '恢复草稿')
+      expect(restoreBtn).toBeDefined()
+      await restoreBtn!.trigger('click')
+
+      expect(vm.editingContent).toBe('# 草稿内容 XYZ')
+      expect(vm.changeSummary).toBe('恢复的摘要')
+      // 提示消失
+      expect(wrapper.text()).not.toContain('恢复草稿')
+    })
+
+    it('点击"丢弃草稿" → 草稿从 localStorage 清除 + 提示消失', async () => {
+      saveDraft('nginx-502', '# 草稿内容', 1)
+      expect(hasDraft('nginx-502')).toBe(true)
+      const wrapper = mountEditor({ version: 1 })
+
+      const discardBtn = wrapper.findAll('button').find((b) => b.text() === '丢弃草稿')
+      expect(discardBtn).toBeDefined()
+      await discardBtn!.trigger('click')
+
+      expect(hasDraft('nginx-502')).toBe(false)
+      expect(wrapper.text()).not.toContain('恢复草稿')
+    })
+
+    it('编辑内容变化时持久化草稿到 localStorage（含版本号）', async () => {
+      const wrapper = mountEditor({ content: '# 原文', version: 5 })
+      const vm = wrapper.vm as any
+      vm.editingContent = '# 修改后内容'
+      await wrapper.vm.$nextTick()
+
+      expect(hasDraft('nginx-502')).toBe(true)
+      const draft = loadDraft('nginx-502')
+      expect(draft).not.toBeNull()
+      expect(draft!.content).toBe('# 修改后内容')
+      expect(draft!.version).toBe(5)
+    })
+
+    it('内容未变化时不持久化草稿', async () => {
+      const wrapper = mountEditor({ content: '# 原文', version: 1 })
+      // 不修改内容
+      await wrapper.vm.$nextTick()
+      expect(hasDraft('nginx-502')).toBe(false)
+    })
+
+    it('changeSummary 变化时同步到草稿', async () => {
+      const wrapper = mountEditor({ content: '# 原文', version: 1 })
+      const vm = wrapper.vm as any
+      vm.editingContent = '# 修改'
+      await wrapper.vm.$nextTick()
+      vm.changeSummary = '修正错别字'
+      await wrapper.vm.$nextTick()
+
+      const draft = loadDraft('nginx-502')
+      expect(draft).not.toBeNull()
+      expect(draft!.summary).toBe('修正错别字')
+    })
+
+    it('保存成功后清除 localStorage 草稿', async () => {
+      mockUpdateWikiPage.mockResolvedValue({
+        slug: 'nginx-502', title: 'T', version: 2, checksum: 'c',
+        created_at: '2026-07-06T00:00:00Z', skipped: false,
+      })
+      const wrapper = mountEditor({ content: '# 原文', version: 1 })
+      const vm = wrapper.vm as any
+      vm.editingContent = '# 修改后'
+      await wrapper.vm.$nextTick()
+      expect(hasDraft('nginx-502')).toBe(true)
+
+      const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存')
+      await saveBtn!.trigger('click')
+      await flushPromises()
+
+      expect(hasDraft('nginx-502')).toBe(false)
+    })
+
+    it('保存失败后保留草稿（不清除）', async () => {
+      mockUpdateWikiPage.mockRejectedValue({
+        response: { data: { detail: '版本冲突' } },
+      })
+      const wrapper = mountEditor({ content: '# 原文', version: 1 })
+      const vm = wrapper.vm as any
+      vm.editingContent = '# 修改后'
+      await wrapper.vm.$nextTick()
+      expect(hasDraft('nginx-502')).toBe(true)
+
+      const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存')
+      await saveBtn!.trigger('click')
+      await flushPromises()
+
+      // 保存失败后草稿仍存在
+      expect(hasDraft('nginx-502')).toBe(true)
+    })
+
+    it('不同 slug 的草稿互不干扰', () => {
+      saveDraft('page-a', '# A 草稿', 1)
+      const wrapperA = mountEditor({ content: '# A 原文' })
+      // mountEditor 固定 slug='nginx-502'，所以 page-a 的草稿不会显示
+      expect(wrapperA.text()).not.toContain('A 草稿')
+    })
+
+    it('草稿恢复提示在恢复后消失但草稿保留（用户可继续编辑）', async () => {
+      saveDraft('nginx-502', '# 草稿内容', 1)
+      const wrapper = mountEditor({ version: 1 })
+
+      const restoreBtn = wrapper.findAll('button').find((b) => b.text() === '恢复草稿')
+      await restoreBtn!.trigger('click')
+
+      // 提示消失
+      expect(wrapper.text()).not.toContain('恢复草稿')
+      // 草稿仍在 localStorage（用户继续编辑会覆盖）
+      expect(hasDraft('nginx-502')).toBe(true)
+    })
+
+    it('version prop 缺失（undefined）时编辑不持久化草稿', async () => {
+      const wrapper = mount(WikiEditor, {
+        props: { slug: 'no-version', content: '# 原文', canEdit: true },
+        global: { plugins: [pinia] },
+      })
+      const vm = wrapper.vm as any
+      vm.editingContent = '# 修改'
+      await wrapper.vm.$nextTick()
+      expect(hasDraft('no-version')).toBe(false)
+    })
   })
 })

@@ -933,4 +933,141 @@ describe('composables/useCollab.ts — S15-5 实时协作 composable', () => {
       expect(events.value).toEqual([])
     })
   })
+
+  // ────────── 12. 重连回调（S16-5） ──────────
+
+  describe('重连回调 onReconnect（S16-5）', () => {
+    it('onReconnect 是函数', () => {
+      const { onReconnect } = useCollab('nginx-502')
+      expect(typeof onReconnect).toBe('function')
+    })
+
+    it('首次连接成功不触发 onReconnect 回调', () => {
+      const cb = vi.fn()
+      const { connect, onReconnect } = useCollab('nginx-502')
+      onReconnect(cb)
+      connect()
+      currentSocket.fireOpen()
+      expect(cb).not.toHaveBeenCalled()
+    })
+
+    it('断线重连成功后触发 onReconnect 回调', () => {
+      const cb = vi.fn()
+      const { connect, onReconnect } = useCollab('nginx-502')
+      onReconnect(cb)
+      connect()
+      currentSocket.fireOpen()
+      expect(cb).not.toHaveBeenCalled()
+
+      // 断线 → 重连
+      currentSocket.fireClose(1006)
+      vi.advanceTimersByTime(1_000) // 触发第 1 次重连
+      currentSocket.fireOpen() // 重连成功
+      expect(cb).toHaveBeenCalledTimes(1)
+    })
+
+    it('多次断线重连，每次都触发回调', () => {
+      const cb = vi.fn()
+      const { connect, onReconnect } = useCollab('nginx-502')
+      onReconnect(cb)
+      connect()
+      currentSocket.fireOpen()
+
+      // 第 1 次重连
+      currentSocket.fireClose(1006)
+      vi.advanceTimersByTime(1_000)
+      currentSocket.fireOpen()
+      expect(cb).toHaveBeenCalledTimes(1)
+
+      // 第 2 次重连
+      currentSocket.fireClose(1006)
+      vi.advanceTimersByTime(2_000)
+      currentSocket.fireOpen()
+      expect(cb).toHaveBeenCalledTimes(2)
+    })
+
+    it('可注册多个回调，全部触发', () => {
+      const cb1 = vi.fn()
+      const cb2 = vi.fn()
+      const { connect, onReconnect } = useCollab('nginx-502')
+      onReconnect(cb1)
+      onReconnect(cb2)
+      connect()
+      currentSocket.fireOpen()
+      currentSocket.fireClose(1006)
+      vi.advanceTimersByTime(1_000)
+      currentSocket.fireOpen()
+      expect(cb1).toHaveBeenCalledTimes(1)
+      expect(cb2).toHaveBeenCalledTimes(1)
+    })
+
+    it('onReconnect 返回注销函数，调用后不再触发', () => {
+      const cb = vi.fn()
+      const { connect, onReconnect } = useCollab('nginx-502')
+      const off = onReconnect(cb)
+      connect()
+      currentSocket.fireOpen()
+
+      // 注销
+      off()
+
+      // 断线重连不应触发已注销的回调
+      currentSocket.fireClose(1006)
+      vi.advanceTimersByTime(1_000)
+      currentSocket.fireOpen()
+      expect(cb).not.toHaveBeenCalled()
+    })
+
+    it('回调内抛错不影响其他回调与重连流程', () => {
+      const errCb = vi.fn(() => {
+        throw new Error('callback error')
+      })
+      const okCb = vi.fn()
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { connect, onReconnect, connectionState } = useCollab('nginx-502')
+      onReconnect(errCb)
+      onReconnect(okCb)
+      connect()
+      currentSocket.fireOpen()
+      currentSocket.fireClose(1006)
+      vi.advanceTimersByTime(1_000)
+      currentSocket.fireOpen()
+
+      expect(errCb).toHaveBeenCalledTimes(1)
+      expect(okCb).toHaveBeenCalledTimes(1) // 抛错的回调不影响后续
+      expect(consoleSpy).toHaveBeenCalled()
+      expect(connectionState.value).toBe('connected') // 重连流程正常
+      consoleSpy.mockRestore()
+    })
+
+    it('disconnect 后清空回调，重连（手动 connect）不再触发旧回调', () => {
+      const cb = vi.fn()
+      const { connect, disconnect, onReconnect } = useCollab('nginx-502')
+      onReconnect(cb)
+      connect()
+      currentSocket.fireOpen()
+      disconnect()
+
+      // 重新 connect（注意 beforeEach 里 mockCreateCollabSocket 返回新 FakeSocket）
+      const c2 = useCollab('nginx-502')
+      c2.connect()
+      currentSocket.fireOpen()
+      // 旧 cb 不应被触发（已 disconnect 清空）
+      expect(cb).not.toHaveBeenCalled()
+    })
+
+    it('重连回调内可访问最新 connectionState（已 connected）', () => {
+      let stateInCb: string | null = null
+      const { connect, onReconnect, connectionState } = useCollab('nginx-502')
+      onReconnect(() => {
+        stateInCb = connectionState.value
+      })
+      connect()
+      currentSocket.fireOpen()
+      currentSocket.fireClose(1006)
+      vi.advanceTimersByTime(1_000)
+      currentSocket.fireOpen()
+      expect(stateInCb).toBe('connected')
+    })
+  })
 })

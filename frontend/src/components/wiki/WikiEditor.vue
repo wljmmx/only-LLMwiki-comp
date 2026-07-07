@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * Wiki 页面编辑器组件（S16-2）
+ * Wiki 页面编辑器组件（S16-2 / S16-5 草稿持久化与冲突恢复）
  *
  * 用法：
  *   <WikiEditor
@@ -20,12 +20,21 @@
  *   - 错误处理：409（锁冲突/版本冲突）展示提示
  * - 取消按钮：emit('cancel')
  *
+ * S16-5 草稿持久化与冲突恢复：
+ * - 编辑过程中实时把内容 + 服务器版本号持久化到 localStorage（key 按 slug 隔离）
+ * - 组件挂载时检查草稿：
+ *   - 草稿版本 == 当前服务器版本 → 提示"恢复未保存草稿"
+ *   - 草稿版本 != 当前服务器版本 → 提示"草稿与服务器版本不一致"（冲突）
+ * - 用户可"恢复"草稿或"丢弃"草稿
+ * - 保存成功后自动清除草稿
+ *
  * 不管理编辑锁（由 CollabPanel 负责），通过 :can-edit prop 控制保存按钮启用
  */
 import { ref, computed, watch } from 'vue'
 import { NButton, NInput, NCard, NSpace, NText, NAlert } from 'naive-ui'
 import { updateWikiPage } from '@/api/wiki'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
+import { useEditDraft, type EditDraft } from '@/composables/useEditDraft'
 import type { WikiPageUpdateResult } from '@/types/api'
 
 const props = defineProps<{
@@ -46,6 +55,11 @@ const changeSummary = ref('')
 const saving = ref(false)
 const errorMsg = ref<string | null>(null)
 
+// S16-5：草稿恢复状态（setup 时同步初始化，确保初始渲染即包含提示）
+const draft = useEditDraft(props.slug)
+const draftRecovery = ref<EditDraft | null>(draft.draft.value)
+const draftConflict = ref(draft.isConflictWith(props.version ?? 0))
+
 // 内容变化时重置（slug 切换）
 watch(
   () => props.content,
@@ -54,6 +68,23 @@ watch(
     errorMsg.value = null
   },
 )
+
+// S16-5：编辑内容变化时持久化草稿（仅当有未保存改动 + 有版本号）
+watch(
+  editingContent,
+  (newVal) => {
+    if (newVal !== props.content && props.version !== undefined) {
+      draft.save(newVal, props.version, changeSummary.value || undefined)
+    }
+  },
+)
+
+// 变更摘要变化也同步到草稿
+watch(changeSummary, (newVal) => {
+  if (editingContent.value !== props.content && props.version !== undefined) {
+    draft.save(editingContent.value, props.version, newVal || undefined)
+  }
+})
 
 // 预览（renderWikiMarkdown 已 stub 化，测试时返回原文本）
 const previewHtml = computed(() => {
@@ -84,6 +115,10 @@ async function handleSave() {
     emit('saved', result)
     // 保存成功后重置 dirty 状态
     changeSummary.value = ''
+    // S16-5：保存成功后清除草稿（避免下次挂载时误恢复已保存内容）
+    draft.clear()
+    draftRecovery.value = null
+    draftConflict.value = false
   } catch (e: any) {
     const detail = e?.response?.data?.detail || e?.message || '保存失败'
     errorMsg.value = detail
@@ -94,6 +129,35 @@ async function handleSave() {
 
 function handleCancel() {
   emit('cancel')
+}
+
+// S16-5：恢复草稿（用户点击"恢复"按钮）
+function handleRestoreDraft() {
+  if (!draftRecovery.value) return
+  editingContent.value = draftRecovery.value.content
+  if (draftRecovery.value.summary) {
+    changeSummary.value = draftRecovery.value.summary
+  }
+  // 恢复后保留草稿（用户可能再次修改），但关闭恢复提示
+  draftRecovery.value = null
+  draftConflict.value = false
+}
+
+// S16-5：丢弃草稿（用户点击"丢弃"按钮）
+function handleDiscardDraft() {
+  draft.clear()
+  draftRecovery.value = null
+  draftConflict.value = false
+}
+
+// S16-5：格式化草稿保存时间（相对时间，如"3 分钟前"）
+function formatDraftTime(ts: number): string {
+  const diff = Date.now() - ts
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  const d = new Date(ts)
+  return `${d.getMonth() + 1}-${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 </script>
 
@@ -117,6 +181,29 @@ function handleCancel() {
 
     <NAlert v-if="errorMsg" type="error" :show-icon="true" class="editor-error" closable @close="errorMsg = null">
       {{ errorMsg }}
+    </NAlert>
+
+    <!-- S16-5：草稿恢复提示（冲突时 type=warning，正常时 type=info） -->
+    <NAlert
+      v-if="draftRecovery"
+      :type="draftConflict ? 'warning' : 'info'"
+      :show-icon="true"
+      class="editor-draft"
+    >
+      <div class="draft-content">
+        <div class="draft-message">
+          <template v-if="draftConflict">
+            检测到未保存草稿（基于版本 {{ draftRecovery.version }}），但当前页面已是版本 {{ version }}，草稿可能与服务器版本冲突。
+          </template>
+          <template v-else>
+            检测到未保存草稿（{{ formatDraftTime(draftRecovery.savedAt) }}），是否恢复？
+          </template>
+        </div>
+        <NSpace :size="8" class="draft-actions">
+          <NButton size="small" type="primary" @click="handleRestoreDraft">恢复草稿</NButton>
+          <NButton size="small" @click="handleDiscardDraft">丢弃草稿</NButton>
+        </NSpace>
+      </div>
     </NAlert>
 
     <NAlert
@@ -191,8 +278,24 @@ function handleCancel() {
 }
 
 .editor-error,
-.editor-warning {
+.editor-warning,
+.editor-draft {
   margin-bottom: 12px;
+}
+
+.editor-draft :deep(.draft-content) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.editor-draft :deep(.draft-message) {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.editor-draft :deep(.draft-actions) {
+  flex-shrink: 0;
 }
 
 .editor-body {
