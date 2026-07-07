@@ -1,5 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import type { RouteRecordRaw, RouteLocationNormalized } from 'vue-router'
+import type {
+  RouteRecordRaw,
+  RouteLocationNormalized,
+  NavigationGuardReturn,
+} from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import { useAuthStore } from '@/stores/auth'
 
@@ -205,9 +209,7 @@ export function hasRequiredRole(
  * - false：取消导航
  * - 路由位置对象：重定向到该路由
  */
-export async function navigationGuard(to: RouteLocationNormalized): Promise<
-  boolean | { name: string; query?: Record<string, string>; state?: Record<string, unknown> }
-> {
+export async function navigationGuard(to: RouteLocationNormalized): Promise<NavigationGuardReturn> {
   document.title = `${to.meta.title || 'OpsKG'} · LLM Wiki Console`
 
   // 公开路由（登录页、回调页、403 页）直接放行
@@ -242,9 +244,11 @@ export async function navigationGuard(to: RouteLocationNormalized): Promise<
     const userRole = authStore.user?.role
     if (!hasRequiredRole(userRole, to.meta.requireRole)) {
       // 通过 router state 传递所需角色给 ForbiddenView 显示
+      // state 必须为 HistoryState（值为 string | number | boolean | null | HistoryState）
+      // requireRole 为 string[]，序列化为逗号分隔字符串
       return {
         name: 'forbidden',
-        state: { requiredRoles: to.meta.requireRole },
+        state: { requiredRoles: to.meta.requireRole.join(',') },
       }
     }
   }

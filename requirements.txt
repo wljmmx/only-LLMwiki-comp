@@ -5,13 +5,15 @@ pydantic-settings>=2.0
 structlog>=24.0
 httpx>=0.28
 neo4j>=5.0
-markitdown>=0.0.2
+markitdown[docx,xlsx]>=0.0.2
 unstructured>=0.16
 langgraph>=1.0
 langgraph-checkpoint>=4.0
 pyyaml>=6.0
 sqlparse>=0.5
 python-multipart>=0.0.20
+# OpenAI 兼容 SDK（openai_compat / vllm 后端必需，router.get_llm_client 触发导入）
+openai>=1.40
 # Prometheus 指标（observability/metrics.py 顶层 import，必需）
 prometheus_client>=0.20
 # numpy 向量计算（search_engine/wiki_query 软依赖，缺失降级纯 Python，建议安装）

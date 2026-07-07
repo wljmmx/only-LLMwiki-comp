@@ -88,7 +88,7 @@ describe('LoginCallbackView.vue', () => {
 
   it('有 token 时调用 handleOIDCCallback 并跳转', async () => {
     mockRoute.query = { token: 'tok123', redirect: '/dashboard' }
-    const wrapper = mountView()
+    mountView()
     await flushPromises()
     expect(mockAuthStore.handleOIDCCallback).toHaveBeenCalledWith('tok123')
     expect(mockRouter.replace).toHaveBeenCalledWith('/dashboard')
@@ -96,14 +96,14 @@ describe('LoginCallbackView.vue', () => {
 
   it('无 redirect 参数时默认跳转 /dashboard', async () => {
     mockRoute.query = { token: 'tok123' }
-    const wrapper = mountView()
+    mountView()
     await flushPromises()
     expect(mockRouter.replace).toHaveBeenCalledWith('/dashboard')
   })
 
   it('redirect 自定义路径时跳转到指定路径', async () => {
     mockRoute.query = { token: 'tok123', redirect: '/documents' }
-    const wrapper = mountView()
+    mountView()
     await flushPromises()
     expect(mockRouter.replace).toHaveBeenCalledWith('/documents')
   })

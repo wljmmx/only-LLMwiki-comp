@@ -174,7 +174,7 @@ def test_store_crud() -> None:
 def test_zscore() -> None:
     print("\n[4] Z-score 算法正确性")
     fresh_db("zscore")
-    from app.aiops.anomaly_detector import AnomalyDetector, get_anomaly_detector
+    from app.aiops.anomaly_detector import get_anomaly_detector
     from app.aiops.timeseries_store import get_timeseries_store
 
     store = get_timeseries_store()

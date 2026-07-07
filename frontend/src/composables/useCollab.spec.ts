@@ -166,7 +166,7 @@ describe('composables/useCollab.ts — S15-5 实时协作 composable', () => {
     it('dev 模式（authRequired=false）→ user_id="anon"', () => {
       const auth = useAuthStore()
       auth.authRequired = false
-      const { hasLock } = useCollab('nginx-502')
+      useCollab('nginx-502')
       // 模拟服务端把锁分配给 anon
       const c = useCollab('nginx-502')
       c.connect()
@@ -328,7 +328,7 @@ describe('composables/useCollab.ts — S15-5 实时协作 composable', () => {
     })
 
     it('user_left 消息从 onlineUsers 移除该用户', () => {
-      const { onlineUsers, lockHolder } = setup()
+      const { onlineUsers } = setup()
       currentSocket.fireMessage({
         type: 'presence',
         users: [
@@ -482,7 +482,7 @@ describe('composables/useCollab.ts — S15-5 实时协作 composable', () => {
     })
 
     it('hasLock 在持锁时为 true，未持锁时为 false', () => {
-      const { hasLock, lockHolder } = setup()
+      const { hasLock } = setup()
       expect(hasLock.value).toBe(false)
       currentSocket.fireMessage({ type: 'lock_acquired_ack', user_id: 'user:alice' })
       expect(hasLock.value).toBe(true)
@@ -546,7 +546,7 @@ describe('composables/useCollab.ts — S15-5 实时协作 composable', () => {
 
   describe('心跳', () => {
     it('connect 成功后启动心跳定时器', () => {
-      const { connect, acquireLock } = useCollab('nginx-502')
+      const { connect } = useCollab('nginx-502')
       connect()
       currentSocket.fireOpen()
 

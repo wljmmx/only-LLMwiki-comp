@@ -14,17 +14,20 @@
  *
  * 其中 realtimeEvents 来自 useCollab 的 events ref。
  */
-import { onMounted, watch } from 'vue'
+import { onMounted, watch, computed, toRef } from 'vue'
 import { NButton, NSpin, NText, NEmpty } from 'naive-ui'
 import { useCollabHistory } from '@/composables/useCollabHistory'
 import type { CollabEvent } from '@/api/realtime'
-import type { Ref } from 'vue'
 
 const props = defineProps<{
   slug: string
-  /** 实时事件流 ref（来自 useCollab 的 events） */
-  realtimeEvents: Ref<CollabEvent[]>
+  /** 实时事件流（来自 useCollab 的 events；Vue 模板会自动 unwrap ref，故接收数组） */
+  realtimeEvents: readonly CollabEvent[]
 }>()
+
+const slugRef = computed(() => props.slug)
+// useCollabHistory 内部按 ref.value 访问，用 toRef 包装保持响应性
+const realtimeEventsRef = toRef(props, 'realtimeEvents')
 
 const {
   mergedEvents,
@@ -34,7 +37,7 @@ const {
   error,
   loadHistory,
   loadMore,
-} = useCollabHistory(() => props.slug, props.realtimeEvents)
+} = useCollabHistory(slugRef, realtimeEventsRef)
 
 // 事件类型 → 标签颜色（与 CollabPanel 保持一致）
 const eventTypeColor: Record<CollabEvent['type'], string> = {

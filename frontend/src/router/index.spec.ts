@@ -31,7 +31,6 @@ vi.mock('@/api/auth', () => ({
 }))
 
 import * as authApi from '@/api/auth'
-import { useAuthStore } from '@/stores/auth'
 import {
   default as router,
   hasRequiredRole,
@@ -56,12 +55,9 @@ function makeUser(role: 'admin' | 'operator' | 'viewer') {
  * 模拟已登录场景：设置 token + mock fetchMe 返回已认证用户
  * isAuthenticated 要求 token && user && user.active 三者都满足
  */
-function mockLoggedIn(
-  role: 'admin' | 'operator' | 'viewer',
-  authApiMock: typeof authApi,
-) {
+function mockLoggedIn(role: 'admin' | 'operator' | 'viewer') {
   localStorage.setItem('opskg_token', `test-token-${role}`)
-  authApiMock.getMe.mockResolvedValue({
+  vi.mocked(authApi.getMe).mockResolvedValue({
     authenticated: true,
     user: makeUser(role),
   })
@@ -176,17 +172,18 @@ describe('router/index.ts — S14-1 路由级权限守卫', () => {
   // ────────── 6. 已登录但角色不足 → 跳 forbidden ──────────
 
   it('viewer 访问 admin 路由 → 跳 forbidden', async () => {
-    mockLoggedIn('viewer', authApi)
+    mockLoggedIn('viewer')
 
     const to = router.resolve({ name: 'users' })
     const result: any = await navigationGuard(to as any)
     expect(result).not.toBe(true)
     expect(result.name).toBe('forbidden')
-    expect(result.state?.requiredRoles).toEqual(['admin'])
+    // state 中 requiredRoles 已序列化为逗号分隔字符串（HistoryState 不接受 string[]）
+    expect(result.state?.requiredRoles).toBe('admin')
   })
 
   it('operator 访问 admin 路由 → 跳 forbidden', async () => {
-    mockLoggedIn('operator', authApi)
+    mockLoggedIn('operator')
 
     const to = router.resolve({ name: 'users' })
     const result: any = await navigationGuard(to as any)
@@ -197,7 +194,7 @@ describe('router/index.ts — S14-1 路由级权限守卫', () => {
   // ────────── 7. 已登录且角色匹配 → 放行 ──────────
 
   it('admin 访问 admin 路由 → 放行', async () => {
-    mockLoggedIn('admin', authApi)
+    mockLoggedIn('admin')
 
     const to = router.resolve({ name: 'users' })
     const result = await navigationGuard(to as any)
@@ -205,7 +202,7 @@ describe('router/index.ts — S14-1 路由级权限守卫', () => {
   })
 
   it('viewer 访问无 requireRole 路由（dashboard）→ 放行', async () => {
-    mockLoggedIn('viewer', authApi)
+    mockLoggedIn('viewer')
 
     const to = router.resolve({ name: 'dashboard' })
     const result = await navigationGuard(to as any)
@@ -228,7 +225,7 @@ describe('router/index.ts — S14-1 路由级权限守卫', () => {
   // ────────── 9. 第二次导航不重复 fetchMe（authInitialized 缓存） ──────────
 
   it('第二次导航不重复 fetchMe', async () => {
-    mockLoggedIn('admin', authApi)
+    mockLoggedIn('admin')
 
     const to1 = router.resolve({ name: 'dashboard' })
     await navigationGuard(to1 as any)

@@ -270,7 +270,7 @@ def test_dispatch_integration() -> None:
 
     store = WebhookStore()
     sub_a = store.create_subscription(url="https://a.com", events=["incident.*"])
-    sub_b = store.create_subscription(url="https://b.com", events=["incident.*"])
+    store.create_subscription(url="https://b.com", events=["incident.*"])
 
     mgr = WebhookManager(store=store)
 

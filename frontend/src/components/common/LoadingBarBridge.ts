@@ -17,8 +17,6 @@ import { onMounted, onBeforeUnmount } from 'vue'
 import { useLoadingBar } from 'naive-ui'
 import { setLoadingBar, clearLoadingBar } from '@/api/loadingBar'
 
-const __BRIDGE_KEY__ = 'LoadingBarBridge'
-
 export default {
   name: 'LoadingBarBridge',
   setup() {

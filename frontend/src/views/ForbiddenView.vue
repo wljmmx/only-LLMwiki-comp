@@ -23,10 +23,18 @@ const displayName = computed(() => authStore.displayName)
 
 // 从 router state 读取所需角色（由守卫通过 router.replace({ name: 'forbidden', state: {...} }) 传入）
 // 兼容降级：state 不可用时显示通用提示
+// 注：state 值必须为 HistoryStateValue（string | number | boolean | null），
+// 守卫将 string[] 序列化为逗号分隔字符串，此处解析还原
 const requiredRoles = computed<string[]>(() => {
-  // vue-router 4 的 history.state 可读取 push 时传入的 state
-  const state = window.history.state as { requiredRoles?: string[] } | null
-  return state?.requiredRoles || []
+  const state = window.history.state as { requiredRoles?: unknown } | null
+  const raw = state?.requiredRoles
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw.split(',')
+  }
+  if (Array.isArray(raw)) {
+    return raw as string[]
+  }
+  return []
 })
 
 const requiredRolesText = computed(() =>

@@ -6,6 +6,31 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 
+# 软依赖：openai（LLM 后端）/ markitdown[docx,xlsx]（Office 解析）
+# CI 最小依赖安装时这些可能缺失，对应测试应 skip 而非 error
+# 注：markitdown[docx] 实际安装的是 mammoth，[xlsx] 安装的是 openpyxl
+try:
+    import openai  # noqa: F401
+    _openai_available = True
+except ImportError:
+    _openai_available = False
+
+try:
+    import mammoth  # noqa: F401
+    _docx_available = True
+except ImportError:
+    _docx_available = False
+
+try:
+    import openpyxl  # noqa: F401
+    _openpyxl_available = True
+except ImportError:
+    _openpyxl_available = False
+
+requires_openai = pytest.mark.skipif(not _openai_available, reason="openai SDK 未安装")
+requires_docx = pytest.mark.skipif(not _docx_available, reason="mammoth 未安装（markitdown[docx]）")
+requires_openpyxl = pytest.mark.skipif(not _openpyxl_available, reason="openpyxl 未安装（markitdown[xlsx]）")
+
 
 # ═══════════════ 注册中心测试 ═══════════════
 
@@ -73,6 +98,7 @@ class TestTextParser:
 # ═══════════════ MarkItDown 适配器 ═══════════════
 
 class TestMarkItDownAdapter:
+    @requires_docx
     def test_word_parse(self):
         from app.parsers.registry import get_parser
         doc = get_parser("word").parse(f"{FIXTURES}/sample.docx", "d-1")
@@ -80,6 +106,7 @@ class TestMarkItDownAdapter:
         assert doc.title is not None
         assert len(doc.elements) >= 5
 
+    @requires_openpyxl
     def test_excel_parse(self):
         from app.parsers.registry import get_parser
         doc = get_parser("excel").parse(f"{FIXTURES}/sample.xlsx", "e-1")
@@ -102,6 +129,7 @@ class TestMarkItDownAdapter:
 # ═══════════════ 抽取门控 ═══════════════
 
 class TestExtractionGating:
+    @requires_openai
     def test_auto_accept(self):
         from app.extraction.types import ExtractedEntity, ExtractionResult
         from app.extraction.extractor import KnowledgeExtractor
@@ -206,6 +234,7 @@ class TestKnowledgeCompiler:
 # ═══════════════ W7 文档生成 ═══════════════
 
 class TestDocGenerationPipeline:
+    @requires_openai
     def test_graph_built(self):
         """验证 LangGraph 状态图构建成功"""
         from app.knowledge import get_pipeline
@@ -219,6 +248,7 @@ class TestDocGenerationPipeline:
         assert "modify" in nodes
         assert "proofread" in nodes
 
+    @requires_openai
     def test_review_router(self):
         """路由决策：accept → proofread, reject → modify"""
         from app.knowledge import get_pipeline
@@ -228,6 +258,7 @@ class TestDocGenerationPipeline:
         assert pipeline._review_router({"review_decision": "reject", "iteration": 0, "max_iterations": 3}) == "reject"
         assert pipeline._review_router({"review_decision": "reject", "iteration": 3, "max_iterations": 3}) == "done"
 
+    @requires_openai
     def test_format_document(self):
         """文档格式化"""
         from app.knowledge import get_pipeline

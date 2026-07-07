@@ -11,12 +11,12 @@
  * - 若 loadingBar 未初始化（如单元测试、SSR），所有操作静默 no-op
  * - 通过计数器支持并发请求（多个请求同时进行时只显示一条进度条）
  */
-import type { LoadingBarInst } from 'naive-ui'
+import type { LoadingBarApi } from 'naive-ui'
 
-let loadingBar: LoadingBarInst | null = null
+let loadingBar: LoadingBarApi | null = null
 let activeCount = 0
 
-export function setLoadingBar(bar: LoadingBarInst): void {
+export function setLoadingBar(bar: LoadingBarApi): void {
   loadingBar = bar
 }
 

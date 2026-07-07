@@ -24,7 +24,7 @@ vi.mock('@/api/index', () => ({
   getApiBaseUrl: mockGetApiBaseUrl,
 }))
 
-import api, { getAuthToken, getApiBaseUrl } from '@/api/index'
+import api, { getAuthToken } from '@/api/index'
 import {
   listRooms,
   getRoom,

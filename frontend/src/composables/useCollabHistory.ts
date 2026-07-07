@@ -78,7 +78,7 @@ export interface UseCollabHistoryReturn {
 
 export function useCollabHistory(
   slug: Ref<string> | string,
-  realtimeEvents: Ref<CollabEvent[]>
+  realtimeEvents: Readonly<Ref<readonly CollabEvent[]>>,
 ): UseCollabHistoryReturn {
   const historyEvents = ref<CollabHistoryEvent[]>([])
   const hasMore = ref(false)
