@@ -1,0 +1,61 @@
+# OpsKG Backend HPA（S13-3 K8s 部署）
+#
+# 水平 Pod 自动扩缩容：
+#   - CPU 平均利用率 > 70% → 扩容
+#   - 内存平均利用率 > 80% → 扩容
+#   - 最少 2 副本（保证 HA），最多 6 副本（防止失控）
+#
+# 前置要求：
+#   1. 集群已安装 metrics-server（kubectl top pod 可用）
+#   2. Backend Deployment 已设置 resources.requests.cpu/memory
+#   3. 多副本场景需 ReadWriteMany 存储（见 backend-pvc.yaml）
+#
+# 行为：
+#   - 冷启动保护：scaleDown stabilizationWindowSeconds=300（5 分钟内不缩容）
+#   - 扩容速度：periodSeconds=60，每分钟评估一次
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: opskg-backend
+  namespace: opskg
+  labels:
+    app.kubernetes.io/name: opskg-backend
+    app.kubernetes.io/component: autoscaling
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: opskg-backend
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100  # 每次扩容最多翻倍
+          periodSeconds: 60
+        - type: Pods
+          value: 2  # 或最多新增 2 个
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 5 分钟稳定期后才缩容
+      policies:
+        - type: Percent
+          value: 10  # 每次缩容最多 10%
+          periodSeconds: 60
+      selectPolicy: Min

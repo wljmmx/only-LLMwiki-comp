@@ -3,6 +3,7 @@
 文件存储到 data/uploads/，元数据存到 SQLite。
 解析后的文件不再删除，支持后续检索和版本控制。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -77,7 +78,9 @@ class DocumentStore:
         # 重复检查（基于 checksum）
         existing = self._find_by_checksum(checksum)
         if existing:
-            logger.info("doc_dedup_skip", checksum=checksum, existing_id=existing["doc_id"])
+            logger.info(
+                "doc_dedup_skip", checksum=checksum, existing_id=existing["doc_id"]
+            )
             return existing
 
         # 生成 doc_id 和存储路径
@@ -95,8 +98,17 @@ class DocumentStore:
                (doc_id, filename, format, ext, checksum, stored_path,
                 size_bytes, status, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, 'uploaded', ?, ?)""",
-            (doc_id, filename, fmt, ext, checksum, str(stored_path),
-             len(content), now, now),
+            (
+                doc_id,
+                filename,
+                fmt,
+                ext,
+                checksum,
+                str(stored_path),
+                len(content),
+                now,
+                now,
+            ),
         )
         conn.commit()
         logger.info("doc_saved", doc_id=doc_id, filename=filename, size=len(content))
@@ -169,9 +181,7 @@ class DocumentStore:
             sets.append("parse_result = ?")
             params.append(json.dumps(parse_result, ensure_ascii=False))
         params.append(doc_id)
-        conn.execute(
-            f"UPDATE documents SET {', '.join(sets)} WHERE doc_id = ?", params
-        )
+        conn.execute(f"UPDATE documents SET {', '.join(sets)} WHERE doc_id = ?", params)
         conn.commit()
         return conn.total_changes > 0
 
@@ -217,7 +227,9 @@ class DocumentStore:
         ).fetchone()
         return {
             "total": total["cnt"] if total else 0,
-            "total_size_mb": round((total_size["sz"] if total_size else 0) / 1024 / 1024, 2),
+            "total_size_mb": round(
+                (total_size["sz"] if total_size else 0) / 1024 / 1024, 2
+            ),
             "by_format": [dict(r) for r in by_format],
             "by_status": [dict(r) for r in by_status],
         }

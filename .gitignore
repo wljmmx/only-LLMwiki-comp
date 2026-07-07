@@ -42,6 +42,10 @@ frontend/.env.local
 .env.local
 .env.*.local
 
+# K8s Secret 本地实例（从 secret.yaml.example 复制填值后保留本地）
+deploy/k8s/secret.local.yaml
+deploy/k8s/secret*.local.yaml
+
 # 临时
 tmp/
 *.tmp

@@ -1,0 +1,147 @@
+# OpsKG Backend Deployment + Service（S13-3 K8s 部署）
+#
+# 设计要点：
+#   1. 使用 Deployment（无状态），便于水平扩展；SQLite DB 通过 PVC 共享
+#      注：SQLite WAL 模式下，多实例并发写入需共享文件系统（NFS / CephFS）
+#      生产建议 DEPLOYMENT_MODE=replicated + 共享存储，或迁移到 PostgreSQL/MySQL
+#   2. Liveness 探针 → /health（HTTP 200 = 进程存活）
+#   3. Readiness 探针 → /ready（HTTP 200 = 依赖可用，HTTP 503 = 摘除流量）
+#   4. 启动时引导 admin 用户（OPSKG_BOOTSTRAP_ADMIN_* 环境变量）
+#   5. 通过 envFrom 一次性注入 ConfigMap + Secret，避免冗余声明
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opskg-backend
+  namespace: opskg
+  labels:
+    app.kubernetes.io/name: opskg-backend
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: opskg-platform
+spec:
+  # 多副本：DEPLOYMENT_MODE=replicated + 共享存储时支持 HA
+  # 单实例调试可改为 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0  # 滚动更新时保证至少 replicas-1 个可用
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opskg-backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opskg-backend
+        app.kubernetes.io/component: api
+      annotations:
+        # 配置变更时自动滚动更新（kubectl rollout restart 的替代方案）
+        checksum/config: "placeholder"
+    spec:
+      # 反亲和：让两个副本调度到不同节点（提高可用性）
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: opskg-backend
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: backend
+          # 镜像：默认使用本地构建，生产请替换为镜像仓库地址
+          # 如：ghcr.io/your-org/opskg-backend:v0.1.0
+          image: opskg-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          # 从 ConfigMap + Secret 注入环境变量
+          envFrom:
+            - configMapRef:
+                name: opskg-config
+            - secretRef:
+                name: opskg-secret
+          # 额外环境变量（无法放入 ConfigMap/Secret 的动态值）
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: INSTANCE_ID
+              value: "$(POD_NAME)"
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+              readOnly: false
+          # Liveness：进程存活探针
+          # /health 返回 HTTP 200（即使依赖不可达也是 200，仅 status=degraded）
+          # 失败 3 次 → 重启 Pod
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Readiness：就绪探针
+          # /ready 在依赖不可达时返回 HTTP 503，K8s 自动摘除流量
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Startup：启动探针（uvicorn 加载较慢时避免被 liveness 杀掉）
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30  # 最多等 5 分钟
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          # 安全上下文：非 root 运行
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # uvicorn 需写 /tmp
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: opskg-backend-data
+---
+# Backend Service
+# - 集群内访问：http://opskg-backend.opskg.svc.cluster.local:8000
+# - Ingress 通过此 Service 转发 /api /auth /health /ready /metrics 请求
+apiVersion: v1
+kind: Service
+metadata:
+  name: opskg-backend
+  namespace: opskg
+  labels:
+    app.kubernetes.io/name: opskg-backend
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: opskg-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP

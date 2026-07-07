@@ -9,6 +9,7 @@ OmniDocBench 综合准确率 90.7%，公式/表格/阅读顺序全面领先。
 要求：Python 3.10–3.13，GPU 8GB+（pipeline 模式 CPU 可用但慢）。
 若环境不支持，自动降级到 MarkItDown。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -16,17 +17,28 @@ import os
 import shutil
 import subprocess
 import tempfile
-import structlog
 from pathlib import Path
 from typing import Callable
+
+import structlog
 
 from app.parsers.base import DocumentParser, ParsedDocument
 
 logger = structlog.get_logger()
 
 # MinerU 支持的格式（扩展名）
-MINERU_SUPPORTED = {".pdf", ".docx", ".pptx", ".xlsx",
-                     ".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif"}
+MINERU_SUPPORTED = {
+    ".pdf",
+    ".docx",
+    ".pptx",
+    ".xlsx",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".bmp",
+    ".tiff",
+    ".tif",
+}
 
 
 def _find_mineru_bin() -> str | None:
@@ -65,14 +77,15 @@ class MinerUAdapter:
             output_dir = tempfile.mkdtemp(prefix="mineru_")
             cmd = [
                 mineru_bin,
-                "-p", str(path),
-                "-o", str(output_dir),
-                "-b", "pipeline",
+                "-p",
+                str(path),
+                "-o",
+                str(output_dir),
+                "-b",
+                "pipeline",
             ]
             logger.info("mineru_parse_start", cmd=cmd)
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=120
-            )
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if proc.returncode != 0:
                 raise RuntimeError(proc.stderr.strip()[:200])
 
@@ -91,6 +104,7 @@ class MinerUAdapter:
                 tmp_path = tmp.name
 
             from app.parsers.markdown_parser import MarkdownParser
+
             md_parser = MarkdownParser()
             doc = md_parser.parse(tmp_path, doc_id)
             doc.format = self.format
@@ -112,9 +126,12 @@ class MinerUAdapter:
             logger.error("mineru_parse_failed", error=str(e), fallback="markitdown")
             return self._fallback_markitdown(path, doc_id, checksum)
 
-    def _fallback_markitdown(self, path: str, doc_id: str, checksum: str) -> ParsedDocument:
+    def _fallback_markitdown(
+        self, path: str, doc_id: str, checksum: str
+    ) -> ParsedDocument:
         """降级到 MarkItDown"""
         from app.parsers.markitdown_adapter import MarkItDownAdapter
+
         adapter = MarkItDownAdapter("pdf")
         doc = adapter.parse(path, doc_id)
         doc.checksum = checksum

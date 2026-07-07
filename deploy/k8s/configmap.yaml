@@ -1,0 +1,83 @@
+# OpsKG 非敏感配置（S13-3 K8s 部署）
+# 仅承载非敏感配置；敏感信息（API Key、密码、SAML 证书私钥等）必须使用 Secret
+#
+# 使用：
+#   1. 编辑本文件设置环境相关参数（LLM 模型、Neo4j 地址等）
+#   2. 部署：kubectl apply -f deploy/k8s/configmap.yaml
+#   3. 修改后滚动更新：kubectl rollout restart deployment/opsgkg-backend -n opskg
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opskg-config
+  namespace: opskg
+  labels:
+    app.kubernetes.io/name: opskg
+    app.kubernetes.io/component: config
+data:
+  # ── 运行环境 ──
+  ENV: "production"
+  LOG_LEVEL: "INFO"
+
+  # ── LLM 后端 ──
+  # openai_compat | ollama | vllm
+  LLM_BACKEND: "openai_compat"
+  LLM_MODEL: "deepseek-chat"
+  OPENAI_COMPAT_BASE_URL: "https://api.deepseek.com/v1"
+  OPENAI_COMPAT_MODEL: "deepseek-chat"
+  LLM_TIMEOUT: "120"
+  LLM_MAX_TOKENS: "4096"
+  LLM_TEMPERATURE: "0.1"
+
+  # ── Ollama（LLM_BACKEND=ollama 时使用）──
+  OLLAMA_BASE_URL: "http://ollama.ollama.svc.cluster.local:11434"
+  OLLAMA_MODEL: "qwen2.5:7b"
+
+  # ── vLLM（LLM_BACKEND=vllm 时使用）──
+  VLLM_BASE_URL: "http://vllm.vllm.svc.cluster.local:8000"
+  VLLM_MODEL: "Qwen2.5-14B-Instruct"
+
+  # ── Embedding（P2-1.1 向量检索，留空关闭）──
+  EMBEDDING_MODEL: ""
+  EMBEDDING_DIM: "1024"
+  EMBEDDING_BATCH_SIZE: "16"
+
+  # ── Neo4j（K8s 集群内访问）──
+  NEO4J_URI: "bolt://neo4j.opskg.svc.cluster.local:7687"
+  NEO4J_USER: "neo4j"
+
+  # ── 抽取门控 ──
+  CONFIDENCE_AUTO: "0.85"
+  CONFIDENCE_REVIEW: "0.60"
+  DEDUP_COS_THRESHOLD: "0.92"
+
+  # ── 知识编译权威性 ──
+  AUTHORITY_SOURCE_WEIGHT: "0.5"
+  AUTHORITY_RECENCY_WEIGHT: "0.3"
+  AUTHORITY_CONSENSUS_WEIGHT: "0.2"
+
+  # ── 文档生成 ──
+  DOC_GEN_MAX_ITER: "3"
+  DOC_GEN_TOKEN_SOFT: "120000"
+  DOC_GEN_TOKEN_HARD: "200000"
+
+  # ── OIDC / SAML / LDAP 默认角色 ──
+  OIDC_DEFAULT_ROLE: "viewer"
+  SAML_DEFAULT_ROLE: "viewer"
+  LDAP_DEFAULT_ROLE: "viewer"
+
+  # ── SAML 严格模式（生产推荐 true）──
+  SAML_STRICT: "true"
+
+  # ── 前端回调 ──
+  # 公网入口域名（与 Ingress host 一致）
+  FRONTEND_BASE_URL: "https://opskg.example.com"
+  OIDC_REDIRECT_BASE_URL: "https://opskg.example.com"
+
+  # ── HA 高可用 ──
+  DEPLOYMENT_MODE: "replicated"
+
+  # ── 可观测性 ──
+  # 追踪默认关闭，OPSKG_TRACING_ENABLED=1 启用
+  OPSKG_TRACING_ENABLED: "0"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.observability.svc.cluster.local:4317"
+  OTEL_SERVICE_NAME: "opskg-backend"

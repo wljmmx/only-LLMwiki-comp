@@ -5,6 +5,7 @@
 
 优势：纯 Python，无 GPU 依赖，180+ 文件/秒，MIT 许可。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -41,7 +42,10 @@ class MarkItDownAdapter:
         # 通过 Markdown 解析器提取结构化元素
         # 先写入临时 md 文件
         import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".md", mode="w", encoding="utf-8", delete=False) as tmp:
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".md", mode="w", encoding="utf-8", delete=False
+        ) as tmp:
             tmp.write(md_text)
             tmp_path = tmp.name
 

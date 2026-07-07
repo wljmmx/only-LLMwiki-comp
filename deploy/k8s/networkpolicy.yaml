@@ -1,0 +1,166 @@
+# NetworkPolicy（S13-3 K8s 部署，可选安全加固）
+#
+# 限制 Pod 间网络访问，遵循最小权限原则：
+#   - Frontend 仅可访问 Backend
+#   - Backend 仅可访问 Neo4j + 外部 LLM API
+#   - Neo4j 仅接受 Backend 流量
+#
+# 前置要求：集群 CNI 支持 NetworkPolicy（Calico / Cilium / Weave Net）
+# 不支持的 CNI（如 flannel 默认）下本资源会被忽略，不会报错
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opskg-default-deny
+  namespace: opskg
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress: []
+---
+# Backend NetworkPolicy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opskg-backend-policy
+  namespace: opskg
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: opskg-backend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 接受 Ingress controller 流量（HTTP）
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+    # 接受 Frontend Pod 流量（同命名空间内）
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: opskg-frontend
+      ports:
+        - protocol: TCP
+          port: 8000
+    # 接受同命名空间内监控抓取（Prometheus）
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: opskg
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    # DNS 解析
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 访问 Neo4j
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: neo4j
+      ports:
+        - protocol: TCP
+          port: 7687
+    # 访问外部 LLM API（HTTPS）
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+    # 访问 OTel collector（如启用追踪）
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+---
+# Neo4j NetworkPolicy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opskg-neo4j-policy
+  namespace: opskg
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: neo4j
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 仅接受 Backend 流量
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: opskg-backend
+      ports:
+        - protocol: TCP
+          port: 7687
+        - protocol: TCP
+          port: 7474
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+---
+# Frontend NetworkPolicy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opskg-frontend-policy
+  namespace: opskg
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: opskg-frontend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 接受 Ingress controller 流量
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 80
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+    # 访问 Backend
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: opskg-backend
+      ports:
+        - protocol: TCP
+          port: 8000

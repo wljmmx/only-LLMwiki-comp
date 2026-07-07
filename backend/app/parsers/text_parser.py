@@ -2,11 +2,12 @@
 
 按空行分段，保留原始文本结构。
 """
+
 from __future__ import annotations
 
 import hashlib
 
-from app.parsers.base import DocumentParser, ElementType, ParsedDocument, ParsedElement
+from app.parsers.base import ElementType, ParsedDocument, ParsedElement
 
 
 class TextParser:
@@ -21,8 +22,12 @@ class TextParser:
         elements = self._parse_text(text)
 
         return ParsedDocument(
-            doc_id=doc_id, source_path=path, format="txt",
-            checksum=checksum, title=title, elements=elements,
+            doc_id=doc_id,
+            source_path=path,
+            format="txt",
+            checksum=checksum,
+            title=title,
+            elements=elements,
         )
 
     def _parse_text(self, text: str) -> list[ParsedElement]:
@@ -32,7 +37,10 @@ class TextParser:
             content = para.strip()
             if not content:
                 continue
-            elements.append(ParsedElement(
-                type=ElementType.PARAGRAPH, content=content,
-            ))
+            elements.append(
+                ParsedElement(
+                    type=ElementType.PARAGRAPH,
+                    content=content,
+                )
+            )
         return elements

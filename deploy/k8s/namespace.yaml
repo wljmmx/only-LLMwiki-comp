@@ -1,0 +1,9 @@
+# OpsKG 命名空间（S13-3 K8s 部署）
+# 所有 OpsKG 资源统一放置到 opskg 命名空间，便于 RBAC / NetworkPolicy / 资源配额管理
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: opskg
+  labels:
+    app.kubernetes.io/name: opskg
+    app.kubernetes.io/part-of: opskg-platform

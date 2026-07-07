@@ -2,6 +2,7 @@
 
 对齐本体 ops_ontology.yaml：12 类实体 + 11 类关系。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -40,20 +41,22 @@ class RelationType(str, Enum):
 @dataclass
 class ExtractedEntity:
     """单条抽取实体"""
-    entity_type: str            # EntityType value
-    name: str                   # 唯一标识
+
+    entity_type: str  # EntityType value
+    name: str  # 唯一标识
     properties: dict[str, Any] = field(default_factory=dict)
-    confidence: float = 0.0     # 抽取置信度
-    evidence_span: str = ""     # 原文证据片段
-    source_doc_id: str = ""     # 来源文档 ID
+    confidence: float = 0.0  # 抽取置信度
+    evidence_span: str = ""  # 原文证据片段
+    source_doc_id: str = ""  # 来源文档 ID
 
 
 @dataclass
 class ExtractedRelation:
     """单条抽取关系"""
-    relation_type: str          # RelationType value
-    from_entity: str            # 源实体 name
-    to_entity: str              # 目标实体 name
+
+    relation_type: str  # RelationType value
+    from_entity: str  # 源实体 name
+    to_entity: str  # 目标实体 name
     properties: dict[str, Any] = field(default_factory=dict)
     confidence: float = 0.0
     evidence_span: str = ""
@@ -63,6 +66,7 @@ class ExtractedRelation:
 @dataclass
 class ExtractionResult:
     """单次抽取的完整结果"""
+
     doc_id: str
     entities: list[ExtractedEntity] = field(default_factory=list)
     relations: list[ExtractedRelation] = field(default_factory=list)
@@ -76,6 +80,7 @@ class ExtractionResult:
 @dataclass
 class ExtractionStats:
     """抽取统计"""
+
     total_entities: int = 0
     auto_accepted: int = 0
     review_needed: int = 0

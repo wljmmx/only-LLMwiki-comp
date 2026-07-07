@@ -2,6 +2,7 @@
 
 LLM Few-shot 抽取实体/关系 → 置信度门控分流（自动入图 / 建议审查 / 丢弃）。
 """
+
 from __future__ import annotations
 
 import json
@@ -10,11 +11,14 @@ import structlog
 
 from app.config import get_settings
 from app.core.llm import ChatMessage, get_llm_client
-from app.parsers.base import ParsedDocument
-from app.extraction.types import (
-    ExtractionResult, ExtractedEntity, ExtractedRelation, ExtractionStats,
-)
 from app.extraction.rule_extractor import RuleBasedExtractor
+from app.extraction.types import (
+    ExtractedEntity,
+    ExtractedRelation,
+    ExtractionResult,
+    ExtractionStats,
+)
+from app.parsers.base import ParsedDocument
 
 logger = structlog.get_logger()
 
@@ -90,9 +94,12 @@ class KnowledgeExtractor:
         self._apply_gating(entities, relations, result)
 
         logger.info(
-            "extraction_done", doc_id=doc.doc_id,
-            total=len(entities), auto=len(result.auto_accepted_entities),
-            review=len(result.review_entities), discarded=result.discarded_count,
+            "extraction_done",
+            doc_id=doc.doc_id,
+            total=len(entities),
+            auto=len(result.auto_accepted_entities),
+            review=len(result.review_entities),
+            discarded=result.discarded_count,
             source="llm" if raw_entities or raw_relations else "rules",
         )
         return result
@@ -143,6 +150,7 @@ class KnowledgeExtractor:
         except json.JSONDecodeError:
             # 尝试提取 [...] 片段
             import re
+
             m = re.search(r"\[.*\]", text, re.DOTALL)
             if m:
                 try:

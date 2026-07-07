@@ -3,6 +3,7 @@
 文档模板 CRUD + 变量占位渲染。
 内置运维常用模板，支持自定义。
 """
+
 from __future__ import annotations
 
 import re
@@ -230,8 +231,15 @@ class TemplateManager:
                     """INSERT INTO templates
                        (slug, name, category, description, content, is_builtin, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
-                    (tpl["slug"], tpl["name"], tpl["category"], tpl["description"],
-                     tpl["content"], now, now),
+                    (
+                        tpl["slug"],
+                        tpl["name"],
+                        tpl["category"],
+                        tpl["description"],
+                        tpl["content"],
+                        now,
+                        now,
+                    ),
                 )
         conn.commit()
 
@@ -251,13 +259,17 @@ class TemplateManager:
     def get(self, slug: str) -> dict | None:
         """获取模板"""
         conn = _get_db()
-        row = conn.execute(
-            "SELECT * FROM templates WHERE slug = ?", (slug,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM templates WHERE slug = ?", (slug,)).fetchone()
         return dict(row) if row else None
 
-    def create(self, slug: str, name: str, content: str,
-               category: str = "custom", description: str = "") -> dict:
+    def create(
+        self,
+        slug: str,
+        name: str,
+        content: str,
+        category: str = "custom",
+        description: str = "",
+    ) -> dict:
         """创建自定义模板"""
         conn = _get_db()
         now = datetime.now(timezone.utc).isoformat()
@@ -273,8 +285,14 @@ class TemplateManager:
         except sqlite3.IntegrityError:
             raise ValueError(f"模板 slug '{slug}' 已存在")
 
-    def update(self, slug: str, name: str | None = None, content: str | None = None,
-               category: str | None = None, description: str | None = None) -> dict | None:
+    def update(
+        self,
+        slug: str,
+        name: str | None = None,
+        content: str | None = None,
+        category: str | None = None,
+        description: str | None = None,
+    ) -> dict | None:
         """更新模板（内置模板不可改 content）"""
         existing = self.get(slug)
         if not existing:
@@ -286,15 +304,17 @@ class TemplateManager:
         now = datetime.now(timezone.utc).isoformat()
         sets = ["updated_at = ?"]
         params: list = [now]
-        for field, value in [("name", name), ("content", content),
-                             ("category", category), ("description", description)]:
+        for field, value in [
+            ("name", name),
+            ("content", content),
+            ("category", category),
+            ("description", description),
+        ]:
             if value is not None:
                 sets.append(f"{field} = ?")
                 params.append(value)
         params.append(slug)
-        conn.execute(
-            f"UPDATE templates SET {', '.join(sets)} WHERE slug = ?", params
-        )
+        conn.execute(f"UPDATE templates SET {', '.join(sets)} WHERE slug = ?", params)
         conn.commit()
         return self.get(slug)
 
@@ -337,7 +357,11 @@ class TemplateManager:
             for i, item in enumerate(items, 1):
                 if isinstance(item, dict):
                     item = {**item, "step_num": i, "proc_id": i}
-                rendered_blocks.append(self._render_template(block_template, item if isinstance(item, dict) else {}))
+                rendered_blocks.append(
+                    self._render_template(
+                        block_template, item if isinstance(item, dict) else {}
+                    )
+                )
             result = result.replace(match.group(0), "".join(rendered_blocks))
 
         # 替换简单变量 {{variable}}

@@ -5,6 +5,7 @@
    适合被 Claude Desktop / Cursor 等 MCP 客户端作为子进程启动
 2. HTTP 模式（集成到 FastAPI）：见 main.py 的 /mcp 端点
 """
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,7 @@ from app.mcp.protocol import handle_request
 
 def run_stdio() -> None:
     """stdio 模式：从 stdin 读取 JSON-RPC，写出到 stdout"""
-    print(f"OpsKG MCP Server (stdio mode) 启动", file=sys.stderr)
+    print("OpsKG MCP Server (stdio mode) 启动", file=sys.stderr)
     for line in sys.stdin:
         line = line.strip()
         if not line:

@@ -2,14 +2,15 @@
 
 提供实体/关系的写入、查询、去重能力。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
-from neo4j import GraphDatabase, Driver, Session
-from neo4j.exceptions import Neo4jError
 import structlog
+from neo4j import Driver, GraphDatabase
+from neo4j.exceptions import Neo4jError
 
 from app.config import get_settings
 
@@ -19,6 +20,7 @@ logger = structlog.get_logger()
 @dataclass
 class GraphEntity:
     """图谱实体"""
+
     entity_type: str
     name: str
     properties: dict[str, Any] = field(default_factory=dict)
@@ -29,6 +31,7 @@ class GraphEntity:
 @dataclass
 class GraphRelation:
     """图谱关系"""
+
     relation_type: str
     from_entity: str
     to_entity: str
@@ -147,9 +150,15 @@ class GraphStore:
 
         logger.info(
             "graph_batch_upsert",
-            entities=entity_count, relations=rel_count, errors=len(errors),
+            entities=entity_count,
+            relations=rel_count,
+            errors=len(errors),
         )
-        return {"entities_written": entity_count, "relations_written": rel_count, "errors": errors}
+        return {
+            "entities_written": entity_count,
+            "relations_written": rel_count,
+            "errors": errors,
+        }
 
     # ── 查询 ──
 
@@ -157,7 +166,8 @@ class GraphStore:
         """查询单个实体"""
         with self.driver.session() as session:
             result = session.run(
-                "MATCH (n:Entity {name: $name}) RETURN properties(n) AS props", name=name
+                "MATCH (n:Entity {name: $name}) RETURN properties(n) AS props",
+                name=name,
             )
             record = result.single()
             return dict(record["props"]) if record else None
@@ -186,7 +196,8 @@ class GraphStore:
                 ORDER BY n.confidence DESC
                 LIMIT $limit
                 """,
-                type=entity_type, limit=limit,
+                type=entity_type,
+                limit=limit,
             )
             return [dict(record) for record in result]
 
@@ -200,16 +211,15 @@ class GraphStore:
                 RETURN n.name AS name, n.entity_type AS type, n.confidence AS confidence
                 LIMIT $limit
                 """,
-                keyword=keyword, limit=limit,
+                keyword=keyword,
+                limit=limit,
             )
             return [dict(record) for record in result]
 
     def get_stats(self) -> dict:
         """获取图谱统计"""
         with self.driver.session() as session:
-            entities = session.run(
-                "MATCH (n:Entity) RETURN count(n) AS total"
-            ).single()
+            entities = session.run("MATCH (n:Entity) RETURN count(n) AS total").single()
             relations = session.run(
                 "MATCH ()-[r]->() RETURN count(r) AS total"
             ).single()

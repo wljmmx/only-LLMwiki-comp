@@ -1,0 +1,66 @@
+# OpsKG .dockerignore（S13-4 多阶段构建优化）
+# 减少构建上下文体积，加速 docker build
+
+# ── Git / CI ──
+.git
+.github
+.gitignore
+
+# ── Python 缓存 + 虚拟环境 ──
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+.venv/
+venv/
+env/
+
+# ── 前端构建产物（在镜像内重新构建，避免本地版本污染）──
+frontend/dist/
+frontend/node_modules/
+
+# ── 数据库 + 运行时数据 ──
+backend/data/
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+uploads/
+*.log
+*.tmp
+
+# ── 文档（运行时不需要）──
+docs/
+*.md
+!frontend/README.md
+
+# ── IDE / 系统 ──
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── 测试 / 验证脚本（运行时不需要）──
+backend/tests/
+scripts/
+
+# ── 部署清单（运行时不需要）──
+deploy/
+
+# ── 备份 ──
+data/backups/
+*.tar.gz
+
+# ── 计划文档 ──
+方案计划文档_V2.1.md
+
+# ── 环境变量 ──
+.env
+.env.local
+.env.*.local
+
+# ── K8s Secret 本地实例 ──
+deploy/k8s/secret.local.yaml

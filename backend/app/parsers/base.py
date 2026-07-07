@@ -2,6 +2,7 @@
 
 所有解析器必须输出统一的 ParsedDocument，保留源文件追溯链。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -43,4 +44,5 @@ class ParsedDocument:
 @runtime_checkable
 class DocumentParser(Protocol):
     format: str
+
     def parse(self, path: str, doc_id: str) -> ParsedDocument: ...
