@@ -232,8 +232,8 @@ jobs:
           echo "验证 /health..."
           curl -sf http://localhost:8080/health | python3 -m json.tool
 
-          echo "验证 /setup/status..."
-          curl -sf http://localhost:8080/setup/status | python3 -m json.tool
+          echo "验证 /api/setup/status（前端实际调用路径）..."
+          curl -sf http://localhost:8080/api/setup/status | python3 -m json.tool
 
           echo "验证首页 HTML..."
           curl -sf http://localhost:8080/ | grep -oE '<title>[^<]+</title>'
