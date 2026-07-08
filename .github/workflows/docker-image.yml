@@ -199,6 +199,12 @@ jobs:
             -e OPSKG_BOOTSTRAP_ADMIN_USER=admin \
             -e OPSKG_BOOTSTRAP_ADMIN_PASSWORD=admin123 \
             "$IMAGE")
+          echo "Container ID: $CID"
+
+          echo "等待 15 秒后查看启动日志..."
+          sleep 15
+          echo "=== docker logs (启动阶段) ==="
+          docker logs "$CID" 2>&1 | tail -60 || echo "(无日志)"
 
           echo "等待健康检查..."
           for i in $(seq 1 30); do
@@ -207,6 +213,21 @@ jobs:
             if [ "$STATUS" = "healthy" ]; then break; fi
             sleep 3
           done
+
+          # 即使未健康也输出诊断，便于定位
+          if [ "$STATUS" != "healthy" ]; then
+            echo "❌ 容器未健康，输出诊断"
+            echo "=== docker logs (失败诊断) ==="
+            docker logs "$CID" 2>&1 | tail -100 || echo "(无日志)"
+            echo "=== docker inspect Health ==="
+            docker inspect --format='{{json .State.Health}}' "$CID" | python3 -m json.tool 2>/dev/null || true
+            echo "=== 直接 curl /health ==="
+            curl -sv http://localhost:8080/health 2>&1 | tail -20 || echo "curl /health 失败"
+            echo "=== 直接 curl / (首页) ==="
+            curl -sv http://localhost:8080/ 2>&1 | tail -20 || echo "curl / 失败"
+            docker rm -f $CID
+            exit 1
+          fi
 
           echo "验证 /health..."
           curl -sf http://localhost:8080/health | python3 -m json.tool
