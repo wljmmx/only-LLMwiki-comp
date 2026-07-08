@@ -32,4 +32,5 @@ OpsKG 单镜像启动
 EOF
 
 # ── 4. 启动 supervisord（前台运行，容器主进程）──
-exec /usr/local/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
+# Debian supervisor 包装到 /usr/bin/supervisord（非 /usr/local/bin/）
+exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
