@@ -185,8 +185,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull and smoke test
+        env:
+          # 镜像名必须小写（ghcr.io 要求）；github.repository 含大写 LLM
+          IMAGE_NAME: wljmmx/only-llmwiki-comp
         run: |
-          IMAGE="ghcr.io/${{ github.repository }}:sha-$(git rev-parse --short HEAD)"
+          IMAGE="ghcr.io/${IMAGE_NAME}:sha-$(git rev-parse --short HEAD)"
           echo "拉取镜像: $IMAGE"
           docker pull "$IMAGE"
 
@@ -243,23 +246,23 @@ jobs:
 
             ```bash
             # 拉取镜像
-            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            docker pull ghcr.io/wljmmx/only-llmwiki-comp:${{ github.ref_name }}
 
             # 使用 docker compose（推荐，含 Neo4j）
-            curl -sSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/docker-compose.yml -o docker-compose.yml
-            curl -sSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/.env.example -o .env
+            curl -sSL https://raw.githubusercontent.com/wljmmx/only-LLMwiki-comp/${{ github.ref_name }}/docker-compose.yml -o docker-compose.yml
+            curl -sSL https://raw.githubusercontent.com/wljmmx/only-LLMwiki-comp/${{ github.ref_name }}/.env.example -o .env
             # 编辑 .env 配置 LLM API Key 等
             docker compose up -d
             ```
 
             ### 镜像信息
 
-            - **镜像地址**: `ghcr.io/${{ github.repository }}:${{ github.ref_name }}`
+            - **镜像地址**: `ghcr.io/wljmmx/only-llmwiki-comp:${{ github.ref_name }}`
             - **架构**: linux/amd64, linux/arm64
             - **许可证**: Apache-2.0
             - **健康检查**: `curl -fsS http://localhost/health`
 
-            详细使用说明见 [INSTALL.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/INSTALL.md)。
+            详细使用说明见 [INSTALL.md](https://github.com/wljmmx/only-LLMwiki-comp/blob/${{ github.ref_name }}/INSTALL.md)。
           draft: false
           prerelease: false
           generate_release_notes: true
