@@ -8,6 +8,7 @@
 - [方式一：本地开发（推荐首次体验）](#方式一本地开发推荐首次体验)
 - [方式二：Docker 部署](#方式二docker-部署)
 - [方式三：生产部署](#方式三生产部署)
+- [Setup Wizard（开箱配置向导）](#setup-wizard开箱配置向导)
 - [LLM 后端配置](#llm-后端配置)
 - [Neo4j 配置](#neo4j-配置)
 - [认证配置](#认证配置)
@@ -124,35 +125,55 @@ docker run -d --name neo4j \
 
 ## 方式二：Docker 部署
 
-```bash
-# 1. 配置环境变量
-cp .env.example .env
-# 编辑 .env，配置 LLM_API_KEY 等
+OpsKG 使用 **单镜像** 架构：Dockerfile 多阶段构建（Stage 1 构建前端 dist → Stage 2 装 Python 后端 + nginx + supervisord），最终镜像同时承载 nginx（前端静态资源 + 反向代理）与 uvicorn（后端）。docker-compose 编排 OpsKG 单镜像与 Neo4j 两个容器。
 
-# 2. 启动（Neo4j + Backend）
+```bash
+# 1. 配置环境变量（也可留空，启动后由 UI Setup Wizard 引导填写）
+cp .env.example .env
+# 编辑 .env，配置 OPENAI_COMPAT_API_KEY 等
+
+# 2. 启动（Neo4j + OpsKG 单镜像）
 docker compose up -d
 
 # 3. 验证
-curl http://localhost:8000/health
-# Neo4j 控制台：http://localhost:7474（neo4j/password）
+curl http://localhost/health          # OpsKG 健康检查
+# 浏览器打开 http://localhost        # OpsKG 控制台（首次自动跳转 Setup Wizard）
+# Neo4j 控制台：http://localhost:7474  # neo4j / password
 ```
 
-**注意**：当前 `docker-compose.yml` 仅含后端，前端需单独构建：
+**docker-compose 关键设计**：
+- `opskg` 服务：单镜像，暴露宿主端口 80（容器内 nginx），healthcheck `curl -fsS http://localhost/health`
+- `neo4j` 服务：5-community，含 healthcheck，`start_period: 30s` 等待 Neo4j 启动
+- `opskg` 通过 `depends_on: neo4j: condition: service_healthy` 等待 Neo4j 健康后再启动
+- 所有环境变量从 `.env` 注入
+
+**单容器模式（不含 Neo4j，自行启动 Neo4j）**：
 
 ```bash
-cd frontend && npm run build
-# 将 dist/ 部署到 nginx 或其他静态服务器，反向代理 /api 到 backend:8000
+docker build -t opskg:latest .
+docker run -d --name opskg \
+  -p 80:80 \
+  -e LLM_BACKEND=openai_compat \
+  -e OPENAI_COMPAT_API_KEY=sk-xxx \
+  -e NEO4J_URI=bolt://host.docker.internal:7687 \
+  -e NEO4J_PASSWORD=password \
+  -e OPSKG_BOOTSTRAP_ADMIN_USER=admin \
+  -e OPSKG_BOOTSTRAP_ADMIN_PASSWORD=admin \
+  -v opskg_data:/app/data \
+  opskg:latest
 ```
+
+容器内 `entrypoint.sh` 会根据 `OPSKG_UVICORN_WORKERS`（默认 2）动态调整 uvicorn workers。
 
 ## 方式三：生产部署
 
-### 1. 构建前端
+### 1. 构建单镜像（已内含前端构建）
 
 ```bash
-cd frontend
-npm ci
-npm run build
-# 产物在 frontend/dist/
+# Dockerfile 多阶段构建会先在 Stage 1（node:20-slim）中 npm ci + npm run build，
+# 再把 dist 拷贝到 Stage 2（python:3.12-slim）的 nginx 静态目录。
+# 因此生产部署无需在宿主机单独构建前端。
+docker build -t opskg:latest .
 ```
 
 ### 2. 配置生产环境变量
@@ -185,6 +206,9 @@ OPSKG_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
 # HA
 OPSKG_DEPLOYMENT_MODE=replicated
 OPSKG_INSTANCE_ID=opskg-prod-01
+
+# Uvicorn workers（按 CPU 核数调整）
+OPSKG_UVICORN_WORKERS=4
 ```
 
 ### 3. 部署
@@ -193,26 +217,68 @@ OPSKG_INSTANCE_ID=opskg-prod-01
 docker compose --env-file .env.prod up -d
 ```
 
-### 4. 前端部署（nginx 示例）
+### 4. 自定义前端 nginx 配置（可选）
 
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;
+单镜像内 nginx 配置位于 `/etc/nginx/conf.d/default.conf`（源文件 `deploy/docker/nginx.conf`），
+若需自定义路由（如额外 WebSocket、长连接超时），可挂载覆盖：
 
-    # 前端静态资源
-    location / {
-        root /path/to/frontend/dist;
-        try_files $uri $uri/ /index.html;
-    }
+```bash
+docker run -d --name opskg \
+  -p 80:80 \
+  -v /path/to/my-nginx.conf:/etc/nginx/conf.d/default.conf:ro \
+  ... \
+  opskg:latest
+```
 
-    # API 反向代理
-    location /api/ {
-        proxy_pass http://backend:8000/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
+## Setup Wizard（开箱配置向导）
+
+OpsKG 提供 UI 上的 **Setup Wizard** 多步骤引导，让首次开箱用户无需阅读本文档即可完成环境配置。
+
+### 何时自动出现
+
+- **首次访问**：浏览器打开 OpsKG 后，前端会调用 `GET /setup/status` 检测配置完成度。若 `ready=false` 且用户未主动 dismiss，自动跳转到 `/setup` 路由。
+- **手动打开**：登录后右上角用户菜单 → "开箱配置向导"，可随时重新打开。
+- **跳过后**：localStorage 标记 `opskg:setup:dismissed=true`，不再自动跳转。可通过用户菜单重新打开。
+
+### 5 步引导流程
+
+| 步骤 | 内容 | 操作 |
+|------|------|------|
+| 1. 配置概览 | 显示 LLM/Neo4j/认证 三项配置完成度（绿色已配置 / 黄色未配置） | 查看缺失项 |
+| 2. LLM 配置 | 选择 backend（openai_compat / ollama / vllm），填 base_url + api_key + model | 点击"测试连通" |
+| 3. Neo4j 配置 | 填 bolt URI + user + password | 点击"测试连通" |
+| 4. 认证配置 | 可选启用 API Token + 配置 Bootstrap Admin 凭据 | 设置初始管理员 |
+| 5. 生成命令 | 选择 docker compose 或 docker run，填端口/workers，生成可复制命令 | 复制 .env + 命令执行 |
+
+### 设计原则
+
+- **不写 .env 文件**：所有测试连通都基于表单临时值（通过 `POST /setup/test-llm` / `test-neo4j` 请求体覆盖），不修改后端任何文件。避免敏感信息持久化风险。
+- **生成命令而非自动执行**：最后一步生成 `docker run` / `docker compose` 命令字符串 + 配套 `.env` 文件内容，用户自行复制执行。
+- **所有端点无需认证**：Setup Wizard 在认证配置前必须可用，4 个端点 (`GET /setup/status`, `POST /setup/test-llm`, `POST /setup/test-neo4j`, `POST /setup/generate-command`) 均不要求 token。
+
+### 后端 API
+
+| 端点 | 方法 | 用途 |
+|------|------|------|
+| `/setup/status` | GET | 配置完成度检查（不暴露敏感值） |
+| `/setup/test-llm` | POST | 用请求体覆盖当前 settings 测试 LLM 连通 |
+| `/setup/test-neo4j` | POST | 用请求体覆盖当前 settings 测试 Neo4j 连通 |
+| `/setup/generate-command` | POST | 生成可复制的 docker 命令 + .env 文件内容 |
+
+### 典型开箱流程
+
+```bash
+# 1. 克隆 + 启动（不编辑 .env）
+git clone https://github.com/wljmmx/only-LLMwiki-comp.git
+cd only-LLMwiki-comp
+docker compose up -d
+
+# 2. 浏览器打开 http://localhost，自动跳转到 Setup Wizard
+# 3. 按引导填写 LLM API Key、测试连通
+# 4. 填写 Neo4j 密码、测试连通
+# 5. 设置 Bootstrap Admin 凭据
+# 6. 生成命令 → 复制 .env 内容覆盖 .env 文件 → docker compose down && up -d
+# 7. 等待 30 秒后刷新页面，使用 Bootstrap Admin 登录
 ```
 
 ## LLM 后端配置

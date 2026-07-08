@@ -39,6 +39,9 @@ cp .env.example .env
 # 编辑 .env，至少配置 OPENAI_COMPAT_API_KEY（或切换到 ollama 本地模式）
 ```
 
+> 💡 **首次开箱**：可不预先编辑 `.env`，直接启动后访问 UI，会自动进入 **Setup Wizard** 向导
+> （5 步引导：配置概览 → LLM → Neo4j → 认证 → 生成部署命令，每步可在线测试连通）。
+
 ### 二、后端启动
 
 ```bash
@@ -57,13 +60,26 @@ npm run dev
 # 打开 http://localhost:5173
 ```
 
-### 四、Docker 部署（可选）
+### 四、Docker 部署（推荐生产）
+
+OpsKG 使用 **单镜像** 架构（Dockerfile 多阶段构建，镜像内含前端 dist + 后端 + nginx + supervisord），docker-compose 同时编排 OpsKG 单镜像与 Neo4j：
 
 ```bash
+cp .env.example .env
+# 编辑 .env 后启动
 docker compose up -d
-# 后端 http://localhost:8000
-# Neo4j 控制台 http://localhost:7474
+
+# 验证
+curl http://localhost/health          # OpsKG 健康检查
+# 浏览器打开 http://localhost        # OpsKG 控制台（首次自动跳转 Setup Wizard）
+# Neo4j 控制台 http://localhost:7474   # neo4j / password
 ```
+
+镜像暴露端口 80（容器内 nginx），健康检查 `curl -fsS http://localhost/health`。
+依赖 Neo4j healthy 后才启动 OpsKG，避免冷启动连接失败。
+
+> 💡 **未配置即开箱**：即使 `.env` 留空，容器也能启动；浏览器访问后由 UI Setup Wizard 引导你
+> 选择 LLM 后端、测试连通、生成可一键复制的 `docker run` / `docker compose` 命令与 `.env` 内容。
 
 详细安装步骤见 [INSTALL.md](INSTALL.md)。
 
@@ -101,8 +117,8 @@ docker compose up -d
 │   └── smoke_*.py                 # 端到端冒烟测试
 ├── docs/                          # 审计报告 + 演进路线 + 设计文档
 ├── .github/workflows/ci.yml       # GitHub Actions CI
-├── docker-compose.yml             # Neo4j + Backend
-├── Dockerfile                     # 后端镜像
+├── docker-compose.yml             # Neo4j + OpsKG 单镜像
+├── Dockerfile                     # 单镜像（前端 dist + 后端 + nginx + supervisord）
 ├── requirements.txt               # Python 依赖
 └── pyproject.toml                 # ruff 配置
 ```

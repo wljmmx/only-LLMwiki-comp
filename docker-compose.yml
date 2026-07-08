@@ -1,14 +1,25 @@
-# OpsKG 运维知识图谱 - 全栈部署
-# 使用: docker compose up -d
+# OpsKG 运维知识图谱 - 全栈部署（单镜像含前后端）
+#
+# 使用:
+#   1. cp .env.example .env && 编辑 .env（至少配置 OPENAI_COMPAT_API_KEY）
+#   2. docker compose up -d
+#   3. 访问 http://localhost:80
+#
+# 镜像说明:
+#   单镜像（Dockerfile 多阶段构建）内含:
+#     - nginx（前端静态资源 + 反向代理 /api → uvicorn:8000）
+#     - uvicorn（后端 FastAPI）
+#     - supervisord（进程管理，自动重启）
+#   数据持久化: backend_data 卷挂载到 /app/data
 
 services:
-  # ========== Neo4j 图数据库 ==========
+  # ========== Neo4j 图数据库（可选，缺失时图功能降级） ==========
   neo4j:
     image: neo4j:5-community
     container_name: opskg-neo4j
     ports:
-      - "7474:7474"   # HTTP
-      - "7687:7687"   # Bolt
+      - "7474:7474"   # HTTP（Neo4j Browser 控制台）
+      - "7687:7687"   # Bolt（Cypher 协议）
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-password}
       - NEO4J_server_memory_heap_initial__size=512m
@@ -23,37 +34,63 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 30s
     restart: unless-stopped
 
-  # ========== OpsKG Backend ==========
-  backend:
+  # ========== OpsKG 单镜像（前端 + 后端 + nginx） ==========
+  opskg:
     build: .
-    container_name: opskg-backend
+    container_name: opskg
     ports:
-      - "8000:8000"
+      - "80:80"       # nginx（外部访问入口，前端 + /api 反代）
     environment:
-      - ENV=production
-      - LOG_LEVEL=INFO
+      - ENV=${ENV:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - OPSKG_UVICORN_WORKERS=${OPSKG_UVICORN_WORKERS:-2}
       # LLM 配置
       - LLM_BACKEND=${LLM_BACKEND:-openai_compat}
       - LLM_MODEL=${LLM_MODEL:-deepseek-chat}
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-120}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-4096}
       - OPENAI_COMPAT_BASE_URL=${OPENAI_COMPAT_BASE_URL:-https://api.deepseek.com/v1}
       - OPENAI_COMPAT_API_KEY=${OPENAI_COMPAT_API_KEY:-}
       - OPENAI_COMPAT_MODEL=${OPENAI_COMPAT_MODEL:-deepseek-chat}
+      # Ollama（LLM_BACKEND=ollama 时使用）
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://localhost:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:7b}
+      # vLLM（LLM_BACKEND=vllm 时使用）
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://localhost:8000}
+      - VLLM_MODEL=${VLLM_MODEL:-Qwen2.5-14B-Instruct}
+      # Embedding（留空关闭向量检索）
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-}
       # Neo4j
-      - NEO4J_URI=bolt://neo4j:7687
-      - NEO4J_USER=neo4j
+      - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
+      - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
       # 抽取门控
-      - CONFIDENCE_AUTO=0.85
-      - CONFIDENCE_REVIEW=0.60
-      # 认证（留空关闭，生产请设置）
+      - CONFIDENCE_AUTO=${CONFIDENCE_AUTO:-0.85}
+      - CONFIDENCE_REVIEW=${CONFIDENCE_REVIEW:-0.60}
+      # 认证（留空关闭=dev 模式；生产请设置 OPSKG_API_TOKEN 或用 bootstrap admin）
       - OPSKG_API_TOKEN=${OPSKG_API_TOKEN:-}
+      - OPSKG_BOOTSTRAP_ADMIN_USER=${OPSKG_BOOTSTRAP_ADMIN_USER:-admin}
+      - OPSKG_BOOTSTRAP_ADMIN_PASSWORD=${OPSKG_BOOTSTRAP_ADMIN_PASSWORD:-admin}
+      # 可观测性
+      - OPSKG_TRACING_ENABLED=${OPSKG_TRACING_ENABLED:-0}
+      - OPSKG_OTLP_ENDPOINT=${OPSKG_OTLP_ENDPOINT:-}
+      # HA
+      - OPSKG_DEPLOYMENT_MODE=${OPSKG_DEPLOYMENT_MODE:-standalone}
+      - OPSKG_INSTANCE_ID=${OPSKG_INSTANCE_ID:-}
     volumes:
       - backend_data:/app/data
     depends_on:
       neo4j:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
 volumes:
