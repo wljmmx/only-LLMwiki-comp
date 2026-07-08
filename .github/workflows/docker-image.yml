@@ -1,0 +1,265 @@
+# OpsKG Docker 镜像构建与发布
+#
+# 触发条件：
+#   1. push tag v* → 构建并推送 ghcr.io（latest + 版本号 + sha）
+#   2. PR 到 main → 仅构建验证（不推送）
+#   3. workflow_dispatch → 手动触发构建并推送
+#
+# 产出：
+#   - ghcr.io/wljmmx/only-llmwiki-comp:latest
+#   - ghcr.io/wljmmx/only-llmwiki-comp:0.0.1（从 VERSION 文件或 tag 读取）
+#   - ghcr.io/wljmmx/only-llmwiki-comp:sha-<short>
+#
+# 多架构：linux/amd64 + linux/arm64（ARM 服务器/Apple Silicon 支持）
+
+name: Docker Image
+
+on:
+  push:
+    tags: ["v*"]
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      push:
+        description: "推送镜像到 ghcr.io"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  # ghcr.io 镜像名必须全小写；github.repository 可能含大写字符（如 only-LLMwiki-comp）
+  IMAGE_NAME: wljmmx/only-llmwiki-comp
+
+jobs:
+  build:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    # PR 触发时无需权限；push tag/main 时需要写入 ghcr.io
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      should_push: ${{ steps.push.outputs.should_push }}
+      version: ${{ steps.version.outputs.tag_version }}
+      digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整历史用于 VCS_REF
+
+      - name: Set up QEMU（多架构支持）
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── 版本号解析 ──
+      # 优先级：git tag > VERSION 文件 > 0.0.1 默认
+      - name: Resolve version
+        id: version
+        run: |
+          # 从 VERSION 文件读取（单一来源）
+          FILE_VERSION=$(cat VERSION | tr -d '[:space:]')
+          echo "version=${FILE_VERSION}" >> $GITHUB_OUTPUT
+
+          # 从 git tag 提取（如果触发源是 tag）
+          GIT_TAG=${GITHUB_REF#refs/tags/}
+          if [[ "$GIT_TAG" == v* ]]; then
+            TAG_VERSION="${GIT_TAG#v}"
+            echo "is_tag=true" >> $GITHUB_OUTPUT
+          else
+            TAG_VERSION="${FILE_VERSION}"
+            echo "is_tag=false" >> $GITHUB_OUTPUT
+          fi
+          echo "tag_version=${TAG_VERSION}" >> $GITHUB_OUTPUT
+
+          # 短 SHA
+          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+
+          echo "── 版本号解析 ──"
+          echo "  VERSION 文件 : ${FILE_VERSION}"
+          echo "  Git Tag      : ${GIT_TAG:-（无）}"
+          echo "  最终版本     : ${TAG_VERSION}"
+          echo "  SHA          : $(git rev-parse --short HEAD)"
+
+      # ── 是否推送镜像 ──
+      # push tag / push main / workflow_dispatch(push=true) 时推送
+      # PR 时仅构建验证
+      - name: Determine push
+        id: push
+        run: |
+          if [[ "${{ steps.version.outputs.is_tag }}" == "true" ]] \
+             || [[ "${{ github.ref }}" == "refs/heads/main" && "${{ github.event_name }}" == "push" ]] \
+             || [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.push }}" == "true" ]]; then
+            echo "should_push=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_push=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ── 登录 ghcr.io（仅推送时） ──
+      - name: Log in to ghcr.io
+        if: steps.push.outputs.should_push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 镜像标签与标签策略 ──
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # tag 触发：v0.0.1 → 0.0.1 + latest
+            type=semver,pattern={{version}}
+            type=semver,pattern=latest
+            # main 分支：latest + sha
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+            # 手动触发：版本号 + sha
+            type=raw,value=${{ steps.version.outputs.tag_version }},enable=${{ steps.version.outputs.is_tag == 'true' || github.event_name == 'workflow_dispatch' }}
+
+      # ── 构建并推送（多架构） ──
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.push.outputs.should_push == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            OPSKG_VERSION=${{ steps.version.outputs.tag_version }}
+            OPSKG_IMAGE_REF=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            BUILD_DATE=${{ steps.version.outputs.build_date }}
+            VCS_REF=${{ steps.version.outputs.sha_short }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      # ── 输出镜像摘要 ──
+      - name: Image digest
+        if: steps.push.outputs.should_push == 'true'
+        run: |
+          echo "✅ 镜像已推送"
+          echo "  Registry : ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          echo "  Tags     : ${{ steps.meta.outputs.tags }}"
+          echo "  Digest   : ${{ steps.build.outputs.digest }}"
+          echo ""
+          echo "拉取命令："
+          echo "  docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag_version }}"
+
+  # ── 镜像冒烟测试（仅 push 时执行） ──
+  smoke-test:
+    name: Smoke Test (image)
+    runs-on: ubuntu-latest
+    needs: build
+    if: needs.build.outputs.should_push == 'true'
+    permissions:
+      packages: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull and smoke test
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}:sha-$(git rev-parse --short HEAD)"
+          echo "拉取镜像: $IMAGE"
+          docker pull "$IMAGE"
+
+          echo "启动容器..."
+          CID=$(docker run -d -p 8080:80 \
+            -e OPSKG_API_TOKEN="" \
+            -e OPSKG_BOOTSTRAP_ADMIN_USER=admin \
+            -e OPSKG_BOOTSTRAP_ADMIN_PASSWORD=admin123 \
+            "$IMAGE")
+
+          echo "等待健康检查..."
+          for i in $(seq 1 30); do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' $CID 2>/dev/null || echo "starting")
+            echo "  [$i/30] health: $STATUS"
+            if [ "$STATUS" = "healthy" ]; then break; fi
+            sleep 3
+          done
+
+          echo "验证 /health..."
+          curl -sf http://localhost:8080/health | python3 -m json.tool
+
+          echo "验证 /setup/status..."
+          curl -sf http://localhost:8080/setup/status | python3 -m json.tool
+
+          echo "验证首页 HTML..."
+          curl -sf http://localhost:8080/ | grep -oE '<title>[^<]+</title>'
+
+          echo "清理容器..."
+          docker rm -f $CID
+
+          echo "✅ 冒烟测试通过"
+
+  # ── 创建 GitHub Release（仅 tag 触发） ──
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build, smoke-test]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: OpsKG ${{ github.ref_name }}
+          body: |
+            ## OpsKG ${{ github.ref_name }}
+
+            ### 一键部署
+
+            ```bash
+            # 拉取镜像
+            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+
+            # 使用 docker compose（推荐，含 Neo4j）
+            curl -sSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/docker-compose.yml -o docker-compose.yml
+            curl -sSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/.env.example -o .env
+            # 编辑 .env 配置 LLM API Key 等
+            docker compose up -d
+            ```
+
+            ### 镜像信息
+
+            - **镜像地址**: `ghcr.io/${{ github.repository }}:${{ github.ref_name }}`
+            - **架构**: linux/amd64, linux/arm64
+            - **许可证**: Apache-2.0
+            - **健康检查**: `curl -fsS http://localhost/health`
+
+            详细使用说明见 [INSTALL.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/INSTALL.md)。
+          draft: false
+          prerelease: false
+          generate_release_notes: true

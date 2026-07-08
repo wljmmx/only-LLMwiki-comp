@@ -2,6 +2,43 @@
 
 > 基于 Karpathy LLM Wiki 范式的运维知识管理系统：把 raw 文档编译为结构化 Markdown Wiki，建立双向链接，维护知识网络健康。
 
+![Version](https://img.shields.io/badge/version-0.0.1-blue)
+![License](https://img.shields.io/badge/license-Apache--2.0-green)
+![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)
+
+## 一键部署（Docker）
+
+```bash
+# 1. 下载配置文件（也可留空，启动后由 UI Setup Wizard 引导）
+curl -sSL https://raw.githubusercontent.com/wljmmx/only-LLMwiki-comp/main/.env.example -o .env
+curl -sSL https://raw.githubusercontent.com/wljmmx/only-LLMwiki-comp/main/docker-compose.yml -o docker-compose.yml
+
+# 2. 启动（拉取 ghcr.io 预构建镜像 + Neo4j）
+docker compose up -d
+
+# 3. 访问 http://localhost（首次自动跳转 Setup Wizard 引导配置）
+#    Neo4j 控制台 http://localhost:7474（neo4j / password）
+```
+
+镜像地址：`ghcr.io/wljmmx/only-llmwiki-comp:0.0.1`
+支持架构：`linux/amd64` + `linux/arm64`
+
+<details>
+<summary>或使用 docker run（单容器，需自行启动 Neo4j）</summary>
+
+```bash
+docker run -d --name opskg \
+  -p 80:80 \
+  -e OPENAI_COMPAT_API_KEY=sk-xxx \
+  -e NEO4J_URI=bolt://host.docker.internal:7687 \
+  -e NEO4J_PASSWORD=password \
+  -e OPSKG_BOOTSTRAP_ADMIN_USER=admin \
+  -e OPSKG_BOOTSTRAP_ADMIN_PASSWORD=admin123 \
+  -v opskg_data:/app/data \
+  ghcr.io/wljmmx/only-llmwiki-comp:0.0.1
+```
+</details>
+
 ## 项目特色
 
 - **三层架构**：L1 Raw（原始文档）→ L2 Wiki（LLM 编译的结构化页面）→ L3 Schema（AGENTS.md 规范层）

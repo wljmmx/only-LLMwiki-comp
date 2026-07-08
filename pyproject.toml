@@ -1,3 +1,13 @@
+# OpsKG 项目元信息
+[project]
+name = "opskg"
+version = "0.0.1"
+description = "OpsKG — LLM 驱动的运维知识图谱 Wiki 控制台"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+authors = [{ name = "OpsKG Contributors" }]
+
 # Ruff 配置 — OpsKG 项目 lint 规则
 # 详见 https://docs.astral.sh/ruff/configuration/
 
