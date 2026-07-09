@@ -158,6 +158,26 @@ class TestGenerateCommand:
         assert "OLLAMA_BASE_URL=http://localhost:11434" in body["command"]
         assert "OLLAMA_MODEL=qwen2.5:7b" in body["command"]
         assert "-p 9090:80" in body["command"]
+        # --add-host 让容器内 host.docker.internal 可解析（访问宿主 Ollama/vLLM）
+        assert "--add-host host.docker.internal:host-gateway" in body["command"]
+        # docker run 场景用 --link 连接 Neo4j 容器，URI 应为 bolt://neo4j:7687
+        assert "NEO4J_URI=bolt://neo4j:7687" in body["command"]
+
+    def test_ollama_default_uses_host_docker_internal(self):
+        """Docker 部署默认 ollama_base_url 应为 host.docker.internal（非 localhost）
+
+        容器内 localhost 访问不到宿主 Ollama，必须用 host.docker.internal。
+        """
+        r = client.post(
+            "/setup/generate-command",
+            json={
+                "mode": "docker-compose",
+                "llm_backend": "ollama",
+            },
+        )
+        body = r.json()
+        # 默认值应包含 host.docker.internal
+        assert "OLLAMA_BASE_URL=http://host.docker.internal:11434" in body["env_file_content"]
 
     def test_auth_enabled_includes_token(self):
         r = client.post(

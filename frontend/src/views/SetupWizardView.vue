@@ -295,7 +295,7 @@ async function copyToClipboard(text: string, label = '内容') {
                 <NFormItem label="Ollama Base URL">
                   <NInput
                     v-model:value="store.form.ollama_base_url"
-                    placeholder="http://localhost:11434"
+                    placeholder="http://host.docker.internal:11434"
                   />
                 </NFormItem>
                 <NFormItem label="模型名">

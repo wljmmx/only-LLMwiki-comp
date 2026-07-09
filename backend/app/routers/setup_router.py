@@ -97,9 +97,9 @@ class GenerateCommandRequest(BaseModel):
     openai_compat_base_url: str = "https://api.deepseek.com/v1"
     openai_compat_api_key: str = ""
     openai_compat_model: str = "deepseek-chat"
-    ollama_base_url: str = "http://localhost:11434"
+    ollama_base_url: str = "http://host.docker.internal:11434"
     ollama_model: str = "qwen2.5:7b"
-    vllm_base_url: str = "http://localhost:8000"
+    vllm_base_url: str = "http://host.docker.internal:8000"
     vllm_model: str = "Qwen2.5-14B-Instruct"
     neo4j_password: str = "password"
     enable_auth: bool = False
@@ -375,7 +375,7 @@ async def generate_command(req: GenerateCommandRequest) -> GenerateCommandRespon
             env_flags += f" \\\n  -e VLLM_BASE_URL={req.vllm_base_url}"
             env_flags += f" \\\n  -e VLLM_MODEL={req.vllm_model}"
 
-        env_flags += " \\\n  -e NEO4J_URI=bolt://host.docker.internal:7687"
+        env_flags += " \\\n  -e NEO4J_URI=bolt://neo4j:7687"
         env_flags += f" \\\n  -e NEO4J_PASSWORD={req.neo4j_password}"
 
         if req.enable_auth and req.api_token:
@@ -393,8 +393,11 @@ async def generate_command(req: GenerateCommandRequest) -> GenerateCommandRespon
             f"  -v neo4j_data:/data \\\n"
             f"  neo4j:5-community\n\n"
             "# 3. 启动 OpsKG 单镜像\n"
+            "#    --add-host 让容器内 host.docker.internal 解析到宿主（访问宿主 Ollama/vLLM）\n"
+            "#    --link 让容器内 bolt://neo4j:7687 解析到 Neo4j 容器\n"
             f"docker run -d --name opskg \\\n"
             f"  -p {req.port}:80 \\\n"
+            f"  --add-host host.docker.internal:host-gateway \\\n"
             f"  {env_flags} \\\n"
             f"  -v opskg_data:/app/data \\\n"
             f"  --link opskg-neo4j:neo4j \\\n"
