@@ -18,6 +18,7 @@ import {
 } from 'naive-ui'
 import type { UploadCustomRequestOptions } from 'naive-ui'
 import { listDocuments, deleteDocument, parseDocument, getDocumentContent } from '@/api/documents'
+import { recompileDocument } from '@/api/wiki'
 import type { DocumentMeta } from '@/types/api'
 
 const message = useMessage()
@@ -28,6 +29,8 @@ const total = ref(0)
 const limit = ref(10)
 const offset = ref(0)
 const searchText = ref('')
+// 正在编译为 Wiki 的文档 ID（同一时间只允许一个，LLM 编译较慢）
+const compilingId = ref<string | null>(null)
 const formatFilter = ref<string>('')
 const statusFilter = ref<string>('')
 
@@ -123,7 +126,7 @@ const columns = [
   {
     title: '操作',
     key: 'actions',
-    width: 160,
+    width: 240,
     render(row: DocumentMeta) {
       return h(
         NSpace,
@@ -134,6 +137,18 @@ const columns = [
               NButton,
               { size: 'small', type: 'primary', quaternary: true, onClick: () => handleView(row) },
               { default: () => '查看' },
+            ),
+            h(
+              NButton,
+              {
+                size: 'small',
+                type: 'info',
+                quaternary: true,
+                loading: compilingId.value === row.id,
+                disabled: compilingId.value !== null && compilingId.value !== row.id,
+                onClick: () => handleCompileToWiki(row),
+              },
+              { default: () => '编译为Wiki' },
             ),
             h(
               NButton,
@@ -148,7 +163,7 @@ const columns = [
 ]
 
 function formatFileSize(bytes: number): string {
-  if (bytes === 0) return '0 B'
+  if (!bytes || bytes <= 0 || isNaN(bytes)) return '0 B'
   const k = 1024
   const sizes = ['B', 'KB', 'MB', 'GB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
@@ -201,6 +216,31 @@ function handleUpload({ file, onFinish, onError }: UploadCustomRequestOptions) {
       console.error(err)
       onError()
     })
+}
+
+async function handleCompileToWiki(doc: DocumentMeta) {
+  compilingId.value = doc.id
+  message.loading('正在编译为 Wiki，LLM 处理中，请稍候...', { duration: 0 })
+  try {
+    const res = await recompileDocument(doc.id)
+    message.destroyAll()
+    const created = res.pages_created ?? 0
+    const updated = res.pages_updated ?? 0
+    const errors = res.errors ?? []
+    if (errors.length > 0) {
+      message.warning(`编译完成（${created} 创建 / ${updated} 更新），但有 ${errors.length} 个错误`)
+    } else if (created === 0 && updated === 0) {
+      message.info('编译完成，无新页面生成（内容可能未变化或 LLM 不可用降级为模板）')
+    } else {
+      message.success(`编译成功：${created} 个页面创建，${updated} 个页面更新`)
+    }
+  } catch (err: any) {
+    message.destroyAll()
+    message.error('编译失败：' + (err?.response?.data?.detail || err?.message || '未知错误'))
+    console.error(err)
+  } finally {
+    compilingId.value = null
+  }
 }
 
 async function handleView(doc: DocumentMeta) {

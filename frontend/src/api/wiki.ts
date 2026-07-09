@@ -91,6 +91,13 @@ export function recompileStale(pushReview = true) {
   })
 }
 
+// 单文档编译为 Wiki（全流水线：解析 → 抽取 → LLM 编译 wiki 页面）
+export function recompileDocument(docId: string, force = true) {
+  return api.post<any, any>(`/llm-wiki/recompile/${docId}`, null, {
+    params: { force },
+  })
+}
+
 export function checkDrift(docId: string) {
   return api.post<any, any>(`/llm-wiki/drift/check/${docId}`)
 }
