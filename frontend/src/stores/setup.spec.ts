@@ -61,9 +61,9 @@ describe('stores/setup.ts', () => {
     store.form.llm_backend = 'openai_compat'
     expect(store.activeLLMBaseUrl).toBe('https://api.deepseek.com/v1')
     store.form.llm_backend = 'ollama'
-    expect(store.activeLLMBaseUrl).toBe('http://localhost:11434')
+    expect(store.activeLLMBaseUrl).toBe('http://host.docker.internal:11434')
     store.form.llm_backend = 'vllm'
-    expect(store.activeLLMBaseUrl).toBe('http://localhost:8000')
+    expect(store.activeLLMBaseUrl).toBe('http://host.docker.internal:8000')
   })
 
   it('activeLLMModel 按 backend 切换', () => {
@@ -183,7 +183,7 @@ describe('stores/setup.ts', () => {
 
     expect(setupApi.testLLM).toHaveBeenCalledWith({
       backend: 'ollama',
-      base_url: 'http://localhost:11434',
+      base_url: 'http://host.docker.internal:11434',
       model: 'qwen2.5:7b',
     })
   })

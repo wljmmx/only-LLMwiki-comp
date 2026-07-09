@@ -62,10 +62,12 @@ services:
       - OPENAI_COMPAT_API_KEY=${OPENAI_COMPAT_API_KEY:-}
       - OPENAI_COMPAT_MODEL=${OPENAI_COMPAT_MODEL:-deepseek-chat}
       # Ollama（LLM_BACKEND=ollama 时使用）
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://localhost:11434}
+      # 容器内访问宿主 Ollama 必须用 host.docker.internal（非 localhost）
+      # WSL2/Win: Ollama 需设置 OLLAMA_HOST=0.0.0.0:11434 监听所有接口
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:7b}
       # vLLM（LLM_BACKEND=vllm 时使用）
-      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://localhost:8000}
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://host.docker.internal:8000}
       - VLLM_MODEL=${VLLM_MODEL:-Qwen2.5-14B-Instruct}
       # Embedding（留空关闭向量检索）
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-}
@@ -88,6 +90,10 @@ services:
       - OPSKG_INSTANCE_ID=${OPSKG_INSTANCE_ID:-}
     volumes:
       - backend_data:/app/data
+    # 允许容器通过 host.docker.internal 访问宿主服务（Ollama/vLLM 等）
+    # Docker Desktop 默认支持；Linux Docker Engine 需此声明（host-gateway 是 20.10+ 特殊关键字）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       neo4j:
         condition: service_healthy

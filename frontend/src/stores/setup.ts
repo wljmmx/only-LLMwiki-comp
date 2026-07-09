@@ -39,11 +39,12 @@ function defaultForm() {
     openai_compat_model: 'deepseek-chat',
 
     // LLM - ollama
-    ollama_base_url: 'http://localhost:11434',
+    // Docker 部署时容器内 localhost 访问不到宿主，用 host.docker.internal
+    ollama_base_url: 'http://host.docker.internal:11434',
     ollama_model: 'qwen2.5:7b',
 
     // LLM - vllm
-    vllm_base_url: 'http://localhost:8000',
+    vllm_base_url: 'http://host.docker.internal:8000',
     vllm_model: 'Qwen2.5-14B-Instruct',
 
     // Neo4j
