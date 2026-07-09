@@ -61,6 +61,17 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _normalize_doc(doc: dict) -> dict:
+    """统一文档字段名，兼容前端
+
+    DB 字段 size_bytes，前端读 size（DocumentMeta.size）。
+    这里加 size 别名，避免字段不匹配导致前端大小显示空。
+    """
+    if "size" not in doc and "size_bytes" in doc:
+        doc["size"] = doc["size_bytes"]
+    return doc
+
+
 class DocumentStore:
     """文档持久化存储"""
 
@@ -120,7 +131,7 @@ class DocumentStore:
         row = conn.execute(
             "SELECT * FROM documents WHERE doc_id = ?", (doc_id,)
         ).fetchone()
-        return dict(row) if row else None
+        return _normalize_doc(dict(row)) if row else None
 
     def get_by_id(self, internal_id: int) -> dict | None:
         """按内部 ID 获取"""
@@ -128,7 +139,7 @@ class DocumentStore:
         row = conn.execute(
             "SELECT * FROM documents WHERE id = ?", (internal_id,)
         ).fetchone()
-        return dict(row) if row else None
+        return _normalize_doc(dict(row)) if row else None
 
     def list(
         self,
@@ -150,7 +161,7 @@ class DocumentStore:
         query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         rows = conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        return [_normalize_doc(dict(r)) for r in rows]
 
     def read_content(self, doc_id: str) -> bytes | None:
         """读取文档原始内容"""
