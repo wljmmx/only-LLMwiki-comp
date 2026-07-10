@@ -529,7 +529,10 @@ def _render_empty_index() -> str:
 
 
 def render_log_md(limit: int = 100) -> str:
-    """从 VersionControl 聚合变更历史，渲染为 OKF log.md
+    """渲染 OKF log.md
+
+    优先用持续维护的 wiki:log 页面（P1-2）；若不存在则降级为从
+    VersionControl 聚合（兼容 P0 阶段旧数据）。
 
     Args:
         limit: 最多记录条数（按时间倒序）
@@ -537,6 +540,18 @@ def render_log_md(limit: int = 100) -> str:
     Returns:
         log.md 内容
     """
+    # P1-2: 优先用持续维护的 wiki:log
+    try:
+        from app.knowledge.wiki_log import render_log_markdown
+
+        maintained = render_log_markdown(limit=limit)
+        # render_log_markdown 始终返回非空骨架，检查是否有真实条目
+        if "_暂无变更记录_" not in maintained:
+            return maintained
+    except Exception as e:
+        logger.warning("okf_log_fallback_to_vc", error=str(e))
+
+    # 降级：从 VersionControl 聚合（P0 行为）
     vc = get_version_control()
     # list_by_prefix 返回 wiki:* 的最新版本
     rows = vc.list_by_prefix("wiki:", limit=limit)

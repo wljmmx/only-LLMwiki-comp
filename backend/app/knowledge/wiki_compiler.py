@@ -501,7 +501,7 @@ class WikiCompiler:
             md_to_save = self._render_page_md(page, is_new=True)
             outcome = "created"
 
-        self.vc.save_version(
+        save_result = self.vc.save_version(
             doc_key=doc_key,
             title=page.title,
             content=md_to_save,
@@ -510,6 +510,25 @@ class WikiCompiler:
         )
         # 维护 backlink
         update_backlinks(page.slug, md_to_save)
+
+        # P1-2: 持续维护 wiki:log（OKF log.md 保留文件）
+        # 仅在实际写入新版本时追加 log entry（skipped 时不追加）
+        if not save_result.get("skipped"):
+            try:
+                from app.knowledge.wiki_log import append_log_entry
+
+                append_log_entry(
+                    slug=page.slug,
+                    version=save_result.get("version", 1),
+                    summary=self._change_summary(page, outcome),
+                    author="wiki-compiler",
+                    page_type=page.type,
+                    title=page.title,
+                )
+            except Exception as e:
+                logger.warning(
+                    "wiki_log_append_failed", slug=page.slug, error=str(e)
+                )
 
         # S12-2 反向回链：新建页面时，扫描已有页面正文，
         # 在提及新概念处插入 [[new_slug]]（AGENTS.md §五 5.b）

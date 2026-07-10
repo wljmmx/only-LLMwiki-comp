@@ -53,6 +53,15 @@ from app.knowledge.wiki_index import (
     list_wiki_pages,
     rebuild_index,
 )
+from app.knowledge.wiki_log import (
+    LOG_DOC_KEY,
+    LOG_SLUG,
+    LogEntry,
+    append_log_entry,
+    get_log,
+    get_log_entries,
+    render_log_markdown,
+)
 from app.knowledge.okf_adapter import (
     DIR_TO_TYPE,
     OKF_RECOMMENDED_FIELDS,
@@ -221,4 +230,12 @@ __all__ = [
     "type_dir_for",
     "slug_from_concept_id",
     "get_okf_adapter",
+    # Wiki Log（P1-2）
+    "LOG_SLUG",
+    "LOG_DOC_KEY",
+    "LogEntry",
+    "append_log_entry",
+    "get_log",
+    "get_log_entries",
+    "render_log_markdown",
 ]
