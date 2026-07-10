@@ -5,12 +5,14 @@ import { NMenu, type MenuOption } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
+const emit = defineEmits<{ navigate: [] }>()
+
 const router = useRouter()
 const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 
-/** 是否可访问用户管理：admin 用户，或 dev/legacy 模式（authRequired === false） */
+/** 是否可访问用户管理：admin 用户，或 dev/legacy 模式 */
 const canManageUsers = computed(
   () => authStore.isAdmin || authStore.authRequired === false,
 )
@@ -65,6 +67,7 @@ const menuItems = computed<MenuOption[]>(() => {
 
 function handleSelect(key: string) {
   router.push(key)
+  emit('navigate') // 通知父组件（移动端 drawer 关闭）
 }
 </script>
 
