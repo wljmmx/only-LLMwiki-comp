@@ -7,12 +7,30 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: vi.fn() }),
 }))
 
-// mock @/api/wiki
+// P1-4: mock queryWikiStream（替代 queryWiki）
+// 捕获回调以便测试中模拟 SSE 事件
+let capturedCallbacks: {
+  onMeta: (data: any) => void
+  onDelta: (text: string) => void
+  onDone: (data: any) => void
+  onError?: (message: string) => void
+} | null = null
+let lastAbortController: AbortController | null = null
+
 vi.mock('@/api/wiki', () => ({
-  queryWiki: vi.fn(),
+  queryWikiStream: vi.fn((question: string, callbacks: any) => {
+    capturedCallbacks = callbacks
+    lastAbortController = new AbortController()
+    return lastAbortController
+  }),
 }))
 
-import { queryWiki } from '@/api/wiki'
+// mock renderWikiMarkdown（避免 marked/DOMPurify 在 jsdom 环境的副作用）
+vi.mock('@/utils/wikiRender', () => ({
+  renderWikiMarkdown: (text: string) => text,
+}))
+
+import { queryWikiStream } from '@/api/wiki'
 import WikiQueryView from '@/views/WikiQueryView.vue'
 import '@/test/setup'
 
@@ -23,6 +41,8 @@ describe('WikiQueryView.vue', () => {
     pinia = createPinia()
     setActivePinia(pinia)
     vi.clearAllMocks()
+    capturedCallbacks = null
+    lastAbortController = null
     vi.spyOn(console, 'error').mockImplementation(() => {})
   })
   afterEach(() => {
@@ -51,68 +71,102 @@ describe('WikiQueryView.vue', () => {
     expect(vm.hasAnswer).toBe(false)
   })
 
-  it('handleQuery 空问题时直接 return，不调用 queryWiki', async () => {
+  it('handleQuery 空问题时直接 return，不调用 queryWikiStream', () => {
     const wrapper = mountView()
     const vm = wrapper.vm as any
     vm.handleQuery()
-    expect(queryWiki).not.toHaveBeenCalled()
+    expect(queryWikiStream).not.toHaveBeenCalled()
   })
 
-  it('handleQuery 成功：result 填充、loading 恢复 false', async () => {
-    ;(queryWiki as any).mockResolvedValue({
-      question: '什么是 nginx',
-      answer: 'Nginx 是反向代理',
-      cited_slugs: ['nginx-502-troubleshooting'],
-      recalled_pages: [
-        { slug: 'nginx-502-troubleshooting', title: 'Nginx 502', type: 'incident', score: 0.92 },
-      ],
-      insufficient_knowledge: false,
-      error: null,
-    })
+  it('handleQuery 流式成功：meta → delta(多次) → done，result 填充、loading 恢复 false', async () => {
     const wrapper = mountView()
     const vm = wrapper.vm as any
     vm.question = '什么是 nginx'
     vm.handleQuery()
+
+    // 发起查询后立即处于 loading
     expect(vm.loading).toBe(true)
     expect(vm.asked).toBe(true)
+    expect(queryWikiStream).toHaveBeenCalledWith('什么是 nginx', expect.any(Object))
+
+    // 模拟 meta 事件
+    capturedCallbacks!.onMeta({
+      recalled_pages: [
+        { slug: 'nginx-502-troubleshooting', title: 'Nginx 502', type: 'incident', score: 0.92 },
+      ],
+      cited_slugs: ['nginx-502-troubleshooting'],
+      insufficient_knowledge: false,
+    })
+    expect(vm.result.recalled_pages).toHaveLength(1)
+    expect(vm.result.cited_slugs).toEqual(['nginx-502-troubleshooting'])
+
+    // 模拟 delta 事件（多次增量）
+    capturedCallbacks!.onDelta('Nginx ')
+    capturedCallbacks!.onDelta('是反向代理')
+    expect(vm.streamingAnswer).toBe('Nginx 是反向代理')
+
+    // 模拟 done 事件
+    capturedCallbacks!.onDone({ writebacks: [] })
     await flushPromises()
+
     expect(vm.loading).toBe(false)
-    expect(vm.result).not.toBeNull()
     expect(vm.result.answer).toBe('Nginx 是反向代理')
     expect(vm.hasAnswer).toBe(true)
     expect(vm.hasError).toBe(false)
-    expect(queryWiki).toHaveBeenCalledWith('什么是 nginx')
   })
 
-  it('handleQuery 失败：result 填充 error 字段', async () => {
-    ;(queryWiki as any).mockRejectedValue(new Error('LLM 不可用'))
+  it('handleQuery 流式错误：onError → result.error 填充、loading false', async () => {
     const wrapper = mountView()
     const vm = wrapper.vm as any
     vm.question = 'test'
     vm.handleQuery()
+    expect(vm.loading).toBe(true)
+
+    capturedCallbacks!.onError!('LLM 不可用')
     await flushPromises()
-    expect(vm.result).not.toBeNull()
+
+    expect(vm.loading).toBe(false)
     expect(vm.result.error).toBe('LLM 不可用')
     expect(vm.hasError).toBe(true)
     expect(vm.hasAnswer).toBe(false)
   })
 
   it('insufficient_knowledge=true 时 hasAnswer 为 false', async () => {
-    ;(queryWiki as any).mockResolvedValue({
-      question: 'test',
-      answer: '',
-      cited_slugs: [],
-      recalled_pages: [],
-      insufficient_knowledge: true,
-      error: null,
-    })
     const wrapper = mountView()
     const vm = wrapper.vm as any
     vm.question = 'test'
     vm.handleQuery()
+
+    capturedCallbacks!.onMeta({
+      recalled_pages: [],
+      cited_slugs: [],
+      insufficient_knowledge: true,
+      answer: '知识库不足',
+    })
+    capturedCallbacks!.onDone({ writebacks: [] })
     await flushPromises()
+
+    expect(vm.result.insufficient_knowledge).toBe(true)
     expect(vm.hasAnswer).toBe(false)
     expect(vm.hasError).toBe(false)
+  })
+
+  it('handleStop：取消流式、保留已收文本、loading false', async () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    vm.question = 'test'
+    vm.handleQuery()
+
+    capturedCallbacks!.onDelta('部分回答')
+    expect(vm.streamingAnswer).toBe('部分回答')
+    expect(vm.loading).toBe(true)
+
+    vm.handleStop()
+    await flushPromises()
+
+    expect(vm.loading).toBe(false)
+    expect(vm.result.answer).toBe('部分回答')
+    expect(lastAbortController?.signal.aborted).toBe(true)
   })
 
   it('formatScore：0.92 → 92.0%', () => {

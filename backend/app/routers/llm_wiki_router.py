@@ -25,9 +25,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
 import yaml
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.auth import require_role, verify_token
@@ -542,6 +544,49 @@ async def llm_wiki_recall(q: str, limit: int = 5) -> dict:
             for h in hits
         ],
     }
+
+
+@router.post("/llm-wiki/query/stream", dependencies=[Depends(verify_token)])
+async def llm_wiki_query_stream(payload: dict):
+    """流式 Wiki 问答（P1-4）
+
+    SSE 事件序列：
+        event: meta   — {"recalled_pages":[...], "cited_slugs":[...],
+                         "insufficient_knowledge":bool, "answer"?:str}
+        event: delta  — {"text":"chunk"}  （多次）
+        event: done   — {"writebacks":[...]}
+
+    知识库不足时仅发 meta（含 answer）+ done。
+    让前端在 LLM 生成期间即时看到召回页面与逐字回答，降低等待焦虑。
+    """
+    question = (payload.get("question") or "").strip()
+    if not question:
+        raise HTTPException(400, "question 不能为空")
+    recall_limit = int(payload.get("recall_limit", 5))
+    expand_backlinks = bool(payload.get("expand_backlinks", True))
+
+    qa = get_wiki_qa_engine()
+
+    async def event_gen():
+        try:
+            async for evt in qa.stream_answer(
+                question,
+                recall_limit=recall_limit,
+                expand_backlinks=expand_backlinks,
+            ):
+                yield f"event: {evt['type']}\ndata: {json.dumps(evt, ensure_ascii=False)}\n\n"
+        except Exception as e:  # noqa: BLE001
+            err = json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False)
+            yield f"event: error\ndata: {err}\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲，确保实时推送
+        },
+    )
 
 
 # ────────── P1-3 Lint / Health Check ──────────

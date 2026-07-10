@@ -42,6 +42,8 @@ import {
   PersonCircleOutline,
   BookmarksOutline,
   AlertOutline,
+  LinkOutline,
+  StopCircleOutline,
 } from '@vicons/ionicons5'
 
 /** 语义图标名 → vicons 组件 */
@@ -76,6 +78,8 @@ export const iconRegistry = {
   // 状态/反馈
   notify: NotificationsOutline,
   alert: AlertOutline,
+  link: LinkOutline,
+  stop: StopCircleOutline,
   // 主题/布局
   sunny: SunnyOutline,
   moon: MoonOutline,

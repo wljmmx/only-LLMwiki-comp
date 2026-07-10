@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { NInput, NButton, NCard, NTag, NSpace, NSpin, NEmpty, NAlert, NDivider } from 'naive-ui'
-import { queryWiki } from '@/api/wiki'
+import { NInput, NButton, NCard, NTag, NSpace, NAlert, NDivider } from 'naive-ui'
+import { queryWikiStream } from '@/api/wiki'
 import type { WikiQueryResult } from '@/api/wiki'
+import { renderWikiMarkdown } from '@/utils/wikiRender'
+import AppIcon from '@/components/common/AppIcon.vue'
+import PageHeader from '@/components/common/PageHeader.vue'
+import LoadingState from '@/components/common/LoadingState.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
 
 const router = useRouter()
 
@@ -11,10 +16,19 @@ const question = ref('')
 const loading = ref(false)
 const asked = ref(false)
 const result = ref<WikiQueryResult | null>(null)
+/** P1-4: 流式回答增量文本 */
+const streamingAnswer = ref('')
+/** 流式 abort 控制器 */
+let abortController: AbortController | null = null
 
 const hasError = computed(() => !!result.value?.error)
 const hasAnswer = computed(
   () => !hasError.value && !!result.value && !result.value.insufficient_knowledge,
+)
+
+/** P1-4: 回答渲染为 Markdown（经 DOMPurify sanitize，安全 v-html） */
+const renderedAnswer = computed(() =>
+  renderWikiMarkdown(result.value?.answer || streamingAnswer.value || ''),
 )
 
 function handleQuery() {
@@ -22,23 +36,64 @@ function handleQuery() {
   if (!q || loading.value) return
   loading.value = true
   asked.value = true
-  queryWiki(q)
-    .then((res) => {
-      result.value = res
-    })
-    .catch((err) => {
+  streamingAnswer.value = ''
+  result.value = {
+    question: q,
+    answer: '',
+    cited_slugs: [],
+    recalled_pages: [],
+    insufficient_knowledge: false,
+    error: null,
+  }
+
+  abortController = queryWikiStream(q, {
+    onMeta: (data) => {
+      if (result.value) {
+        result.value.recalled_pages = data.recalled_pages
+        result.value.cited_slugs = data.cited_slugs
+        result.value.insufficient_knowledge = data.insufficient_knowledge
+        // 知识不足时后端直接给完整 answer
+        if (data.insufficient_knowledge && data.answer) {
+          result.value.answer = data.answer
+        }
+      }
+    },
+    onDelta: (text) => {
+      streamingAnswer.value += text
+    },
+    onDone: () => {
+      // 流式结束：把累积文本写入 result.answer
+      if (result.value) {
+        result.value.answer = streamingAnswer.value
+      }
+      loading.value = false
+      abortController = null
+    },
+    onError: (message) => {
       result.value = {
         question: q,
         answer: '',
         cited_slugs: [],
-        recalled_pages: [],
+        recalled_pages: result.value?.recalled_pages || [],
         insufficient_knowledge: false,
-        error: err?.message || '查询失败，请稍后重试',
+        error: message || '查询失败，请稍后重试',
       }
-    })
-    .finally(() => {
       loading.value = false
-    })
+      abortController = null
+    },
+  })
+}
+
+/** P1-4: 取消流式查询 */
+function handleStop() {
+  if (abortController) {
+    abortController.abort()
+    abortController = null
+    loading.value = false
+    if (result.value) {
+      result.value.answer = streamingAnswer.value
+    }
+  }
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -62,14 +117,18 @@ function getScoreType(score: number): 'success' | 'info' | 'warning' | 'default'
 function goToWikiPage(slug: string) {
   router.push({ path: '/wiki', query: { slug } })
 }
+
+onUnmounted(() => {
+  if (abortController) abortController.abort()
+})
 </script>
 
 <template>
   <div class="wiki-query-view">
-    <div class="query-header">
-      <h2 class="page-title">Wiki 智能问答</h2>
-      <p class="page-desc">基于已编译的 Wiki 知识库回答问题，回答中引用 [[slug]] 作为来源</p>
-    </div>
+    <PageHeader
+      title="Wiki 智能问答"
+      description="基于已编译的 Wiki 知识库回答问题，回答中引用 [[slug]] 作为来源"
+    />
 
     <div class="search-bar">
       <n-input
@@ -82,33 +141,44 @@ function goToWikiPage(slug: string) {
         @keydown="handleKeydown"
       />
       <n-button
+        v-if="!loading"
         type="primary"
         size="large"
-        :loading="loading"
         :disabled="!question.trim()"
         class="search-btn"
         @click="handleQuery"
       >
         提问
       </n-button>
+      <n-button
+        v-else
+        size="large"
+        type="error"
+        ghost
+        class="search-btn"
+        @click="handleStop"
+      >
+        <template #icon>
+          <AppIcon name="stop" />
+        </template>
+        停止
+      </n-button>
     </div>
-    <div class="search-tip">按 Ctrl + Enter 快速提交</div>
+    <div class="search-tip">按 Ctrl + Enter 快速提交{{ loading ? '，流式生成中可随时停止' : '' }}</div>
 
     <div class="result-area">
-      <!-- 加载中 -->
-      <div v-if="loading" class="loading-container">
-        <n-spin size="large" />
-        <div class="loading-text">正在编译知识并生成回答...</div>
-      </div>
+      <!-- 加载中（流式开始尚未收到首个 delta） -->
+      <LoadingState
+        v-if="loading && !streamingAnswer"
+        text="正在编译知识并生成回答..."
+        :min-height="300"
+      />
 
       <!-- 空状态：未提问 -->
-      <div v-else-if="!asked" class="empty-wrapper">
-        <n-empty description="输入问题，从 Wiki 知识库中获取结构化解答">
-          <template #icon>
-            <span style="font-size: 48px">💬</span>
-          </template>
-        </n-empty>
-      </div>
+      <EmptyState
+        v-else-if="!asked && !loading"
+        description="输入问题，从 Wiki 知识库中获取结构化解答"
+      />
 
       <!-- 结果区 -->
       <div v-else-if="result" class="result-content">
@@ -128,9 +198,18 @@ function goToWikiPage(slug: string) {
             知识库不足，建议上传相关文档
           </n-alert>
 
-          <!-- 回答区域 -->
-          <n-card v-if="hasAnswer" title="回答" class="answer-card" :bordered="true">
-            <div class="answer-text">{{ result.answer }}</div>
+          <!-- 回答区域（流式或完成态） -->
+          <n-card v-if="hasAnswer || (loading && streamingAnswer)" class="answer-card" :bordered="true">
+            <template #header>
+              <span class="answer-card-title">
+                回答
+                <n-tag v-if="loading && streamingAnswer" size="tiny" type="info" :bordered="false">
+                  生成中…
+                </n-tag>
+              </span>
+            </template>
+            <!-- P0-4 + P1-4: v-html 经 renderWikiMarkdown → DOMPurify sanitize，安全渲染 Markdown -->
+            <div class="markdown-rendered" v-html="renderedAnswer"></div>
           </n-card>
 
           <!-- 引用来源 -->
@@ -146,7 +225,7 @@ function goToWikiPage(slug: string) {
                   @click="goToWikiPage(slug)"
                 >
                   <template #icon>
-                    <span>🔗</span>
+                    <AppIcon name="link" />
                   </template>
                   [[{{ slug }}]]
                 </n-button>
@@ -193,23 +272,6 @@ function goToWikiPage(slug: string) {
   margin: 0 auto;
 }
 
-.query-header {
-  margin-bottom: 24px;
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  color: var(--n-text-color, #111827);
-  margin: 0 0 8px;
-}
-
-.page-desc {
-  font-size: 14px;
-  color: var(--n-text-color-2, #6b7280);
-  margin: 0;
-}
-
 .search-bar {
   display: flex;
   gap: 12px;
@@ -236,26 +298,6 @@ function goToWikiPage(slug: string) {
   min-height: 300px;
 }
 
-.loading-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 80px 0;
-  gap: 16px;
-}
-
-.loading-text {
-  font-size: 14px;
-  color: var(--n-text-color-2, #6b7280);
-}
-
-.empty-wrapper {
-  padding: 80px 0;
-  display: flex;
-  justify-content: center;
-}
-
 .result-content {
   width: 100%;
 }
@@ -268,12 +310,78 @@ function goToWikiPage(slug: string) {
   margin-bottom: 8px;
 }
 
-.answer-text {
+.answer-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* P1-4: Markdown 渲染样式（与全局 markdown-rendered 对齐） */
+.markdown-rendered {
   font-size: 15px;
   line-height: 1.8;
   color: var(--n-text-color, #111827);
-  white-space: pre-wrap;
   word-break: break-word;
+}
+
+.markdown-rendered :deep(h1),
+.markdown-rendered :deep(h2),
+.markdown-rendered :deep(h3) {
+  margin: 1em 0 0.5em;
+  font-weight: 600;
+}
+
+.markdown-rendered :deep(p) {
+  margin: 0.5em 0;
+}
+
+.markdown-rendered :deep(ul),
+.markdown-rendered :deep(ol) {
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+
+.markdown-rendered :deep(li) {
+  margin: 0.25em 0;
+}
+
+.markdown-rendered :deep(pre) {
+  padding: 12px;
+  background: var(--n-code-color, rgba(0, 0, 0, 0.05));
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.markdown-rendered :deep(code) {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.9em;
+}
+
+.markdown-rendered :deep(a) {
+  color: var(--n-primary-color, #2080f0);
+  text-decoration: none;
+}
+
+.markdown-rendered :deep(a:hover) {
+  text-decoration: underline;
+}
+
+.markdown-rendered :deep(table) {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+}
+
+.markdown-rendered :deep(th),
+.markdown-rendered :deep(td) {
+  border: 1px solid var(--n-border-color, #e5e7eb);
+  padding: 6px 12px;
+}
+
+.markdown-rendered :deep(blockquote) {
+  margin: 0.5em 0;
+  padding-left: 1em;
+  border-left: 3px solid var(--n-border-color, #e5e7eb);
+  color: var(--n-text-color-2, #6b7280);
 }
 
 .section-divider {
