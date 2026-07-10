@@ -85,7 +85,7 @@ async def delete_template(slug: str) -> dict:
         raise HTTPException(403, str(e))
 
 
-@router.post("/templates/{slug}/render")
+@router.post("/templates/{slug}/render", dependencies=[Depends(verify_token)])
 async def render_template(slug: str, variables: dict) -> dict:
     """渲染模板"""
     mgr = get_template_manager()

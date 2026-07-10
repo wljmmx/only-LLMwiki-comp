@@ -65,10 +65,14 @@ def _normalize_doc(doc: dict) -> dict:
     """统一文档字段名，兼容前端
 
     DB 字段 size_bytes，前端读 size（DocumentMeta.size）。
-    这里加 size 别名，避免字段不匹配导致前端大小显示空。
+    DB 字段 doc_id（string UUID），前端读 id（DocumentMeta.id）。
+    这里加 size 别名和 id 别名，避免字段不匹配导致前端大小显示空、
+    以及 API 路径参数用错整型 id 导致 404。
     """
     if "size" not in doc and "size_bytes" in doc:
         doc["size"] = doc["size_bytes"]
+    if "doc_id" in doc:
+        doc["id"] = doc["doc_id"]
     return doc
 
 

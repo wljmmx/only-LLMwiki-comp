@@ -479,7 +479,7 @@ async def llm_wiki_backlinks(slug: str) -> dict:
 # ────────── P1-2 Wiki-based Q&A ──────────
 
 
-@router.post("/llm-wiki/query")
+@router.post("/llm-wiki/query", dependencies=[Depends(verify_token)])
 async def llm_wiki_query(payload: dict) -> dict:
     """基于 wiki 的问答（Karpathy 范式：不是 RAG，而是基于编译好的 wiki 回答）
 
