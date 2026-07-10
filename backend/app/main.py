@@ -26,6 +26,7 @@ from app.routers.ldap_router import router as ldap_router
 from app.routers.llm_wiki_router import router as llm_wiki_router
 from app.routers.mcp_router import router as mcp_router
 from app.routers.oidc_router import router as oidc_router
+from app.routers.okf_router import router as okf_router
 from app.routers.parsers_router import router as parsers_router
 from app.routers.realtime_router import router as realtime_router
 from app.routers.review_router import router as review_router
@@ -183,3 +184,4 @@ app.include_router(webhook_router)
 app.include_router(anomaly_router)
 app.include_router(realtime_router)
 app.include_router(setup_router)
+app.include_router(okf_router)
