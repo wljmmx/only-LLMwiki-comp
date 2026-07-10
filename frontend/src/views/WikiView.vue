@@ -12,6 +12,8 @@ import CollabPanel from '@/components/collab/CollabPanel.vue'
 import WikiEditor from '@/components/wiki/WikiEditor.vue'
 // P1-6：页面目录大纲
 import WikiToc from '@/components/wiki/WikiToc.vue'
+// P1-11：版本历史抽屉
+import WikiVersionHistory from '@/components/wiki/WikiVersionHistory.vue'
 
 const treeLoading = ref(true)
 const contentLoading = ref(false)
@@ -28,6 +30,16 @@ const lockHolder = ref<string | null>(null)
 
 // P1-6：页面内容 DOM 引用（供 TOC 提取标题）
 const pageContentRef = ref<HTMLElement | null>(null)
+
+// P1-11：版本历史抽屉
+const showVersionHistory = ref(false)
+
+/** P1-11：回滚后刷新当前页面 */
+async function handleVersionRollback() {
+  if (selectedKey.value) {
+    await loadPage(selectedKey.value)
+  }
+}
 
 // S16-2：CollabPanel 锁状态变化回调
 function handleLockChange(payload: { hasLock: boolean; lockHolder: string | null }) {
@@ -282,6 +294,14 @@ onMounted(() => {
               >
                 {{ hasLock ? '编辑' : '需先申请编辑锁' }}
               </NButton>
+              <!-- P1-11：版本历史入口 -->
+              <NButton
+                size="small"
+                quaternary
+                @click="showVersionHistory = true"
+              >
+                历史记录
+              </NButton>
             </div>
             <!-- S16-2：WikiEditor 替代只读内容区 -->
             <WikiEditor
@@ -328,6 +348,12 @@ onMounted(() => {
         </NCard>
       </template>
     </NSplit>
+    <!-- P1-11：版本历史抽屉 -->
+    <WikiVersionHistory
+      v-model:show="showVersionHistory"
+      :slug="selectedKey || ''"
+      @rollback="handleVersionRollback"
+    />
   </div>
 </template>
 

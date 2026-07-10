@@ -2,6 +2,20 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
+// WikiView 嵌套 WikiVersionHistory，其 useMessage 需 provider，测试中 mock 掉
+vi.mock('naive-ui', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('naive-ui')>()
+  return {
+    ...actual,
+    useMessage: () => ({
+      success: vi.fn(),
+      error: vi.fn(),
+      warning: vi.fn(),
+      info: vi.fn(),
+    }),
+  }
+})
+
 vi.mock('@/api/wiki', () => ({
   listWikiPages: vi.fn(),
   getWikiPage: vi.fn(),
