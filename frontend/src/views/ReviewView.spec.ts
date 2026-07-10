@@ -42,10 +42,10 @@ const sampleItem = {
 }
 
 const sampleStats = {
-  total: 10,
   pending: 3,
   approved: 5,
   rejected: 2,
+  modified: 0,
 }
 
 describe('ReviewView.vue', () => {

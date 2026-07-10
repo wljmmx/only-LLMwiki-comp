@@ -167,6 +167,40 @@ class ReviewQueue:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def list_by_status(
+        self, status: str | None = None, limit: int = 50, offset: int = 0
+    ) -> list[dict]:
+        """按状态列出审查项（status=None 表示全部）"""
+        conn = _get_db()
+        if status:
+            rows = conn.execute(
+                """SELECT * FROM review_items WHERE status = ?
+                   ORDER BY confidence DESC, created_at DESC
+                   LIMIT ? OFFSET ?""",
+                (status, limit, offset),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM review_items
+                   ORDER BY confidence DESC, created_at DESC
+                   LIMIT ? OFFSET ?""",
+                (limit, offset),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_by_status(self, status: str | None = None) -> int:
+        """按状态计数（status=None 表示全部）"""
+        conn = _get_db()
+        if status:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM review_items WHERE status = ?", (status,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM review_items"
+            ).fetchone()
+        return row["cnt"] if row else 0
+
     def get_by_id(self, item_id: int) -> dict | None:
         """按 ID 查询"""
         conn = _get_db()

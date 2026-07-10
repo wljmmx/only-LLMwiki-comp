@@ -49,28 +49,31 @@ describe('DashboardView.vue', () => {
 
   function setupMocks() {
     ;(getDocumentStats as any).mockResolvedValue({
-      total_documents: 10,
-      total_parsed: 8,
-      total_failed: 1,
-      by_format: { md: 5, txt: 5 },
+      total: 10,
+      total_size_mb: 0.01,
+      by_format: [{ format: 'md', cnt: 5 }, { format: 'txt', cnt: 5 }],
+      by_status: [{ status: 'parsed', cnt: 8 }, { status: 'failed', cnt: 1 }],
     })
     ;(api.get as any).mockResolvedValue({
-      nodes: 20,
-      edges: 30,
-      by_type: { host: 5, service: 15 },
+      total_entities: 20,
+      total_relations: 30,
+      by_type: [{ type: 'host', count: 5 }, { type: 'service', count: 15 }],
     })
     ;(getReviewStats as any).mockResolvedValue({
-      total_pending: 3,
-      total_approved: 5,
-      total_rejected: 1,
+      pending: 3,
+      approved: 5,
+      rejected: 1,
+      modified: 0,
     })
     ;(getSearchStats as any).mockResolvedValue({
-      total_documents: 10,
-      total_indexed: 8,
+      indexed_docs: 8,
+      vectorized_docs: 6,
+      numpy_enabled: true,
     })
     ;(listDocuments as any).mockResolvedValue({
       documents: [
         {
+          id: 'd1',
           doc_id: 'd1',
           filename: 'test.md',
           format: 'md',
@@ -79,19 +82,25 @@ describe('DashboardView.vue', () => {
           created_at: '2026-07-01T00:00:00Z',
         },
       ],
-      total: 1,
+      stats: { total: 1, total_size_mb: 0.0, by_format: [], by_status: [] },
+      limit: 5,
+      offset: 0,
     })
     ;(getReviewQueue as any).mockResolvedValue({
       items: [
         {
-          item_id: 'r1',
+          id: 'r1',
           title: '审查项 1',
           type: 'entity',
           status: 'pending',
+          source_doc_id: 'd1',
           created_at: '2026-07-01T00:00:00Z',
         },
       ],
+      stats: { pending: 3, approved: 5, rejected: 1, modified: 0 },
       total: 1,
+      limit: 5,
+      offset: 0,
     })
   }
 
@@ -134,10 +143,10 @@ describe('DashboardView.vue', () => {
     const vm = wrapper.vm as any
     expect(vm.loading).toBe(false)
     expect(vm.documentStats).not.toBeNull()
-    expect(vm.documentStats.total_documents).toBe(10)
-    expect(vm.graphStats.nodes).toBe(20)
-    expect(vm.reviewStats.total_pending).toBe(3)
-    expect(vm.searchStats.total_indexed).toBe(8)
+    expect(vm.documentStats.total).toBe(10)
+    expect(vm.graphStats.total_entities).toBe(20)
+    expect(vm.reviewStats.pending).toBe(3)
+    expect(vm.searchStats.indexed_docs).toBe(8)
     expect(vm.recentDocuments).toHaveLength(1)
     expect(vm.recentReviews).toHaveLength(1)
   })

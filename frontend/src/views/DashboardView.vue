@@ -5,14 +5,14 @@ import { getDocumentStats, listDocuments } from '@/api/documents'
 import { getReviewStats, getReviewQueue } from '@/api/review'
 import { getSearchStats } from '@/api/search'
 import api from '@/api/index'
-import type { DocumentMeta, ReviewItem, GraphStats, DocumentStats, ReviewStats } from '@/types/api'
+import type { DocumentMeta, ReviewItem, GraphStats, DocumentStats, ReviewStats, SearchStats } from '@/types/api'
 
 const loading = ref(true)
 
 const documentStats = ref<DocumentStats | null>(null)
 const graphStats = ref<GraphStats | null>(null)
 const reviewStats = ref<ReviewStats | null>(null)
-const searchStats = ref<{ total_documents: number; total_indexed: number } | null>(null)
+const searchStats = ref<SearchStats | null>(null)
 
 const recentDocuments = ref<DocumentMeta[]>([])
 const recentReviews = ref<ReviewItem[]>([])
@@ -165,7 +165,7 @@ onMounted(() => {
         </NGi>
         <NGi>
           <NCard>
-            <NStatistic label="搜索索引数" :value="searchStats?.total_indexed ?? 0" />
+            <NStatistic label="搜索索引数" :value="searchStats?.indexed_docs ?? 0" />
           </NCard>
         </NGi>
       </NGrid>

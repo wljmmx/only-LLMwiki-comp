@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
 
 from app.aiops import get_topology_builder
 from app.auth import verify_token
@@ -61,9 +60,12 @@ async def get_document(doc_id: str) -> dict:
     return doc
 
 
-@router.get("/documents/{doc_id}/content")
-async def get_document_content(doc_id: str) -> Response:
-    """下载文档原始内容"""
+@router.get("/documents/{doc_id}/content", dependencies=[Depends(verify_token)])
+async def get_document_content(doc_id: str) -> dict:
+    """获取文档原始内容（文本）
+
+    返回 JSON ``{"content": str, "format": str}`` 供前端展示。
+    """
     store = get_document_store()
     doc = store.get(doc_id)
     if not doc:
@@ -71,11 +73,12 @@ async def get_document_content(doc_id: str) -> Response:
     content = store.read_content(doc_id)
     if content is None:
         raise HTTPException(404, "文件内容不存在（可能已被删除）")
-    return Response(
-        content=content,
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{doc["filename"]}"'},
-    )
+    # 尝试 UTF-8 解码；二进制格式（xlsx/docx/pdf）返回占位提示
+    try:
+        text = content.decode("utf-8")
+    except (UnicodeDecodeError, AttributeError):
+        text = f"[二进制内容，共 {len(content)} 字节，无法预览]"
+    return {"content": text, "format": doc.get("format", "")}
 
 
 @router.delete("/documents/{doc_id}", dependencies=[Depends(verify_token)])

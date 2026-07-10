@@ -20,8 +20,9 @@ export interface DocumentListResponse {
 
 export interface DocumentStats {
   total: number
-  by_format: Record<string, number>
-  by_status: Record<string, number>
+  total_size_mb: number
+  by_format: { format: string; cnt: number }[]
+  by_status: { status: string; cnt: number }[]
 }
 
 export interface ReviewItem {
@@ -36,10 +37,10 @@ export interface ReviewItem {
 }
 
 export interface ReviewStats {
-  total: number
   pending: number
   approved: number
   rejected: number
+  modified: number
 }
 
 export interface ReviewQueueResponse {
@@ -106,11 +107,18 @@ export interface WikiIndex {
 export interface GraphStats {
   total_entities: number
   total_relations: number
-  by_entity_type: Record<string, number>
+  by_type: { type: string; count: number }[]
 }
 
 export interface BacklinkItem {
   slug: string
   title: string
   context: string
+}
+
+/** 搜索索引统计（与后端 search_engine.get_stats 对齐） */
+export interface SearchStats {
+  indexed_docs: number
+  vectorized_docs: number
+  numpy_enabled: boolean
 }

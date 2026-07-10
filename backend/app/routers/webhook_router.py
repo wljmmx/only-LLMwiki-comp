@@ -164,7 +164,7 @@ async def create_alert_rule(payload: dict) -> dict:
     return rule
 
 
-@router.post("/webhooks/rules/test")
+@router.post("/webhooks/rules/test", dependencies=[Depends(verify_token)])
 async def test_alert_route(payload: dict) -> dict:
     """测试事件路由结果（dry-run，不实际投递）
 
@@ -344,6 +344,41 @@ async def delete_silence_window(window_id: str) -> dict:
     return {"deleted": True, "id": window_id}
 
 
+# ────────── 投递记录（静态路径须在 {sub_id} 之前注册） ──────────
+
+
+@router.get("/webhooks/deliveries")
+async def list_all_deliveries(
+    status: str | None = None,
+    limit: int = Query(50, le=500),
+    offset: int = 0,
+) -> dict:
+    """列出全部投递记录（可按 status 过滤）"""
+    store = get_webhook_store()
+    items = store.list_deliveries(
+        status=status, limit=limit, offset=offset
+    )
+    return {
+        "deliveries": items,
+        "count": len(items),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.post(
+    "/webhooks/deliveries/retry", dependencies=[Depends(verify_token)]
+)
+async def retry_pending_deliveries() -> dict:
+    """手动触发一次到期重试扫描（不必等后台 worker）"""
+    mgr = get_webhook_manager()
+    n = await mgr.process_pending_retries()
+    return {"processed": n}
+
+
+# ────────── 订阅详情 CRUD（{sub_id} 动态路径） ──────────
+
+
 @router.get("/webhooks/{sub_id}")
 async def get_subscription(sub_id: str) -> dict:
     """获取订阅详情（不返回 secret）"""
@@ -441,7 +476,7 @@ async def test_subscription(sub_id: str) -> dict:
     }
 
 
-# ────────── 投递记录 ──────────
+# ────────── 单订阅投递记录 ──────────
 
 
 @router.get("/webhooks/{sub_id}/deliveries")
@@ -466,32 +501,3 @@ async def list_subscription_deliveries(
         "limit": limit,
         "offset": offset,
     }
-
-
-@router.get("/webhooks/deliveries")
-async def list_all_deliveries(
-    status: str | None = None,
-    limit: int = Query(50, le=500),
-    offset: int = 0,
-) -> dict:
-    """列出全部投递记录（可按 status 过滤）"""
-    store = get_webhook_store()
-    items = store.list_deliveries(
-        status=status, limit=limit, offset=offset
-    )
-    return {
-        "deliveries": items,
-        "count": len(items),
-        "limit": limit,
-        "offset": offset,
-    }
-
-
-@router.post(
-    "/webhooks/deliveries/retry", dependencies=[Depends(verify_token)]
-)
-async def retry_pending_deliveries() -> dict:
-    """手动触发一次到期重试扫描（不必等后台 worker）"""
-    mgr = get_webhook_manager()
-    n = await mgr.process_pending_retries()
-    return {"processed": n}

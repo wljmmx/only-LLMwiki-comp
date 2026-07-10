@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from app.auth import verify_token
 from app.knowledge import get_review_queue
@@ -18,20 +19,71 @@ from app.knowledge import get_review_queue
 router = APIRouter()
 
 
+def _normalize_item(row: dict) -> dict:
+    """将 DB 行映射为前端 ReviewItem 期望的字段名。
+
+    DB 字段 → 前端字段：
+      id (int)         → id (str)
+      item_type        → type
+      name/relation    → title
+      status           → status
+      source_doc_id    → source_doc_id
+      created_at       → created_at
+      evidence_span    → content (可选)
+      reviewer_note    → reason (可选)
+    """
+    item_type = row.get("item_type", "")
+    if item_type == "entity":
+        title = row.get("name", "") or row.get("entity_type", "")
+    elif item_type == "relation":
+        from_e = row.get("from_entity", "")
+        to_e = row.get("to_entity", "")
+        rel_type = row.get("relation_type", "")
+        title = f"{from_e} —[{rel_type}]→ {to_e}" if from_e else rel_type
+    else:
+        title = row.get("name", "") or item_type
+
+    return {
+        "id": str(row.get("id", "")),
+        "type": item_type,
+        "title": title,
+        "status": row.get("status", "pending"),
+        "source_doc_id": row.get("source_doc_id", ""),
+        "created_at": row.get("created_at", ""),
+        "confidence": row.get("confidence", 0.0),
+        "content": row.get("evidence_span", "") or None,
+        "reason": row.get("reviewer_note", "") or None,
+    }
+
+
 @router.get("/review/queue")
 async def list_review_queue(
-    status: str = "pending",
+    status: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict:
-    """获取审查队列"""
+    """获取审查队列
+
+    status=None 表示全部状态，否则按指定状态过滤。
+    """
     queue = get_review_queue()
-    if status == "pending":
-        items = queue.list_pending(limit, offset)
+    if status is None or status == "":
+        items = queue.list_by_status(None, limit, offset)
+        total = queue.count_by_status(None)
+    elif status == "pending":
+        items = queue.list_by_status("pending", limit, offset)
+        total = queue.count_by_status("pending")
     else:
-        items = []  # 其他状态通过 stats 查询
+        items = queue.list_by_status(status, limit, offset)
+        total = queue.count_by_status(status)
     stats = queue.get_stats()
-    return {"items": items, "stats": stats, "limit": limit, "offset": offset}
+    return {
+        "items": [_normalize_item(item) for item in items],
+        "stats": stats,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/review/stats")
@@ -51,19 +103,34 @@ async def review_approve(item_id: int, note: str = "") -> dict:
     return {"id": item_id, "status": "approved"}
 
 
+class RejectBody(BaseModel):
+    reason: str = ""
+
+
 @router.post("/review/{item_id}/reject", dependencies=[Depends(verify_token)])
-async def review_reject(item_id: int, note: str = "") -> dict:
-    """驳回审查项"""
+async def review_reject(item_id: int, body: RejectBody | None = None) -> dict:
+    """驳回审查项
+
+    前端发送 JSON body ``{"reason": "..."}``，映射到 reviewer_note。
+    """
     queue = get_review_queue()
-    ok = queue.reject(item_id, note)
+    reason = body.reason if body else ""
+    ok = queue.reject(item_id, reason)
     if not ok:
         raise HTTPException(404, f"审查项不存在: {item_id}")
     return {"id": item_id, "status": "rejected"}
 
 
+class BatchApproveBody(BaseModel):
+    ids: list[int] = []
+
+
 @router.post("/review/batch-approve", dependencies=[Depends(verify_token)])
-async def review_batch_approve(item_ids: list[int]) -> dict:
-    """批量批准"""
+async def review_batch_approve(body: BatchApproveBody) -> dict:
+    """批量批准
+
+    前端发送 ``{"ids": [1, 2, 3]}``，映射到 item_ids。
+    """
     queue = get_review_queue()
-    count = queue.batch_approve(item_ids)
+    count = queue.batch_approve(body.ids)
     return {"approved": count}

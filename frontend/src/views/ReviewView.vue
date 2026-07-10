@@ -62,12 +62,16 @@ const statusText: Record<string, string> = {
   rejected: '已拒绝',
 }
 
-const statCards = computed(() => [
-  { label: '总数', value: reviewStats.value?.total ?? 0, color: '#2080f0' },
-  { label: '待审', value: reviewStats.value?.pending ?? 0, color: '#f0a020' },
-  { label: '已批准', value: reviewStats.value?.approved ?? 0, color: '#18a058' },
-  { label: '已拒绝', value: reviewStats.value?.rejected ?? 0, color: '#d03050' },
-])
+const statCards = computed(() => {
+  const s = reviewStats.value
+  const total = s ? s.pending + s.approved + s.rejected + s.modified : 0
+  return [
+    { label: '总数', value: total, color: '#2080f0' },
+    { label: '待审', value: s?.pending ?? 0, color: '#f0a020' },
+    { label: '已批准', value: s?.approved ?? 0, color: '#18a058' },
+    { label: '已拒绝', value: s?.rejected ?? 0, color: '#d03050' },
+  ]
+})
 
 const columns = [
   {
