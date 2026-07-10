@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { NSplit, NTree, NCard, NTag, NSpace, NSpin, NEmpty, NThing, NButton } from 'naive-ui'
+import { NSplit, NTree, NCard, NTag, NSpace, NSpin, NEmpty, NThing, NButton, NTooltip } from 'naive-ui'
 import type { TreeOption } from 'naive-ui'
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
 import { renderWikiMarkdown, parseSlugFromHash } from '@/utils/wikiRender'
+import { parseFrontmatter } from '@/utils/frontmatter'
 import type { WikiPage, BacklinkItem } from '@/types/api'
 // S16-1：协作面板（实时在线用户 + 编辑锁状态）
 import CollabPanel from '@/components/collab/CollabPanel.vue'
 // S16-2：Wiki 页面编辑器
 import WikiEditor from '@/components/wiki/WikiEditor.vue'
+// P1-6：页面目录大纲
+import WikiToc from '@/components/wiki/WikiToc.vue'
 
 const treeLoading = ref(true)
 const contentLoading = ref(false)
@@ -22,6 +25,9 @@ const selectedKey = ref<string | null>(null)
 const isEditing = ref(false)
 const hasLock = ref(false)
 const lockHolder = ref<string | null>(null)
+
+// P1-6：页面内容 DOM 引用（供 TOC 提取标题）
+const pageContentRef = ref<HTMLElement | null>(null)
 
 // S16-2：CollabPanel 锁状态变化回调
 function handleLockChange(payload: { hasLock: boolean; lockHolder: string | null }) {
@@ -97,6 +103,40 @@ const renderedContent = computed(() => {
   if (!currentPage.value) return ''
   return renderSimpleMarkdown(currentPage.value.content)
 })
+
+// P1-6：页面元信息（从 frontmatter 解析 review_status / sources）
+const reviewStatusLabelMap: Record<string, string> = {
+  auto: '自动审查',
+  review_needed: '待审查',
+  approved: '已审查',
+}
+
+const pageMeta = computed(() => {
+  if (!currentPage.value) return null
+  const parsed = parseFrontmatter(currentPage.value.content)
+  const reviewStatus = typeof parsed.rest.review_status === 'string'
+    ? parsed.rest.review_status
+    : 'auto'
+  const sources = Array.isArray(parsed.rest.sources) ? parsed.rest.sources : []
+  return {
+    updatedAt: currentPage.value.updated_at,
+    version: currentPage.value.version,
+    reviewStatus,
+    reviewStatusLabel: reviewStatusLabelMap[reviewStatus] || reviewStatus,
+    sourcesCount: sources.length,
+  }
+})
+
+/** P1-6: 格式化日期为 YYYY-MM-DD */
+function formatDate(iso: string): string {
+  if (!iso) return ''
+  try {
+    const d = new Date(iso)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  } catch {
+    return iso
+  }
+}
 
 async function loadPages() {
   treeLoading.value = true
@@ -194,6 +234,36 @@ onMounted(() => {
                 </template>
               </NSpace>
             </div>
+            <!-- P1-6：页面元信息条（更新时间 · 版本 · 审查状态 · 来源数） -->
+            <div v-if="pageMeta" class="page-meta-bar">
+              <NTooltip trigger="hover">
+                <template #trigger>
+                  <span class="meta-item">更新于 {{ formatDate(pageMeta.updatedAt) }}</span>
+                </template>
+                页面最后更新时间
+              </NTooltip>
+              <span class="meta-sep">·</span>
+              <NTooltip trigger="hover">
+                <template #trigger>
+                  <span class="meta-item">v{{ pageMeta.version ?? 1 }}</span>
+                </template>
+                页面版本号
+              </NTooltip>
+              <span class="meta-sep">·</span>
+              <NTooltip trigger="hover">
+                <template #trigger>
+                  <span class="meta-item">{{ pageMeta.reviewStatusLabel }}</span>
+                </template>
+                审查状态
+              </NTooltip>
+              <span class="meta-sep">·</span>
+              <NTooltip trigger="hover">
+                <template #trigger>
+                  <span class="meta-item">来源 {{ pageMeta.sourcesCount }}</span>
+                </template>
+                引用的原始文档数量
+              </NTooltip>
+            </div>
             <!-- S16-1：协作面板（随 selectedKey 变化重建，触发 useCollab 重连） -->
             <CollabPanel
               v-if="selectedKey"
@@ -224,19 +294,34 @@ onMounted(() => {
               @cancel="cancelEditing"
               class="editor-wrapper"
             />
-            <div v-else class="page-content" @click="handleContentClick" v-html="renderedContent"></div>
-            <div v-if="backlinks.length > 0" class="backlinks-section">
-              <div class="backlinks-title">反向链接</div>
-              <div class="backlinks-list">
-                <NThing
-                  v-for="bl in backlinks"
-                  :key="bl.slug"
-                  class="backlink-item"
-                  :title="bl.title"
-                  :description="bl.context"
-                  @click="handleBacklinkClick(bl.slug)"
-                />
+            <!-- P1-6：只读内容区 + TOC 目录（右侧） -->
+            <div v-else class="content-body">
+              <div class="content-main">
+                <div
+                  ref="pageContentRef"
+                  class="page-content"
+                  @click="handleContentClick"
+                  v-html="renderedContent"
+                ></div>
+                <div v-if="backlinks.length > 0" class="backlinks-section">
+                  <div class="backlinks-title">反向链接</div>
+                  <div class="backlinks-list">
+                    <NThing
+                      v-for="bl in backlinks"
+                      :key="bl.slug"
+                      class="backlink-item"
+                      :title="bl.title"
+                      :description="bl.context"
+                      @click="handleBacklinkClick(bl.slug)"
+                    />
+                  </div>
+                </div>
               </div>
+              <WikiToc
+                :content-el="pageContentRef"
+                :page-key="currentPage.slug"
+                class="content-toc"
+              />
             </div>
           </template>
           <NEmpty v-else description="请选择一个页面" />
@@ -324,6 +409,55 @@ onMounted(() => {
 
 .page-meta {
   flex-wrap: wrap;
+}
+
+/* P1-6：页面元信息条 */
+.page-meta-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 24px;
+  padding: 8px 0;
+  font-size: 13px;
+  color: var(--n-text-color-3, #6b7280);
+}
+
+.meta-item {
+  display: inline-flex;
+  align-items: center;
+  cursor: help;
+}
+
+.meta-sep {
+  color: var(--n-text-color-3, #d1d5db);
+  margin: 0 2px;
+}
+
+/* P1-6：内容主体 + TOC 双栏布局 */
+.content-body {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.content-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.content-toc {
+  flex: 0 0 220px;
+  width: 220px;
+}
+
+@media (max-width: 1024px) {
+  .content-body {
+    flex-direction: column;
+  }
+  .content-toc {
+    display: none;
+  }
 }
 
 .page-content {
