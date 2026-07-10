@@ -27,6 +27,7 @@
     "@vueuse/core": "^14.3.0",
     "axios": "^1.18.1",
     "dompurify": "^3.4.11",
+    "js-yaml": "^5.2.1",
     "marked": "^18.0.5",
     "naive-ui": "^2.44.1",
     "pinia": "^3.0.4",
@@ -35,6 +36,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.13.2",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
