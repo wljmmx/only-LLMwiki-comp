@@ -12,6 +12,7 @@ import {
 } from 'naive-ui'
 import AppSidebar from './AppSidebar.vue'
 import OnboardingTour from '@/components/onboarding/OnboardingTour.vue'
+import AppIcon from '@/components/common/AppIcon.vue'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { useOnboardingStore } from '@/stores/onboarding'
@@ -138,7 +139,7 @@ onMounted(() => {
       @update:collapsed="handleToggle"
     >
       <div class="logo">
-        <span class="logo-icon">📚</span>
+        <AppIcon name="wiki" :size="24" class="logo-icon" />
         <span v-if="!collapsed" class="logo-text">OpsKG</span>
       </div>
       <AppSidebar />
@@ -153,7 +154,7 @@ onMounted(() => {
       @update:show="(v: boolean) => { if (!v) appStore.closeMobileDrawer() }"
     >
       <div class="logo">
-        <span class="logo-icon">📚</span>
+        <AppIcon name="wiki" :size="24" class="logo-icon" />
         <span class="logo-text">OpsKG</span>
       </div>
       <AppSidebar @navigate="appStore.closeMobileDrawer()" />
@@ -171,7 +172,7 @@ onMounted(() => {
             class="hamburger-btn"
             @click="openMobileDrawer"
           >
-            <template #icon><span>☰</span></template>
+            <template #icon><AppIcon name="menu" /></template>
           </NButton>
           <!-- P1-3: 面包屑（桌面端） -->
           <NBreadcrumb v-if="!isMobile && breadcrumbs.length > 1" class="breadcrumb">
@@ -194,7 +195,7 @@ onMounted(() => {
             :title="appStore.darkMode ? '切换到浅色模式' : '切换到深色模式'"
             @click="toggleDark"
           >
-            {{ appStore.darkMode ? '☀️' : '🌙' }}
+            <AppIcon :name="appStore.darkMode ? 'sunny' : 'moon'" :size="20" />
           </button>
           <NDropdown
             :options="userMenuOptions"
@@ -208,7 +209,7 @@ onMounted(() => {
               tabindex="0"
               aria-label="用户菜单"
             >
-              {{ authStore.user ? '👤' : '👥' }}
+              <AppIcon :name="authStore.user ? 'user' : 'users'" :size="20" />
               <span v-if="authStore.user" class="user-name">{{ authStore.displayName }}</span>
             </span>
           </NDropdown>
