@@ -1,0 +1,89 @@
+# OpsKG OKF Type 词表声明（P3-2）
+#
+# 声明 OpsKG 使用的 OKF type 词表，供外部 OKF 消费者发现语义。
+# OKF v0.1 允许自定义 type（minimally opinionated），但需可被发现。
+# 此文件对应 OKF bundle 中的 types.md 保留文件。
+#
+# 规范依据：https://openknowledgeformat.com/what-is-okf
+
+okf_version: "0.1"
+bundle: opskg-wiki
+description: |
+  OpsKG 运维知识图谱的 OKF type 词表。
+  6 类概念页面 + 2 类保留文件类型。
+
+# ────────── 概念页面类型（6 类）──────────
+concept_types:
+  - type: entity
+    description: 实体页（Host/Service/Component 等运维实体）
+    required_sections: [概述, 属性, 关系, 来源]
+    bundle_dir: entities
+    resource_scheme: opskg://entity/{entity_type}/{name}
+
+  - type: concept
+    description: 概念页（如"反向代理"、"负载均衡"等运维概念）
+    required_sections: [概述, 原理, 应用场景, 来源]
+    bundle_dir: concepts
+    resource_scheme: opskg://concept/{slug}
+
+  - type: incident
+    description: 故障页（运维事件/事故记录与处置）
+    required_sections: [概述, 成因, 排查步骤, 处置方案, 来源]
+    bundle_dir: incidents
+    resource_scheme: opskg://incident/{slug}
+
+  - type: runbook
+    description: 操作手册页（标准运维操作流程）
+    required_sections: [概述, 影响分析, 排查步骤, 处置方案, 来源]
+    bundle_dir: runbooks
+    resource_scheme: opskg://runbook/{slug}
+
+  - type: service
+    description: 服务页（服务架构与配置）
+    required_sections: [概述, 架构, 依赖, 配置参数, 来源]
+    bundle_dir: services
+    resource_scheme: opskg://service/{service_id}
+
+  - type: host
+    description: 主机页（主机角色与运行服务）
+    required_sections: [概述, 角色, 运行服务, 来源]
+    bundle_dir: hosts
+    resource_scheme: host://{hostname}
+
+# ────────── 保留文件类型（2 类）──────────
+reserved_types:
+  - type: index
+    description: 根导航文件，渐进披露入口
+    filename: index.md
+    role: 渐进披露导航（按类型分组列出概念链接）
+
+  - type: log
+    description: 变更审计日志
+    filename: log.md
+    role: 记录 bundle 版本演进（自动维护）
+
+# ────────── 扩展字段语义（OKF 容忍未知字段）──────────
+extension_fields:
+  slug:
+    description: 内部唯一标识（kebab-case）
+    note: OKF 用文件路径作 concept ID，导出时 slug 映射为路径末段
+  sources:
+    description: raw 文档引用列表
+    schema: "[{doc_id, title, checksum}]"
+    note: 导出时映射为 resource URI + Citations
+  review_status:
+    description: 审查状态
+    enum: [auto, review_needed, approved]
+  stale:
+    description: 漂移标记（raw 文档变化但 wiki 未重编译）
+    type: boolean
+  created_at:
+    description: 创建时间戳（ISO 8601）
+  updated_at:
+    description: 更新时间戳（ISO 8601），= OKF timestamp
+
+# ────────── 链接约定 ──────────
+linking:
+  internal: "[[slug]] 或 [[slug|显示文本]]（Obsidian 风格，内部存储）"
+  okf_export: "[display](/{bundle_dir}/{slug}.md)（标准 MD 链接，导出时转换）"
+  conversion: "wikilink_to_okf() / okf_link_to_wikilink() 双向可逆"

@@ -638,9 +638,41 @@ class WikiCompiler:
     # ── Markdown 渲染 ──
 
     def _render_page_md(self, page: WikiPage, *, is_new: bool) -> str:
-        """渲染整页 Markdown（frontmatter + body）"""
+        """渲染整页 Markdown（frontmatter + body + OKF Citations）"""
         meta = self._build_frontmatter_meta(page, is_new=is_new)
-        return self._assemble_md(meta, page.body_md)
+        # P3-3: 追加 OKF 兼容的 ## Citations 章节
+        body_with_citations = self._append_okf_citations(page.body_md, page)
+        return self._assemble_md(meta, body_with_citations)
+
+    @staticmethod
+    def _append_okf_citations(body: str, page: WikiPage) -> str:
+        """P3-3: 在 body 末尾追加 OKF Citations 章节
+
+        OKF 用 # Citations / ## Citations 章节做来源引用，格式 [n] [text](uri)。
+        与中文 ## 来源 章节共存（来源是显式引用，Citations 是 OKF 标准化形式）。
+
+        若 body 已含 ## Citations 章节则不重复追加。
+        """
+        if not page.sources:
+            return body
+        if "## Citations" in body or "# Citations" in body:
+            return body  # 已有，不重复
+
+        lines = ["", "## Citations", ""]
+        for i, src in enumerate(page.sources, 1):
+            doc_id = src.get("doc_id", "")
+            title = src.get("title", doc_id)
+            checksum = src.get("checksum", "")
+            # OKF resource URI 形式
+            uri = f"opskg://doc/{doc_id}" if doc_id else ""
+            citation_line = f"[{i}] {title}"
+            if uri:
+                citation_line += f" ([{doc_id}]({uri}))"
+            if checksum:
+                citation_line += f"  \n  checksum: `{checksum}`"
+            lines.append(citation_line)
+        lines.append("")
+        return body.rstrip() + "\n" + "\n".join(lines)
 
     @staticmethod
     def _build_frontmatter_meta(page: WikiPage, *, is_new: bool) -> dict:
