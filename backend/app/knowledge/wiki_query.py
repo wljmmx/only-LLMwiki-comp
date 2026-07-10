@@ -466,6 +466,51 @@ def _extract_snippet(md: str, tokens: list[str], window: int = 200) -> str:
 # ────────── 答案生成 ──────────
 
 
+# P2-13b：多轮会话历史消息数上限（控制 token，保留最近上下文）
+MAX_HISTORY_MESSAGES = 10
+
+
+def _sanitize_history(history: list[dict] | None) -> list[dict]:
+    """清洗多轮会话历史：只保留 user/assistant 的 role+content，截断到最近 N 条
+
+    对齐 AGENTS.md §六 Query Workflow：多轮会话时把前几轮问答作为上下文传给 LLM，
+    让其理解指代与追问。后端无状态（不存 session），历史由前端维护。
+    """
+    if not history:
+        return []
+    cleaned: list[dict] = []
+    for h in history:
+        if not isinstance(h, dict):
+            continue
+        role = h.get("role")
+        content = h.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            cleaned.append({"role": role, "content": content})
+    # 保留最近 N 条（避免 token 爆炸）
+    if len(cleaned) > MAX_HISTORY_MESSAGES:
+        cleaned = cleaned[-MAX_HISTORY_MESSAGES:]
+    return cleaned
+
+
+def _build_llm_messages(
+    system: str,
+    prompt: str,
+    history: list[dict] | None,
+) -> list[ChatMessage]:
+    """构建 LLM messages：system + 多轮历史 + 当前问题
+
+    多轮历史插入在 system 与当前 user prompt 之间，让 LLM 理解追问/指代。
+    """
+    messages: list[ChatMessage] = [ChatMessage(role="system", content=system)]
+    if history:
+        for h in history:
+            messages.append(
+                ChatMessage(role=h["role"], content=h["content"])
+            )
+    messages.append(ChatMessage(role="user", content=prompt))
+    return messages
+
+
 class WikiQAEngine:
     """基于 wiki 的问答引擎"""
 
@@ -482,6 +527,7 @@ class WikiQAEngine:
         expand_backlinks: bool = True,
         writeback: bool = True,
         permissive: bool = True,
+        history: list[dict] | None = None,
     ) -> WikiQueryResult:
         """回答用户问题
 
@@ -489,13 +535,16 @@ class WikiQAEngine:
             1. 召回相关 wiki 页面
             2. 若召回为空 → permissive 降级（raw 文档检索 / OKF 导入提示）
             3. 加载页面正文作为上下文
-            4. LLM 基于上下文回答，引用 [[slug]]
+            4. LLM 基于 wiki 上下文回答，引用 [[slug]]
             5. S12-1 知识复利：从回答中提取新事实回写 wiki（writeback=True 时）
 
         Args:
             permissive: P2-2 容错消费模式。True 时召回为空会尝试降级到 raw 文档
                        检索，而非直接拒绝。对齐 OKF permissive consumption 哲学。
+            history: P2-13b 多轮会话历史（[{role, content}]），注入 LLM messages
+                     让其理解追问/指代。后端无状态，历史由前端维护。
         """
+        clean_history = _sanitize_history(history)
         # P1-4: 召回 + 上下文准备（与 stream_answer 共用）
         early, recalled, contexts, cited = await self._prepare_context(
             question,
@@ -507,7 +556,7 @@ class WikiQAEngine:
             return early
 
         # 4. LLM 回答
-        answer = await self._llm_answer(question, contexts)
+        answer = await self._llm_answer(question, contexts, history=clean_history)
         if not answer:
             answer = "已召回以下 wiki 页面，但 LLM 暂时无法生成回答：\n" + "\n".join(
                 f"- [[{h.slug}]] {h.title}" for h in recalled
@@ -645,6 +694,7 @@ class WikiQAEngine:
         expand_backlinks: bool = True,
         writeback: bool = True,
         permissive: bool = True,
+        history: list[dict] | None = None,
     ):
         """流式问答：先返回 meta（recalled/cited），再流式 yield 回答片段
 
@@ -655,7 +705,11 @@ class WikiQAEngine:
             {"type": "done", "writebacks": [...]}  # 结束
 
         与 answer() 共用 _prepare_context，保证召回逻辑一致。
+
+        Args:
+            history: P2-13b 多轮会话历史，注入 LLM messages。
         """
+        clean_history = _sanitize_history(history)
         early, recalled, contexts, cited = await self._prepare_context(
             question,
             recall_limit=recall_limit,
@@ -686,7 +740,7 @@ class WikiQAEngine:
 
         # 流式生成回答：迭代 LLM stream，逐 chunk yield delta 并收集全文
         collected: list[str] = []
-        async for chunk in self._stream_llm(question, contexts):
+        async for chunk in self._stream_llm(question, contexts, history=clean_history):
             collected.append(chunk)
             yield {"type": "delta", "text": chunk}
 
@@ -716,11 +770,16 @@ class WikiQAEngine:
         self,
         question: str,
         contexts: list[str],
+        *,
+        history: list[dict] | None = None,
     ):
         """底层：调用 LLM stream，逐 chunk yield delta 文本
 
         与 _llm_answer 使用相同的 system/prompt，仅切换为流式接口。
         LLM 不可用或出错时静默结束（调用方按空 collected 处理回退）。
+
+        Args:
+            history: P2-13b 多轮会话历史，注入 system 与当前问题之间。
         """
         system = (
             "你是 OpsKG Wiki 管理员。基于已编译的 wiki 页面回答用户问题。"
@@ -736,10 +795,7 @@ class WikiQAEngine:
             "3. 如有排查步骤，分点列出\n"
             "4. 若 wiki 内容不足，明确说明"
         )
-        messages = [
-            ChatMessage(role="system", content=system),
-            ChatMessage(role="user", content=prompt),
-        ]
+        messages = _build_llm_messages(system, prompt, history)
         try:
             async for chunk in self.llm.stream(
                 messages=messages,
@@ -992,8 +1048,18 @@ class WikiQAEngine:
             "review_status": "review_needed",
         }
 
-    async def _llm_answer(self, question: str, contexts: list[str]) -> str:
-        """让 LLM 基于 wiki 上下文回答"""
+    async def _llm_answer(
+        self,
+        question: str,
+        contexts: list[str],
+        *,
+        history: list[dict] | None = None,
+    ) -> str:
+        """让 LLM 基于 wiki 上下文回答
+
+        Args:
+            history: P2-13b 多轮会话历史，注入 system 与当前问题之间。
+        """
         system = (
             "你是 OpsKG Wiki 管理员。基于已编译的 wiki 页面回答用户问题。"
             "回答中引用相关页面时使用 [[slug]] 形式。"
@@ -1009,10 +1075,7 @@ class WikiQAEngine:
             "4. 若 wiki 内容不足，明确说明"
         )
         try:
-            messages = [
-                ChatMessage(role="system", content=system),
-                ChatMessage(role="user", content=prompt),
-            ]
+            messages = _build_llm_messages(system, prompt, history)
             resp = await self.llm.chat(
                 messages=messages,
                 temperature=0.2,

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { NInput, NButton, NCard, NTag, NSpace, NAlert, NDivider } from 'naive-ui'
 import { queryWikiStream } from '@/api/wiki'
-import type { WikiQueryResult } from '@/api/wiki'
+import type { WikiQueryResult, ChatHistoryEntry } from '@/api/wiki'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
 import AppIcon from '@/components/common/AppIcon.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
@@ -21,6 +21,19 @@ const streamingAnswer = ref('')
 /** 流式 abort 控制器 */
 let abortController: AbortController | null = null
 
+/** P2-13b: 多轮会话历史（已完成轮次） */
+interface ChatTurn {
+  role: 'user' | 'assistant'
+  content: string
+  cited_slugs?: string[]
+  recalled_pages?: { slug: string; title: string; type: string; score: number }[]
+  insufficient_knowledge?: boolean
+  error?: string | null
+}
+const conversation = ref<ChatTurn[]>([])
+/** 会话历史滚动容器引用 */
+const conversationRef = ref<HTMLElement | null>(null)
+
 const hasError = computed(() => !!result.value?.error)
 const hasAnswer = computed(
   () => !hasError.value && !!result.value && !result.value.insufficient_knowledge,
@@ -31,9 +44,41 @@ const renderedAnswer = computed(() =>
   renderWikiMarkdown(result.value?.answer || streamingAnswer.value || ''),
 )
 
+/** P2-13b: 把上一轮已完成的结果归档到会话历史 */
+function archiveCurrentTurn() {
+  if (!result.value) return
+  const r = result.value
+  const answerText = r.answer || streamingAnswer.value
+  // 只归档有实质内容的轮次（有回答或有错误）
+  if (answerText || r.error) {
+    conversation.value.push({ role: 'user', content: r.question })
+    conversation.value.push({
+      role: 'assistant',
+      content: answerText,
+      cited_slugs: r.cited_slugs,
+      recalled_pages: r.recalled_pages,
+      insufficient_knowledge: r.insufficient_knowledge,
+      error: r.error,
+    })
+  }
+  result.value = null
+  streamingAnswer.value = ''
+}
+
+/** P2-13b: 构建发给后端的历史（仅 role+content，过滤错误轮次） */
+function buildHistory(): ChatHistoryEntry[] {
+  return conversation.value
+    .filter((t) => t.role === 'user' || (t.role === 'assistant' && t.content && !t.error))
+    .map((t) => ({ role: t.role, content: t.content }))
+}
+
 function handleQuery() {
   const q = question.value.trim()
   if (!q || loading.value) return
+  // 把上一轮归档到会话历史（多轮上下文）
+  archiveCurrentTurn()
+  const history = buildHistory()
+
   loading.value = true
   asked.value = true
   streamingAnswer.value = ''
@@ -45,43 +90,60 @@ function handleQuery() {
     insufficient_knowledge: false,
     error: null,
   }
+  question.value = ''
+  void nextTick(scrollToBottom)
 
-  abortController = queryWikiStream(q, {
-    onMeta: (data) => {
-      if (result.value) {
-        result.value.recalled_pages = data.recalled_pages
-        result.value.cited_slugs = data.cited_slugs
-        result.value.insufficient_knowledge = data.insufficient_knowledge
-        // 知识不足时后端直接给完整 answer
-        if (data.insufficient_knowledge && data.answer) {
-          result.value.answer = data.answer
+  abortController = queryWikiStream(
+    q,
+    {
+      onMeta: (data) => {
+        if (result.value) {
+          result.value.recalled_pages = data.recalled_pages
+          result.value.cited_slugs = data.cited_slugs
+          result.value.insufficient_knowledge = data.insufficient_knowledge
+          // 知识不足时后端直接给完整 answer
+          if (data.insufficient_knowledge && data.answer) {
+            result.value.answer = data.answer
+          }
         }
-      }
+      },
+      onDelta: (text) => {
+        streamingAnswer.value += text
+      },
+      onDone: () => {
+        // 流式结束：把累积文本写入 result.answer
+        if (result.value) {
+          result.value.answer = streamingAnswer.value
+        }
+        loading.value = false
+        abortController = null
+        void nextTick(scrollToBottom)
+      },
+      onError: (message) => {
+        result.value = {
+          question: q,
+          answer: '',
+          cited_slugs: [],
+          recalled_pages: result.value?.recalled_pages || [],
+          insufficient_knowledge: false,
+          error: message || '查询失败，请稍后重试',
+        }
+        loading.value = false
+        abortController = null
+      },
     },
-    onDelta: (text) => {
-      streamingAnswer.value += text
-    },
-    onDone: () => {
-      // 流式结束：把累积文本写入 result.answer
-      if (result.value) {
-        result.value.answer = streamingAnswer.value
-      }
-      loading.value = false
-      abortController = null
-    },
-    onError: (message) => {
-      result.value = {
-        question: q,
-        answer: '',
-        cited_slugs: [],
-        recalled_pages: result.value?.recalled_pages || [],
-        insufficient_knowledge: false,
-        error: message || '查询失败，请稍后重试',
-      }
-      loading.value = false
-      abortController = null
-    },
-  })
+    { history },
+  )
+}
+
+/** P2-13b: 开启新对话（清空历史） */
+function handleNewConversation() {
+  if (abortController) handleStop()
+  conversation.value = []
+  result.value = null
+  streamingAnswer.value = ''
+  asked.value = false
+  question.value = ''
 }
 
 /** P1-4: 取消流式查询 */
@@ -118,6 +180,12 @@ function goToWikiPage(slug: string) {
   router.push({ path: '/wiki', query: { slug } })
 }
 
+/** P2-13b: 滚动会话区到底部（新消息可见） */
+function scrollToBottom() {
+  const el = conversationRef.value
+  if (el) el.scrollTop = el.scrollHeight
+}
+
 onUnmounted(() => {
   if (abortController) abortController.abort()
 })
@@ -128,14 +196,25 @@ onUnmounted(() => {
     <PageHeader
       title="Wiki 智能问答"
       description="基于已编译的 Wiki 知识库回答问题，回答中引用 [[slug]] 作为来源"
-    />
+    >
+      <template #extra>
+        <n-button
+          v-if="conversation.length > 0"
+          size="small"
+          quaternary
+          @click="handleNewConversation"
+        >
+          新对话
+        </n-button>
+      </template>
+    </PageHeader>
 
     <div class="search-bar">
       <n-input
         v-model:value="question"
         type="textarea"
         :rows="2"
-        placeholder="输入你的问题，例如：Nginx 502 错误如何排查？"
+        :placeholder="conversation.length > 0 ? '继续追问，例如：那 504 又是什么？' : '输入你的问题，例如：Nginx 502 错误如何排查？'"
         :disabled="loading"
         class="search-input"
         @keydown="handleKeydown"
@@ -164,24 +243,72 @@ onUnmounted(() => {
         停止
       </n-button>
     </div>
-    <div class="search-tip">按 Ctrl + Enter 快速提交{{ loading ? '，流式生成中可随时停止' : '' }}</div>
+    <div class="search-tip">
+      按 Ctrl + Enter 快速提交{{ loading ? '，流式生成中可随时停止' : '' }}
+      <template v-if="conversation.length > 0">· 已有 {{ conversation.filter(t => t.role === 'user').length }} 轮对话上下文</template>
+    </div>
 
-    <div class="result-area">
+    <div ref="conversationRef" class="result-area">
+      <!-- P2-13b: 多轮会话历史（已完成轮次） -->
+      <template v-for="(turn, idx) in conversation" :key="idx">
+        <div v-if="turn.role === 'user'" class="chat-turn chat-turn-user">
+          <div class="chat-bubble chat-bubble-user">{{ turn.content }}</div>
+        </div>
+        <div v-else class="chat-turn chat-turn-assistant">
+          <n-card size="small" class="answer-card" :bordered="true">
+            <template #header>
+              <span class="answer-card-title">回答</span>
+            </template>
+            <n-alert v-if="turn.error" type="error" title="查询失败" class="result-alert">
+              {{ turn.error }}
+            </n-alert>
+            <n-alert
+              v-else-if="turn.insufficient_knowledge"
+              type="warning"
+              title="知识库不足"
+              class="result-alert"
+            >
+              知识库不足，建议上传相关文档
+            </n-alert>
+            <div v-else class="markdown-rendered" v-html="renderWikiMarkdown(turn.content)"></div>
+            <template v-if="turn.cited_slugs && turn.cited_slugs.length > 0">
+              <n-divider title-placement="left" class="section-divider">引用来源</n-divider>
+              <div class="cited-list">
+                <n-space :size="8" wrap>
+                  <n-button
+                    v-for="slug in turn.cited_slugs"
+                    :key="slug"
+                    quaternary
+                    size="small"
+                    @click="goToWikiPage(slug)"
+                  >
+                    <template #icon>
+                      <AppIcon name="link" />
+                    </template>
+                    [[{{ slug }}]]
+                  </n-button>
+                </n-space>
+              </div>
+            </template>
+          </n-card>
+        </div>
+      </template>
+
       <!-- 加载中（流式开始尚未收到首个 delta） -->
       <LoadingState
-        v-if="loading && !streamingAnswer"
+        v-if="loading && !streamingAnswer && !hasError"
         text="正在编译知识并生成回答..."
-        :min-height="300"
+        :min-height="200"
       />
 
       <!-- 空状态：未提问 -->
       <EmptyState
-        v-else-if="!asked && !loading"
+        v-if="!asked && !loading && conversation.length === 0"
         description="输入问题，从 Wiki 知识库中获取结构化解答"
       />
 
-      <!-- 结果区 -->
-      <div v-else-if="result" class="result-content">
+      <!-- 当前轮结果区（流式或完成态） -->
+      <div v-if="result" class="result-content chat-turn-assistant">
         <!-- 错误提示 -->
         <n-alert v-if="hasError" type="error" title="查询失败" class="result-alert">
           {{ result.error }}
@@ -447,5 +574,35 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--n-text-color-3, #9ca3af);
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+/* P2-13b: 多轮会话历史样式 */
+.chat-turn {
+  margin-bottom: 16px;
+}
+
+.chat-turn-user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.chat-turn-assistant {
+  width: 100%;
+}
+
+.chat-bubble {
+  max-width: 75%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.6;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.chat-bubble-user {
+  background: var(--n-primary-color, #2080f0);
+  color: #fff;
+  border-bottom-right-radius: 4px;
 }
 </style>

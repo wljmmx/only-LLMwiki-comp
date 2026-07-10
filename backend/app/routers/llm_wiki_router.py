@@ -489,6 +489,8 @@ async def llm_wiki_query(payload: dict) -> dict:
         question: 用户问题（必填）
         recall_limit: 召回页面数上限（默认 5）
         expand_backlinks: 是否用 backlink 扩展上下文（默认 true）
+        history: P2-13b 多轮会话历史（[{role:"user"|"assistant", content}]），
+                 后端无状态，由前端维护并随每次请求回传
 
     Returns:
         answer: LLM 基于 wiki 的回答
@@ -501,12 +503,14 @@ async def llm_wiki_query(payload: dict) -> dict:
         raise HTTPException(400, "question 不能为空")
     recall_limit = int(payload.get("recall_limit", 5))
     expand_backlinks = bool(payload.get("expand_backlinks", True))
+    history = payload.get("history") or None
 
     qa = get_wiki_qa_engine()
     result = await qa.answer(
         question,
         recall_limit=recall_limit,
         expand_backlinks=expand_backlinks,
+        history=history,
     )
     return {
         "question": result.question,
@@ -558,12 +562,15 @@ async def llm_wiki_query_stream(payload: dict):
 
     知识库不足时仅发 meta（含 answer）+ done。
     让前端在 LLM 生成期间即时看到召回页面与逐字回答，降低等待焦虑。
+
+    Body 支持 history（P2-13b 多轮会话历史），由前端维护并回传。
     """
     question = (payload.get("question") or "").strip()
     if not question:
         raise HTTPException(400, "question 不能为空")
     recall_limit = int(payload.get("recall_limit", 5))
     expand_backlinks = bool(payload.get("expand_backlinks", True))
+    history = payload.get("history") or None
 
     qa = get_wiki_qa_engine()
 
@@ -573,6 +580,7 @@ async def llm_wiki_query_stream(payload: dict):
                 question,
                 recall_limit=recall_limit,
                 expand_backlinks=expand_backlinks,
+                history=history,
             ):
                 yield f"event: {evt['type']}\ndata: {json.dumps(evt, ensure_ascii=False)}\n\n"
         except Exception as e:  # noqa: BLE001

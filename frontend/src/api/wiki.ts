@@ -46,11 +46,17 @@ export interface WikiQueryResult {
   error: string | null
 }
 
-export function queryWiki(question: string, recallLimit = 5, expandBacklinks = true) {
+export function queryWiki(
+  question: string,
+  recallLimit = 5,
+  expandBacklinks = true,
+  history?: { role: 'user' | 'assistant'; content: string }[],
+) {
   return api.post<any, WikiQueryResult>('/llm-wiki/query', {
     question,
     recall_limit: recallLimit,
     expand_backlinks: expandBacklinks,
+    history,
   })
 }
 
@@ -71,21 +77,33 @@ export interface WikiQueryStreamCallbacks {
   onError?: (message: string) => void
 }
 
+/** P2-13b：多轮会话历史条目（仅 role+content，由前端维护） */
+export interface ChatHistoryEntry {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 /**
  * P1-4: 流式 Wiki 问答
  *
  * 用 fetch + ReadableStream 消费 SSE（EventSource 不支持 POST）。
  * 手动解析 `event: <type>\ndata: <json>\n\n` 格式。
  *
+ * P2-13b：options.history 传入多轮会话历史，后端注入 LLM messages 实现追问/指代。
+ *
  * @returns AbortController（可调用 .abort() 取消）
  */
 export function queryWikiStream(
   question: string,
   callbacks: WikiQueryStreamCallbacks,
-  options: { recallLimit?: number; expandBacklinks?: boolean } = {},
+  options: {
+    recallLimit?: number
+    expandBacklinks?: boolean
+    history?: ChatHistoryEntry[]
+  } = {},
 ): AbortController {
   const controller = new AbortController()
-  const { recallLimit = 5, expandBacklinks = true } = options
+  const { recallLimit = 5, expandBacklinks = true, history } = options
 
   const url = `${getApiBaseUrl()}/llm-wiki/query/stream`
   const headers: Record<string, string> = {
@@ -102,6 +120,7 @@ export function queryWikiStream(
       question,
       recall_limit: recallLimit,
       expand_backlinks: expandBacklinks,
+      history,
     }),
     signal: controller.signal,
   })
