@@ -18,7 +18,7 @@
  *   />
  */
 import { ref, computed, watch, onMounted } from 'vue'
-import { NButton, NInput, NCard, NSpace, NText, NAlert, NSelect, NDynamicTags, NPopselect } from 'naive-ui'
+import { NButton, NInput, NCard, NSpace, NText, NAlert, NSelect, NDynamicTags } from 'naive-ui'
 import { updateWikiPage, listWikiPages } from '@/api/wiki'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
 import {

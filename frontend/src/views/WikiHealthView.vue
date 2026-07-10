@@ -17,6 +17,7 @@ import {
   NAlert,
   useMessage,
 } from 'naive-ui'
+import type { DataTableColumns } from 'naive-ui'
 import {
   runWikiLint,
   getWikiOrphans,
@@ -69,7 +70,7 @@ const lintStatCards = computed(() => [
   { label: '严重', value: lintReport.value?.by_severity?.error ?? 0, color: '#d03050' },
 ])
 
-const lintColumns = [
+const lintColumns: DataTableColumns<LintIssue> = [
   {
     title: '类型',
     key: 'type',

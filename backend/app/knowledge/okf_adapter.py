@@ -41,12 +41,10 @@ import structlog
 import yaml
 
 from app.knowledge.wiki_index import (
-    INDEX_SLUG,
     _key_from_slug,
-    _parse_frontmatter,
     list_wiki_pages,
 )
-from app.knowledge.wikilink import WIKILINK_RE, parse_wikilinks
+from app.knowledge.wikilink import WIKILINK_RE
 from app.storage.version_control import get_version_control
 
 logger = structlog.get_logger()
@@ -465,7 +463,7 @@ def _render_okf_index(
     lines: list[str] = []
     lines.append("---")
     lines.append("type: index")
-    lines.append(f"title: OpsKG Wiki Index")
+    lines.append("title: OpsKG Wiki Index")
     lines.append(f"description: 导航中枢，共 {len(pages)} 个概念")
     lines.append(f"timestamp: {now}")
     lines.append("---")

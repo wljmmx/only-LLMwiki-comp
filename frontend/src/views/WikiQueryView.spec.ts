@@ -21,7 +21,7 @@ let lastOptions: { history?: { role: string; content: string }[] } | undefined =
 
 vi.mock('@/api/wiki', () => ({
   queryWikiStream: vi.fn(
-    (question: string, callbacks: any, options?: any) => {
+    (_question: string, callbacks: any, options?: any) => {
       capturedCallbacks = callbacks
       lastOptions = options
       lastAbortController = new AbortController()

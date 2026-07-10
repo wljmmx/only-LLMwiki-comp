@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
-import yaml
 
 from app.knowledge.okf_adapter import OKF_RECOMMENDED_FIELDS, OKF_VERSION
 from app.knowledge.wiki_index import _parse_frontmatter, list_wiki_pages

@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.auth import require_role, verify_token
@@ -28,10 +28,11 @@ from app.knowledge import (
     export_bundle_tarball,
     import_bundle,
     import_bundle_tarball,
-    list_bundle_concepts,
 )
 from app.knowledge.okf_validator import (
     validate_bundle as validate_okf_bundle,
+)
+from app.knowledge.okf_validator import (
     validate_wiki as validate_okf_wiki,
 )
 
