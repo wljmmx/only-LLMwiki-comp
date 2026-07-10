@@ -13,6 +13,7 @@ import { computed, onMounted } from 'vue'
 import { useAppStore } from '@/stores/app'
 import ErrorBoundary from '@/components/common/ErrorBoundary.vue'
 import LoadingBarBridge from '@/components/common/LoadingBarBridge'
+import PageSkeleton from '@/components/common/PageSkeleton.vue'
 
 const appStore = useAppStore()
 const theme = computed(() => (appStore.darkMode ? darkTheme : null))
@@ -75,7 +76,12 @@ onMounted(() => {
           <ErrorBoundary>
             <router-view v-slot="{ Component }">
               <transition name="fade" mode="out-in">
-                <component :is="Component" />
+                <Suspense>
+                  <component :is="Component" />
+                  <template #fallback>
+                    <PageSkeleton />
+                  </template>
+                </Suspense>
               </transition>
             </router-view>
           </ErrorBoundary>

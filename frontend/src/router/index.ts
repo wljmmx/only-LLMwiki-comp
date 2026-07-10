@@ -8,6 +8,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSetupStore } from '@/stores/setup'
 import { getSetupStatus } from '@/api/setup'
+import { startLoadingBar, finishLoadingBar } from '@/api/loadingBar'
 
 /**
  * 路由 meta 类型扩展（S14-1 路由级权限守卫）
@@ -303,5 +304,19 @@ export function _resetSetupCheckedForTest(): void {
 }
 
 router.beforeEach(navigationGuard)
+
+// P1-3: 路由级 loading bar（chunk 下载反馈）
+// beforeEach 启动、afterEach 完成，与 axios 共用计数器，并发安全
+router.beforeEach((_to, _from, next) => {
+  startLoadingBar()
+  next()
+})
+router.afterEach(() => {
+  finishLoadingBar()
+})
+// 导航出错也要结束 loading bar，避免卡住
+router.onError(() => {
+  finishLoadingBar()
+})
 
 export default router
