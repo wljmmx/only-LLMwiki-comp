@@ -130,12 +130,22 @@ function handleResize() {
   }
 }
 
+// Esc 键跳过引导（键盘可达性）
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && store.isActive) {
+    e.preventDefault()
+    handleSkip()
+  }
+}
+
 onMounted(() => {
   window.addEventListener('resize', handleResize)
+  window.addEventListener('keydown', handleKeydown)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
+  window.removeEventListener('keydown', handleKeydown)
 })
 
 function handleNext() {
@@ -157,15 +167,16 @@ function handleFinish() {
 
 <template>
   <template v-if="store.isActive && store.currentStep">
-    <!-- 全屏遮罩（居中步骤用纯遮罩，定位步骤用 spotlight 效果） -->
+    <!-- 全屏点击层：始终渲染以接收点击跳过 -->
+    <!-- 居中模式自带遮罩背景；spotlight 模式透明（由 spotlight 视觉层提供暗化） -->
     <div
-      v-if="!targetEl"
       class="tour-overlay"
+      :class="{ 'tour-overlay--spotlight': targetEl }"
       @click.self="handleSkip"
     />
-    <!-- spotlight 遮罩（定位步骤） -->
+    <!-- spotlight 视觉层（定位步骤，pointer-events: none 让点击穿透到 overlay） -->
     <div
-      v-else
+      v-if="targetEl"
       class="tour-spotlight"
       :style="highlightStyle"
     />
@@ -233,6 +244,11 @@ function handleFinish() {
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
   z-index: 9998;
+}
+
+/* spotlight 模式：overlay 透明（暗化由 spotlight 的 box-shadow 提供），仅作点击层 */
+.tour-overlay--spotlight {
+  background: transparent;
 }
 
 .tour-spotlight {

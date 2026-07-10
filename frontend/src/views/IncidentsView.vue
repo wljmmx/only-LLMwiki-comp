@@ -7,7 +7,6 @@ import {
   NSpace,
   NButton,
   NButtonGroup,
-  NSpin,
   NEmpty,
   NDrawer,
   NDrawerContent,
@@ -29,6 +28,9 @@ import {
   type Incident,
 } from '@/api/aiops'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
+import PageHeader from '@/components/common/PageHeader.vue'
+import LoadingState from '@/components/common/LoadingState.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
 
 const message = useMessage()
 
@@ -208,10 +210,7 @@ onMounted(() => {
 
 <template>
   <div class="incidents-view">
-    <div class="page-header">
-      <h2 class="page-title">Incident 管理</h2>
-      <p class="page-desc">事件关联生成的 Incident 列表，支持详情查看、关闭、自动生成 Runbook</p>
-    </div>
+    <PageHeader title="Incident 管理" description="事件关联生成的 Incident 列表，支持详情查看、关闭、自动生成 Runbook" />
 
     <n-card :bordered="true">
       <template #header>
@@ -235,10 +234,8 @@ onMounted(() => {
         </n-space>
       </template>
 
-      <div v-if="loading" class="loading-container">
-        <n-spin size="large" />
-      </div>
-      <n-empty v-else-if="!incidents.length" description="暂无 incident" style="padding: 60px 0" />
+      <LoadingState v-if="loading" />
+      <EmptyState v-else-if="!incidents.length" description="暂无 incident" />
       <n-data-table
         v-else
         :columns="columns"
@@ -252,9 +249,7 @@ onMounted(() => {
     <!-- 详情抽屉 -->
     <n-drawer v-model:show="detailVisible" :width="720" placement="right">
       <n-drawer-content title="Incident 详情" closable>
-        <div v-if="detailLoading" class="loading-container">
-          <n-spin size="large" />
-        </div>
+        <LoadingState v-if="detailLoading" />
         <template v-else-if="currentIncident">
           <n-tabs default-value="basic" type="line">
             <n-tab-pane name="basic" tab="基本信息">
@@ -412,10 +407,7 @@ onMounted(() => {
       title="Incident Runbook"
       style="width: 800px; max-width: 95vw"
     >
-      <div v-if="runbookLoading" class="loading-container">
-        <n-spin size="large" />
-        <div class="loading-text">生成 Runbook 中...</div>
-      </div>
+      <LoadingState v-if="runbookLoading" text="生成 Runbook 中..." />
       <template v-else>
         <n-space v-if="runbookSlug" style="margin-bottom: 12px" align="center">
           <n-tag type="success" size="small">已发布 Wiki</n-tag>
@@ -431,36 +423,6 @@ onMounted(() => {
 .incidents-view {
   max-width: 1200px;
   margin: 0 auto;
-}
-
-.page-header {
-  margin-bottom: 24px;
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  margin: 0 0 8px;
-}
-
-.page-desc {
-  font-size: 14px;
-  color: var(--n-text-color-2, #6b7280);
-  margin: 0;
-}
-
-.loading-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 0;
-  gap: 16px;
-}
-
-.loading-text {
-  font-size: 14px;
-  color: var(--n-text-color-2, #6b7280);
 }
 
 .markdown-rendered {

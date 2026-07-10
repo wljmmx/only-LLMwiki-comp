@@ -466,6 +466,51 @@ def _extract_snippet(md: str, tokens: list[str], window: int = 200) -> str:
 # ────────── 答案生成 ──────────
 
 
+# P2-13b：多轮会话历史消息数上限（控制 token，保留最近上下文）
+MAX_HISTORY_MESSAGES = 10
+
+
+def _sanitize_history(history: list[dict] | None) -> list[dict]:
+    """清洗多轮会话历史：只保留 user/assistant 的 role+content，截断到最近 N 条
+
+    对齐 AGENTS.md §六 Query Workflow：多轮会话时把前几轮问答作为上下文传给 LLM，
+    让其理解指代与追问。后端无状态（不存 session），历史由前端维护。
+    """
+    if not history:
+        return []
+    cleaned: list[dict] = []
+    for h in history:
+        if not isinstance(h, dict):
+            continue
+        role = h.get("role")
+        content = h.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            cleaned.append({"role": role, "content": content})
+    # 保留最近 N 条（避免 token 爆炸）
+    if len(cleaned) > MAX_HISTORY_MESSAGES:
+        cleaned = cleaned[-MAX_HISTORY_MESSAGES:]
+    return cleaned
+
+
+def _build_llm_messages(
+    system: str,
+    prompt: str,
+    history: list[dict] | None,
+) -> list[ChatMessage]:
+    """构建 LLM messages：system + 多轮历史 + 当前问题
+
+    多轮历史插入在 system 与当前 user prompt 之间，让 LLM 理解追问/指代。
+    """
+    messages: list[ChatMessage] = [ChatMessage(role="system", content=system)]
+    if history:
+        for h in history:
+            messages.append(
+                ChatMessage(role=h["role"], content=h["content"])
+            )
+    messages.append(ChatMessage(role="user", content=prompt))
+    return messages
+
+
 class WikiQAEngine:
     """基于 wiki 的问答引擎"""
 
@@ -482,6 +527,7 @@ class WikiQAEngine:
         expand_backlinks: bool = True,
         writeback: bool = True,
         permissive: bool = True,
+        history: list[dict] | None = None,
     ) -> WikiQueryResult:
         """回答用户问题
 
@@ -489,90 +535,28 @@ class WikiQAEngine:
             1. 召回相关 wiki 页面
             2. 若召回为空 → permissive 降级（raw 文档检索 / OKF 导入提示）
             3. 加载页面正文作为上下文
-            4. LLM 基于上下文回答，引用 [[slug]]
+            4. LLM 基于 wiki 上下文回答，引用 [[slug]]
             5. S12-1 知识复利：从回答中提取新事实回写 wiki（writeback=True 时）
 
         Args:
             permissive: P2-2 容错消费模式。True 时召回为空会尝试降级到 raw 文档
                        检索，而非直接拒绝。对齐 OKF permissive consumption 哲学。
+            history: P2-13b 多轮会话历史（[{role, content}]），注入 LLM messages
+                     让其理解追问/指代。后端无状态，历史由前端维护。
         """
-        # 1. 召回
-        recalled = await recall_pages(question, limit=recall_limit)
-        if not recalled:
-            # P2-2: permissive 降级 —— 尝试 raw 文档检索兜底
-            if permissive:
-                degraded = await self._try_degraded_recall(question, recall_limit)
-                if degraded:
-                    recalled = degraded
-            if not recalled:
-                return WikiQueryResult(
-                    question=question,
-                    answer=(
-                        "知识库中暂无相关 wiki 页面。建议先上传相关运维文档，"
-                        "由 wiki_compiler 编译后再提问；或通过 OKF bundle 导入"
-                        "（POST /api/okf/import）外部知识。"
-                    ),
-                    insufficient_knowledge=True,
-                )
-
-        # 2. backlink 扩展（最多补 2 个）
-        if expand_backlinks:
-            existing_slugs = {h.slug for h in recalled}
-            for hit in list(recalled):
-                for back in get_backlinks(hit.slug):
-                    if (
-                        back.source_slug in existing_slugs
-                        or back.source_slug == "index"
-                    ):
-                        continue
-                    latest = self.vc.get_latest(_key_from_slug(back.source_slug))
-                    if not latest:
-                        continue
-                    recalled.append(
-                        WikiPageHit(
-                            slug=back.source_slug,
-                            title=back.display,
-                            type="",
-                            score=hit.score * 0.3,  # 较低权重
-                            snippet=_extract_snippet(latest["content"], [question]),
-                        )
-                    )
-                    existing_slugs.add(back.source_slug)
-                    if len(recalled) >= recall_limit + 2:
-                        break
-                if len(recalled) >= recall_limit + 2:
-                    break
-
-        # 3. 加载页面正文
-        contexts: list[str] = []
-        cited: list[str] = []
-        for hit in recalled:
-            # P2-2: 降级召回（type=raw-fallback）用 snippet 作为上下文
-            if hit.type == "raw-fallback":
-                if hit.snippet:
-                    contexts.append(
-                        f"## [raw] {hit.title}\n\n{hit.snippet}\n\n"
-                        f"> 注：此内容来自 raw 文档降级召回，建议编译为 wiki 页面。"
-                    )
-                    cited.append(hit.slug)
-                continue
-            latest = self.vc.get_latest(_key_from_slug(hit.slug))
-            if not latest:
-                continue
-            body = _strip_frontmatter(latest["content"])
-            contexts.append(f"## [[{hit.slug}]] — {hit.title}\n\n{body}")
-            cited.append(hit.slug)
-
-        if not contexts:
-            return WikiQueryResult(
-                question=question,
-                answer="知识库中相关 wiki 页面无法加载。",
-                recalled_pages=recalled,
-                insufficient_knowledge=True,
-            )
+        clean_history = _sanitize_history(history)
+        # P1-4: 召回 + 上下文准备（与 stream_answer 共用）
+        early, recalled, contexts, cited = await self._prepare_context(
+            question,
+            recall_limit=recall_limit,
+            expand_backlinks=expand_backlinks,
+            permissive=permissive,
+        )
+        if early is not None:
+            return early
 
         # 4. LLM 回答
-        answer = await self._llm_answer(question, contexts)
+        answer = await self._llm_answer(question, contexts, history=clean_history)
         if not answer:
             answer = "已召回以下 wiki 页面，但 LLM 暂时无法生成回答：\n" + "\n".join(
                 f"- [[{h.slug}]] {h.title}" for h in recalled
@@ -599,6 +583,229 @@ class WikiQAEngine:
                 logger.warning("wiki_writeback_failed", error=str(e))
 
         return result
+
+    # ────────── P1-4: 流式问答 ──────────
+
+    async def _prepare_context(
+        self,
+        question: str,
+        *,
+        recall_limit: int = 5,
+        expand_backlinks: bool = True,
+        permissive: bool = True,
+    ) -> tuple[WikiQueryResult | None, list[WikiPageHit], list[str], list[str]]:
+        """召回 + backlink 扩展 + 加载页面正文（answer 与 stream_answer 共用）
+
+        Returns:
+            (early_result, recalled, contexts, cited)
+            - early_result 非 None 时表示知识库不足，调用方应直接返回
+            - 否则使用 recalled/contexts/cited 进行 LLM 生成
+        """
+        # 1. 召回
+        recalled = await recall_pages(question, limit=recall_limit)
+        if not recalled:
+            if permissive:
+                degraded = await self._try_degraded_recall(question, recall_limit)
+                if degraded:
+                    recalled = degraded
+            if not recalled:
+                return (
+                    WikiQueryResult(
+                        question=question,
+                        answer=(
+                            "知识库中暂无相关 wiki 页面。建议先上传相关运维文档，"
+                            "由 wiki_compiler 编译后再提问；或通过 OKF bundle 导入"
+                            "（POST /api/okf/import）外部知识。"
+                        ),
+                        insufficient_knowledge=True,
+                    ),
+                    [],
+                    [],
+                    [],
+                )
+
+        # 2. backlink 扩展（最多补 2 个）
+        if expand_backlinks:
+            existing_slugs = {h.slug for h in recalled}
+            for hit in list(recalled):
+                for back in get_backlinks(hit.slug):
+                    if (
+                        back.source_slug in existing_slugs
+                        or back.source_slug == "index"
+                    ):
+                        continue
+                    latest = self.vc.get_latest(_key_from_slug(back.source_slug))
+                    if not latest:
+                        continue
+                    recalled.append(
+                        WikiPageHit(
+                            slug=back.source_slug,
+                            title=back.display,
+                            type="",
+                            score=hit.score * 0.3,
+                            snippet=_extract_snippet(latest["content"], [question]),
+                        )
+                    )
+                    existing_slugs.add(back.source_slug)
+                    if len(recalled) >= recall_limit + 2:
+                        break
+                if len(recalled) >= recall_limit + 2:
+                    break
+
+        # 3. 加载页面正文
+        contexts: list[str] = []
+        cited: list[str] = []
+        for hit in recalled:
+            if hit.type == "raw-fallback":
+                if hit.snippet:
+                    contexts.append(
+                        f"## [raw] {hit.title}\n\n{hit.snippet}\n\n"
+                        f"> 注：此内容来自 raw 文档降级召回，建议编译为 wiki 页面。"
+                    )
+                    cited.append(hit.slug)
+                continue
+            latest = self.vc.get_latest(_key_from_slug(hit.slug))
+            if not latest:
+                continue
+            body = _strip_frontmatter(latest["content"])
+            contexts.append(f"## [[{hit.slug}]] — {hit.title}\n\n{body}")
+            cited.append(hit.slug)
+
+        if not contexts:
+            return (
+                WikiQueryResult(
+                    question=question,
+                    answer="知识库中相关 wiki 页面无法加载。",
+                    recalled_pages=recalled,
+                    insufficient_knowledge=True,
+                ),
+                recalled,
+                [],
+                [],
+            )
+
+        return None, recalled, contexts, cited
+
+    async def stream_answer(
+        self,
+        question: str,
+        *,
+        recall_limit: int = 5,
+        expand_backlinks: bool = True,
+        writeback: bool = True,
+        permissive: bool = True,
+        history: list[dict] | None = None,
+    ):
+        """流式问答：先返回 meta（recalled/cited），再流式 yield 回答片段
+
+        yield 顺序：
+            {"type": "meta", "recalled_pages": [...], "cited_slugs": [...],
+             "insufficient_knowledge": bool}  # 知识不足时附 answer
+            {"type": "delta", "text": "..."}  # 多次
+            {"type": "done", "writebacks": [...]}  # 结束
+
+        与 answer() 共用 _prepare_context，保证召回逻辑一致。
+
+        Args:
+            history: P2-13b 多轮会话历史，注入 LLM messages。
+        """
+        clean_history = _sanitize_history(history)
+        early, recalled, contexts, cited = await self._prepare_context(
+            question,
+            recall_limit=recall_limit,
+            expand_backlinks=expand_backlinks,
+            permissive=permissive,
+        )
+        if early is not None:
+            yield {
+                "type": "meta",
+                "recalled_pages": [],
+                "cited_slugs": [],
+                "insufficient_knowledge": True,
+                "answer": early.answer,
+            }
+            yield {"type": "done", "writebacks": []}
+            return
+
+        # 发送 meta（让前端立即展示召回页面）
+        yield {
+            "type": "meta",
+            "recalled_pages": [
+                {"slug": h.slug, "title": h.title, "type": h.type, "score": h.score}
+                for h in recalled
+            ],
+            "cited_slugs": cited,
+            "insufficient_knowledge": False,
+        }
+
+        # 流式生成回答：迭代 LLM stream，逐 chunk yield delta 并收集全文
+        collected: list[str] = []
+        async for chunk in self._stream_llm(question, contexts, history=clean_history):
+            collected.append(chunk)
+            yield {"type": "delta", "text": chunk}
+
+        full_answer = "".join(collected)
+        if not full_answer:
+            full_answer = "已召回以下 wiki 页面，但 LLM 暂时无法生成回答：\n" + "\n".join(
+                f"- [[{h.slug}]] {h.title}" for h in recalled
+            )
+            yield {"type": "delta", "text": full_answer}
+
+        # 知识复利回写（需要完整回答）
+        writebacks: list[dict] = []
+        if writeback and full_answer and cited:
+            try:
+                writebacks = await self.writeback_new_facts(
+                    question=question,
+                    answer=full_answer,
+                    cited_slugs=cited,
+                    contexts=contexts,
+                )
+            except Exception as e:
+                logger.warning("wiki_stream_writeback_failed", error=str(e))
+
+        yield {"type": "done", "writebacks": writebacks}
+
+    async def _stream_llm(
+        self,
+        question: str,
+        contexts: list[str],
+        *,
+        history: list[dict] | None = None,
+    ):
+        """底层：调用 LLM stream，逐 chunk yield delta 文本
+
+        与 _llm_answer 使用相同的 system/prompt，仅切换为流式接口。
+        LLM 不可用或出错时静默结束（调用方按空 collected 处理回退）。
+
+        Args:
+            history: P2-13b 多轮会话历史，注入 system 与当前问题之间。
+        """
+        system = (
+            "你是 OpsKG Wiki 管理员。基于已编译的 wiki 页面回答用户问题。"
+            "回答中引用相关页面时使用 [[slug]] 形式。"
+            "只基于提供的 wiki 内容回答，不要编造未在 wiki 中出现的事实。"
+            "如果 wiki 内容不足以完整回答，明确指出缺口。"
+        )
+        prompt = (
+            f"# 用户问题\n{question}\n\n"
+            f"# 相关 wiki 页面\n" + "\n\n".join(contexts) + "\n\n# 回答要求\n"
+            "1. 直接回答问题，不要复述问题\n"
+            "2. 在引用具体页面信息时，用 [[slug]] 标注来源\n"
+            "3. 如有排查步骤，分点列出\n"
+            "4. 若 wiki 内容不足，明确说明"
+        )
+        messages = _build_llm_messages(system, prompt, history)
+        try:
+            async for chunk in self.llm.stream(
+                messages=messages,
+                temperature=0.2,
+                max_tokens=self.settings.llm_max_tokens,
+            ):
+                if chunk:
+                    yield chunk
+        except Exception as e:
+            logger.warning("wiki_qa_stream_failed", error=str(e))
 
     # ────────── P2-2: permissive 降级召回 ──────────
 
@@ -841,8 +1048,18 @@ class WikiQAEngine:
             "review_status": "review_needed",
         }
 
-    async def _llm_answer(self, question: str, contexts: list[str]) -> str:
-        """让 LLM 基于 wiki 上下文回答"""
+    async def _llm_answer(
+        self,
+        question: str,
+        contexts: list[str],
+        *,
+        history: list[dict] | None = None,
+    ) -> str:
+        """让 LLM 基于 wiki 上下文回答
+
+        Args:
+            history: P2-13b 多轮会话历史，注入 system 与当前问题之间。
+        """
         system = (
             "你是 OpsKG Wiki 管理员。基于已编译的 wiki 页面回答用户问题。"
             "回答中引用相关页面时使用 [[slug]] 形式。"
@@ -858,10 +1075,7 @@ class WikiQAEngine:
             "4. 若 wiki 内容不足，明确说明"
         )
         try:
-            messages = [
-                ChatMessage(role="system", content=system),
-                ChatMessage(role="user", content=prompt),
-            ]
+            messages = _build_llm_messages(system, prompt, history)
             resp = await self.llm.chat(
                 messages=messages,
                 temperature=0.2,

@@ -25,9 +25,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
 import yaml
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.auth import require_role, verify_token
@@ -42,7 +44,9 @@ from app.knowledge import (
     get_outlinks,
     get_wiki_compiler,
     get_wiki_qa_engine,
+    ignore_issue,
     lint_all,
+    list_ignored_issues,
     list_stale_pages,
     list_wiki_pages,
     mark_pages_stale,
@@ -50,6 +54,7 @@ from app.knowledge import (
     recall_pages,
     render_wikilinks_html,
     suggest_missing_pages,
+    unignore_issue,
     update_backlinks,
 )
 from app.parsers import supported_formats
@@ -487,6 +492,8 @@ async def llm_wiki_query(payload: dict) -> dict:
         question: 用户问题（必填）
         recall_limit: 召回页面数上限（默认 5）
         expand_backlinks: 是否用 backlink 扩展上下文（默认 true）
+        history: P2-13b 多轮会话历史（[{role:"user"|"assistant", content}]），
+                 后端无状态，由前端维护并随每次请求回传
 
     Returns:
         answer: LLM 基于 wiki 的回答
@@ -499,12 +506,14 @@ async def llm_wiki_query(payload: dict) -> dict:
         raise HTTPException(400, "question 不能为空")
     recall_limit = int(payload.get("recall_limit", 5))
     expand_backlinks = bool(payload.get("expand_backlinks", True))
+    history = payload.get("history") or None
 
     qa = get_wiki_qa_engine()
     result = await qa.answer(
         question,
         recall_limit=recall_limit,
         expand_backlinks=expand_backlinks,
+        history=history,
     )
     return {
         "question": result.question,
@@ -544,6 +553,53 @@ async def llm_wiki_recall(q: str, limit: int = 5) -> dict:
     }
 
 
+@router.post("/llm-wiki/query/stream", dependencies=[Depends(verify_token)])
+async def llm_wiki_query_stream(payload: dict):
+    """流式 Wiki 问答（P1-4）
+
+    SSE 事件序列：
+        event: meta   — {"recalled_pages":[...], "cited_slugs":[...],
+                         "insufficient_knowledge":bool, "answer"?:str}
+        event: delta  — {"text":"chunk"}  （多次）
+        event: done   — {"writebacks":[...]}
+
+    知识库不足时仅发 meta（含 answer）+ done。
+    让前端在 LLM 生成期间即时看到召回页面与逐字回答，降低等待焦虑。
+
+    Body 支持 history（P2-13b 多轮会话历史），由前端维护并回传。
+    """
+    question = (payload.get("question") or "").strip()
+    if not question:
+        raise HTTPException(400, "question 不能为空")
+    recall_limit = int(payload.get("recall_limit", 5))
+    expand_backlinks = bool(payload.get("expand_backlinks", True))
+    history = payload.get("history") or None
+
+    qa = get_wiki_qa_engine()
+
+    async def event_gen():
+        try:
+            async for evt in qa.stream_answer(
+                question,
+                recall_limit=recall_limit,
+                expand_backlinks=expand_backlinks,
+                history=history,
+            ):
+                yield f"event: {evt['type']}\ndata: {json.dumps(evt, ensure_ascii=False)}\n\n"
+        except Exception as e:  # noqa: BLE001
+            err = json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False)
+            yield f"event: error\ndata: {err}\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲，确保实时推送
+        },
+    )
+
+
 # ────────── P1-3 Lint / Health Check ──────────
 
 
@@ -571,6 +627,51 @@ async def llm_wiki_lint_suggestions(limit: int = 20) -> dict:
     """建议需要补全的缺失 wiki 页面（基于死链被引次数）"""
     items = suggest_missing_pages(limit=limit)
     return {"count": len(items), "suggestions": items}
+
+
+# ────────── P1-12b: Lint issue 忽略 ──────────
+
+
+class LintIgnoreRequest(BaseModel):
+    """POST /llm-wiki/lint/ignore 请求体"""
+
+    issue_key: str = Field(
+        ..., description="lint issue 稳定标识（sha1(type|slug|message)[:16]）"
+    )
+    type: str = Field(..., description="问题类型（TYPE_*）")
+    slug: str = Field(..., description="受影响页面 slug")
+    message: str = Field(..., description="问题消息（用于幂等去重与回溯）")
+    reason: str = Field("", description="忽略原因（可选）")
+
+
+@router.post("/llm-wiki/lint/ignore", dependencies=[Depends(verify_token)])
+async def llm_wiki_lint_ignore(payload: LintIgnoreRequest) -> dict:
+    """忽略一个 lint issue（幂等）
+
+    忽略后，后续 `lint_all` 会过滤掉该 issue，不再计入 total_issues/by_*。
+    取消忽略用 DELETE /llm-wiki/lint/ignore/{issue_key}。
+    """
+    return ignore_issue(
+        payload.issue_key,
+        type=payload.type,
+        slug=payload.slug,
+        message=payload.message,
+        reason=payload.reason,
+    )
+
+
+@router.delete("/llm-wiki/lint/ignore/{issue_key}", dependencies=[Depends(verify_token)])
+async def llm_wiki_lint_unignore(issue_key: str) -> dict:
+    """取消忽略一个 lint issue"""
+    deleted = unignore_issue(issue_key)
+    return {"issue_key": issue_key, "unignored": deleted}
+
+
+@router.get("/llm-wiki/lint/ignored", dependencies=[Depends(verify_token)])
+async def llm_wiki_lint_ignored() -> dict:
+    """列出所有已忽略的 lint issue"""
+    items = list_ignored_issues()
+    return {"count": len(items), "items": items}
 
 
 # ────────── P1-4 漂移自动重编译 ──────────

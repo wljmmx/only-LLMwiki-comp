@@ -2,10 +2,30 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
+// WikiView 嵌套 WikiVersionHistory，其 useMessage 需 provider，测试中 mock 掉
+vi.mock('naive-ui', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('naive-ui')>()
+  return {
+    ...actual,
+    useMessage: () => ({
+      success: vi.fn(),
+      error: vi.fn(),
+      warning: vi.fn(),
+      info: vi.fn(),
+    }),
+  }
+})
+
 vi.mock('@/api/wiki', () => ({
   listWikiPages: vi.fn(),
   getWikiPage: vi.fn(),
   getWikiBacklinks: vi.fn(),
+}))
+
+// P1-12a: mock vue-router useRoute（可覆盖 route.query.slug）
+const mockRoute = { query: {} as Record<string, any> }
+vi.mock('vue-router', () => ({
+  useRoute: () => mockRoute,
 }))
 
 vi.mock('@/utils/wikiRender', () => ({
@@ -51,6 +71,7 @@ describe('WikiView.vue', () => {
     pinia = createPinia()
     setActivePinia(pinia)
     vi.clearAllMocks()
+    mockRoute.query = {}
     vi.spyOn(console, 'error').mockImplementation(() => {})
   })
   afterEach(() => {
@@ -155,5 +176,55 @@ describe('WikiView.vue', () => {
     expect(vm.typeLabelMap.host).toBe('主机')
     expect(vm.typeTagTypeMap.incident).toBe('error')
     expect(vm.typeTagTypeMap.concept).toBe('info')
+  })
+
+  // ────────── P1-12a: ?slug= query 跳转 ──────────
+
+  it('loadPages 优先选中 ?slug= query 指定的页面', async () => {
+    const pages = [
+      samplePage,
+      { ...samplePage, slug: 'reverse-proxy', title: '反向代理', type: 'concept' },
+    ]
+    ;(listWikiPages as any).mockResolvedValue({ pages, total: 2 })
+    ;(getWikiPage as any).mockImplementation((slug: string) =>
+      Promise.resolve(pages.find((p) => p.slug === slug) || pages[0]),
+    )
+    ;(getWikiBacklinks as any).mockResolvedValue([])
+
+    mockRoute.query = { slug: 'reverse-proxy' }
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+
+    expect(vm.selectedKey).toBe('reverse-proxy')
+    expect(getWikiPage).toHaveBeenCalledWith('reverse-proxy')
+    expect(vm.currentPage.title).toBe('反向代理')
+  })
+
+  it('?slug= 指向不存在的页面时回退到首个', async () => {
+    ;(listWikiPages as any).mockResolvedValue({ pages: [samplePage], total: 1 })
+    ;(getWikiPage as any).mockResolvedValue(samplePage)
+    ;(getWikiBacklinks as any).mockResolvedValue([])
+
+    mockRoute.query = { slug: 'nonexistent' }
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+
+    expect(vm.selectedKey).toBe('nginx-502-troubleshooting')
+    expect(getWikiPage).toHaveBeenCalledWith('nginx-502-troubleshooting')
+  })
+
+  it('无 ?slug= query 时选中首个', async () => {
+    ;(listWikiPages as any).mockResolvedValue({ pages: [samplePage], total: 1 })
+    ;(getWikiPage as any).mockResolvedValue(samplePage)
+    ;(getWikiBacklinks as any).mockResolvedValue([])
+
+    mockRoute.query = {}
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+
+    expect(vm.selectedKey).toBe('nginx-502-troubleshooting')
   })
 })

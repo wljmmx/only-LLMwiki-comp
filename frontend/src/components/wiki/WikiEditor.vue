@@ -1,6 +1,11 @@
 <script setup lang="ts">
 /**
- * Wiki 页面编辑器组件（S16-2 / S16-5 草稿持久化与冲突恢复）
+ * Wiki 页面编辑器组件（S16-2 / S16-5 / P1-5）
+ *
+ * P1-5 增强：
+ * - frontmatter 结构化表单（title/type/tags 独立字段，保留 sources/created_at 等未知字段）
+ * - `[[wikilink]]` 自动补全浮层（查 listWikiPages 缓存）
+ * - Ctrl+S 保存快捷键
  *
  * 用法：
  *   <WikiEditor
@@ -11,29 +16,17 @@
  *     @saved="handleSaved"
  *     @cancel="handleCancel"
  *   />
- *
- * 功能：
- * - 双栏布局：左侧 textarea 编辑 Markdown（含 frontmatter），右侧实时预览
- * - 变更摘要输入框（保存时传给后端）
- * - 保存按钮：调用 PUT /llm-wiki/page/{slug}
- *   - 乐观锁：传入 expected_version
- *   - 错误处理：409（锁冲突/版本冲突）展示提示
- * - 取消按钮：emit('cancel')
- *
- * S16-5 草稿持久化与冲突恢复：
- * - 编辑过程中实时把内容 + 服务器版本号持久化到 localStorage（key 按 slug 隔离）
- * - 组件挂载时检查草稿：
- *   - 草稿版本 == 当前服务器版本 → 提示"恢复未保存草稿"
- *   - 草稿版本 != 当前服务器版本 → 提示"草稿与服务器版本不一致"（冲突）
- * - 用户可"恢复"草稿或"丢弃"草稿
- * - 保存成功后自动清除草稿
- *
- * 不管理编辑锁（由 CollabPanel 负责），通过 :can-edit prop 控制保存按钮启用
  */
-import { ref, computed, watch } from 'vue'
-import { NButton, NInput, NCard, NSpace, NText, NAlert } from 'naive-ui'
-import { updateWikiPage } from '@/api/wiki'
+import { ref, computed, watch, onMounted } from 'vue'
+import { NButton, NInput, NCard, NSpace, NText, NAlert, NSelect, NDynamicTags, NPopselect } from 'naive-ui'
+import { updateWikiPage, listWikiPages } from '@/api/wiki'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
+import {
+  parseFrontmatter,
+  serializeFrontmatter,
+  buildFrontmatter,
+  WIKI_PAGE_TYPES,
+} from '@/utils/frontmatter'
 import { useEditDraft, type EditDraft } from '@/composables/useEditDraft'
 import type { WikiPageUpdateResult } from '@/types/api'
 
@@ -49,27 +42,66 @@ const emit = defineEmits<{
   (e: 'cancel'): void
 }>()
 
-// 编辑器状态
-const editingContent = ref(props.content)
+// ────────── P1-5: 结构化 frontmatter 字段 ──────────
+
+const fmSlug = ref(props.slug)
+const fmTitle = ref('')
+const fmType = ref('concept')
+const fmTags = ref<string[]>([])
+const fmRest = ref<Record<string, unknown>>({})
+const bodyText = ref('')
+const hasFrontmatter = ref(true)
+
+/** 从完整 content 解析到结构化字段 */
+function syncFromContent(content: string) {
+  const parsed = parseFrontmatter(content)
+  fmSlug.value = parsed.slug || props.slug
+  fmTitle.value = parsed.title
+  fmType.value = parsed.type
+  fmTags.value = parsed.tags
+  fmRest.value = parsed.rest
+  bodyText.value = parsed.body
+  hasFrontmatter.value = parsed.hasFrontmatter
+}
+
+// 初始化
+syncFromContent(props.content)
+
+/** editingContent：从结构化字段序列化为完整内容（computed） */
+const editingContent = computed(() => {
+  if (!hasFrontmatter.value) {
+    // 无 frontmatter 的内容直接返回 body
+    return bodyText.value
+  }
+  return serializeFrontmatter(
+    buildFrontmatter(
+      { slug: fmSlug.value, title: fmTitle.value, type: fmType.value, tags: fmTags.value },
+      fmRest.value,
+      bodyText.value,
+    ),
+  )
+})
+
+// 保存/草稿状态
 const changeSummary = ref('')
 const saving = ref(false)
 const errorMsg = ref<string | null>(null)
 
-// S16-5：草稿恢复状态（setup 时同步初始化，确保初始渲染即包含提示）
+// S16-5：草稿恢复状态
 const draft = useEditDraft(props.slug)
 const draftRecovery = ref<EditDraft | null>(draft.draft.value)
 const draftConflict = ref(draft.isConflictWith(props.version ?? 0))
 
-// 内容变化时重置（slug 切换）
+// content prop 变化（slug 切换）→ 重新解析
 watch(
   () => props.content,
   (newContent) => {
-    editingContent.value = newContent
+    syncFromContent(newContent)
     errorMsg.value = null
   },
 )
 
-// S16-5：编辑内容变化时持久化草稿（仅当有未保存改动 + 有版本号）
+// S16-5：编辑内容变化时持久化草稿
 watch(
   editingContent,
   (newVal) => {
@@ -79,14 +111,13 @@ watch(
   },
 )
 
-// 变更摘要变化也同步到草稿
 watch(changeSummary, (newVal) => {
   if (editingContent.value !== props.content && props.version !== undefined) {
     draft.save(editingContent.value, props.version, newVal || undefined)
   }
 })
 
-// 预览（renderWikiMarkdown 已 stub 化，测试时返回原文本）
+// 预览
 const previewHtml = computed(() => {
   try {
     return renderWikiMarkdown(editingContent.value)
@@ -95,7 +126,6 @@ const previewHtml = computed(() => {
   }
 })
 
-// 内容是否有变化
 const isDirty = computed(() => editingContent.value !== props.content)
 
 const canSave = computed(
@@ -113,9 +143,7 @@ async function handleSave() {
       expected_version: props.version,
     })
     emit('saved', result)
-    // 保存成功后重置 dirty 状态
     changeSummary.value = ''
-    // S16-5：保存成功后清除草稿（避免下次挂载时误恢复已保存内容）
     draft.clear()
     draftRecovery.value = null
     draftConflict.value = false
@@ -127,30 +155,36 @@ async function handleSave() {
   }
 }
 
+/** P1-5: Ctrl+S 保存快捷键 */
+function handleKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault()
+    handleSave()
+  }
+}
+
 function handleCancel() {
   emit('cancel')
 }
 
-// S16-5：恢复草稿（用户点击"恢复"按钮）
+// ────────── S16-5: 草稿恢复 ──────────
+
 function handleRestoreDraft() {
   if (!draftRecovery.value) return
-  editingContent.value = draftRecovery.value.content
+  syncFromContent(draftRecovery.value.content)
   if (draftRecovery.value.summary) {
     changeSummary.value = draftRecovery.value.summary
   }
-  // 恢复后保留草稿（用户可能再次修改），但关闭恢复提示
   draftRecovery.value = null
   draftConflict.value = false
 }
 
-// S16-5：丢弃草稿（用户点击"丢弃"按钮）
 function handleDiscardDraft() {
   draft.clear()
   draftRecovery.value = null
   draftConflict.value = false
 }
 
-// S16-5：格式化草稿保存时间（相对时间，如"3 分钟前"）
 function formatDraftTime(ts: number): string {
   const diff = Date.now() - ts
   if (diff < 60_000) return '刚刚'
@@ -159,10 +193,137 @@ function formatDraftTime(ts: number): string {
   const d = new Date(ts)
   return `${d.getMonth() + 1}-${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
+
+// ────────── P1-5: [[wikilink]] 自动补全 ──────────
+
+/** 可用 wiki 页面列表（懒加载 + 缓存） */
+const wikiPages = ref<{ slug: string; title: string }[]>([])
+const wikiPagesLoaded = ref(false)
+
+async function loadWikiPages() {
+  if (wikiPagesLoaded.value) return
+  try {
+    const res = await listWikiPages()
+    wikiPages.value = res.pages
+      .filter((p) => p.slug !== 'index' && p.slug !== 'log')
+      .map((p) => ({ slug: p.slug, title: p.title || p.slug }))
+    wikiPagesLoaded.value = true
+  } catch {
+    // 加载失败不影响编辑
+  }
+}
+
+onMounted(() => {
+  loadWikiPages()
+})
+
+/** wikilink 补全状态 */
+const wikilinkActive = ref(false)
+const wikilinkQuery = ref('')
+const wikilinkStart = ref(-1) // [[ 的起始位置
+const textareaRef = ref<InstanceType<typeof NInput> | null>(null)
+
+/** 过滤后的候选列表 */
+const wikilinkOptions = computed(() => {
+  const q = wikilinkQuery.value.toLowerCase()
+  const all = wikiPages.value.map((p) => ({
+    label: p.title,
+    value: p.slug,
+  }))
+  if (!q) return all.slice(0, 20)
+  return all
+    .filter(
+      (opt) =>
+        opt.value.toLowerCase().includes(q) || opt.label.toLowerCase().includes(q),
+    )
+    .slice(0, 20)
+})
+
+/**
+ * 检测 textarea 中光标前是否有未闭合的 [[
+ * 如果有，激活补全模式
+ */
+function detectWikilink() {
+  const textarea = (textareaRef.value as any)?.$el?.querySelector('textarea') as HTMLTextAreaElement | null
+  if (!textarea) return
+  const cursorPos = textarea.selectionStart
+  const text = bodyText.value
+  // 在光标前查找最近的 [[
+  const before = text.substring(0, cursorPos)
+  const bracketIdx = before.lastIndexOf('[[')
+  if (bracketIdx === -1) {
+    wikilinkActive.value = false
+    return
+  }
+  // 检查 [[ 后是否有 ]]（已闭合则不补全）
+  const afterBracket = before.substring(bracketIdx + 2)
+  if (afterBracket.includes(']]')) {
+    wikilinkActive.value = false
+    return
+  }
+  // 检查 [[ 后是否有换行（跨行不补全）
+  if (afterBracket.includes('\n')) {
+    wikilinkActive.value = false
+    return
+  }
+  wikilinkActive.value = true
+  wikilinkQuery.value = afterBracket
+  wikilinkStart.value = bracketIdx
+}
+
+/** 选中某个 slug 后插入到 textarea */
+function insertWikilink(slug: string) {
+  const text = bodyText.value
+  const before = text.substring(0, wikilinkStart.value)
+  const after = text.substring(wikilinkStart.value + 2 + wikilinkQuery.value.length)
+  bodyText.value = `${before}[[${slug}]]${after}`
+
+  wikilinkActive.value = false
+  wikilinkQuery.value = ''
+  wikilinkStart.value = -1
+
+  // 恢复焦点，光标移到 ]] 后
+  requestAnimationFrame(() => {
+    const textarea = (textareaRef.value as any)?.$el?.querySelector('textarea') as HTMLTextAreaElement | null
+    if (textarea) {
+      const newPos = before.length + slug.length + 4 // [[slug]]
+      textarea.focus()
+      textarea.setSelectionRange(newPos, newPos)
+    }
+  })
+}
+
+/** 关闭 wikilink 补全 */
+function closeWikilink() {
+  wikilinkActive.value = false
+  wikilinkQuery.value = ''
+  wikilinkStart.value = -1
+}
+
+/** 处理 body textarea 的 input 事件 */
+function handleBodyInput(value: string) {
+  bodyText.value = value
+  detectWikilink()
+}
+
+/** 处理 body textarea 的 keydown（Escape 关闭补全） */
+function handleBodyKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && wikilinkActive.value) {
+    e.preventDefault()
+    closeWikilink()
+  }
+  // P1-5: Ctrl+S
+  handleKeydown(e)
+}
+
+/** 处理补全列表的键盘导航（ArrowDown/ArrowUp/Enter） */
+function handleWikilinkSelect(value: string) {
+  insertWikilink(value)
+}
 </script>
 
 <template>
-  <div class="wiki-editor">
+  <div class="wiki-editor" @keydown="handleKeydown">
     <div class="editor-header">
       <span class="editor-title">编辑页面</span>
       <NSpace :size="8" class="editor-actions">
@@ -175,6 +336,7 @@ function formatDraftTime(ts: number): string {
           @click="handleSave"
         >
           保存
+          <span class="shortcut-hint">Ctrl+S</span>
         </NButton>
       </NSpace>
     </div>
@@ -183,7 +345,7 @@ function formatDraftTime(ts: number): string {
       {{ errorMsg }}
     </NAlert>
 
-    <!-- S16-5：草稿恢复提示（冲突时 type=warning，正常时 type=info） -->
+    <!-- S16-5：草稿恢复提示 -->
     <NAlert
       v-if="draftRecovery"
       :type="draftConflict ? 'warning' : 'info'"
@@ -215,17 +377,81 @@ function formatDraftTime(ts: number): string {
       你未持有编辑锁，保存将被服务端拒绝。请先在协作面板申请编辑锁。
     </NAlert>
 
+    <!-- P1-5: frontmatter 结构化表单 -->
+    <div v-if="hasFrontmatter" class="frontmatter-form">
+      <div class="pane-label">Frontmatter</div>
+      <div class="fm-grid">
+        <div class="fm-field">
+          <label class="fm-label">标题</label>
+          <NInput
+            v-model:value="fmTitle"
+            placeholder="页面标题"
+            :disabled="saving"
+            size="small"
+          />
+        </div>
+        <div class="fm-field">
+          <label class="fm-label">类型</label>
+          <NSelect
+            v-model:value="fmType"
+            :options="WIKI_PAGE_TYPES.map((t) => ({ label: t, value: t }))"
+            :disabled="saving"
+            size="small"
+          />
+        </div>
+        <div class="fm-field fm-field-full">
+          <label class="fm-label">标签</label>
+          <NDynamicTags
+            v-model:value="fmTags"
+            :disabled="saving"
+            size="small"
+            :max="20"
+          />
+        </div>
+        <div class="fm-field fm-field-readonly">
+          <label class="fm-label">Slug（只读）</label>
+          <NInput :value="fmSlug" disabled size="small" />
+        </div>
+      </div>
+    </div>
+
+    <!-- P1-5: body 编辑 + wikilink 补全 -->
     <div class="editor-body">
       <div class="editor-pane">
-        <div class="pane-label">Markdown（含 frontmatter）</div>
-        <NInput
-          v-model:value="editingContent"
-          type="textarea"
-          :rows="20"
-          :disabled="saving"
-          class="editor-textarea"
-          placeholder="---\nslug: ...\ntitle: ...\ntype: ...\n---\n\n# 标题\n\n正文"
-        />
+        <div class="pane-label">
+          正文 Markdown
+          <span class="wikilink-hint">输入 <code>[[</code> 触发页面链接补全</span>
+        </div>
+        <div class="editor-textarea-wrapper">
+          <NInput
+            ref="textareaRef"
+            :value="bodyText"
+            type="textarea"
+            :rows="20"
+            :disabled="saving"
+            class="editor-textarea"
+            placeholder="# 标题\n\n正文内容，使用 [[slug]] 链接到其他页面..."
+            @update:value="handleBodyInput"
+            @keydown="handleBodyKeydown"
+            @blur="closeWikilink"
+          />
+          <!-- P1-5: wikilink 补全浮层 -->
+          <div v-if="wikilinkActive && wikilinkOptions.length > 0" class="wikilink-popover">
+            <div class="wikilink-popover-header">页面链接补全</div>
+            <div class="wikilink-popover-list">
+              <button
+                v-for="opt in wikilinkOptions"
+                :key="opt.value"
+                type="button"
+                class="wikilink-option"
+                @mousedown.prevent="handleWikilinkSelect(opt.value)"
+              >
+                <span class="wikilink-option-title">{{ opt.label }}</span>
+                <span class="wikilink-option-slug">{{ opt.value }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="preview-pane">
         <div class="pane-label">预览</div>
@@ -277,6 +503,12 @@ function formatDraftTime(ts: number): string {
   flex-shrink: 0;
 }
 
+.shortcut-hint {
+  font-size: 11px;
+  opacity: 0.6;
+  margin-left: 4px;
+}
+
 .editor-error,
 .editor-warning,
 .editor-draft {
@@ -298,6 +530,41 @@ function formatDraftTime(ts: number): string {
   flex-shrink: 0;
 }
 
+/* P1-5: frontmatter 结构化表单 */
+.frontmatter-form {
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--n-color-target, rgba(0, 0, 0, 0.02));
+  border-radius: 6px;
+  border: 1px solid var(--n-border-color, #e5e7eb);
+}
+
+.fm-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.fm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fm-field-full {
+  grid-column: 1 / -1;
+}
+
+.fm-field-readonly {
+  grid-column: 1 / -1;
+}
+
+.fm-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--n-text-color-3, #6b7280);
+}
+
 .editor-body {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -316,16 +583,97 @@ function formatDraftTime(ts: number): string {
   font-weight: 500;
   color: var(--n-text-color-3, #6b7280);
   margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wikilink-hint {
+  font-size: 11px;
+  color: var(--n-text-color-3, #9ca3af);
+}
+
+.wikilink-hint code {
+  background: var(--n-color-target, rgba(0, 0, 0, 0.05));
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+}
+
+.editor-textarea-wrapper {
+  position: relative;
+  flex: 1;
 }
 
 .editor-textarea {
-  flex: 1;
+  width: 100%;
+  height: 100%;
 }
 
 .editor-textarea :deep(textarea) {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 13px;
   line-height: 1.6;
+}
+
+/* P1-5: wikilink 补全浮层 */
+.wikilink-popover {
+  position: absolute;
+  z-index: 100;
+  top: 4px;
+  left: 4px;
+  min-width: 280px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--n-color, #fff);
+  border: 1px solid var(--n-border-color, #e5e7eb);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.wikilink-popover-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--n-text-color-3, #9ca3af);
+  padding: 6px 10px 4px;
+  border-bottom: 1px solid var(--n-border-color, #f0f0f0);
+}
+
+.wikilink-popover-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.wikilink-option {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  font-size: 13px;
+}
+
+.wikilink-option:hover {
+  background: var(--n-color-hover, rgba(0, 0, 0, 0.04));
+}
+
+.wikilink-option-title {
+  color: var(--n-text-color, #111827);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wikilink-option-slug {
+  color: var(--n-text-color-3, #9ca3af);
+  font-size: 11px;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  flex-shrink: 0;
 }
 
 .preview-card {
@@ -378,5 +726,15 @@ function formatDraftTime(ts: number): string {
 .dirty-hint {
   font-size: 12px;
   white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .editor-body {
+    grid-template-columns: 1fr;
+  }
+
+  .fm-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

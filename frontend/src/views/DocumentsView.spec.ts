@@ -16,12 +16,13 @@ vi.mock('naive-ui', async (importOriginal) => {
 
 vi.mock('@/api/documents', () => ({
   listDocuments: vi.fn(),
+  searchDocuments: vi.fn(),
   deleteDocument: vi.fn(),
   parseDocument: vi.fn(),
   getDocumentContent: vi.fn(),
 }))
 
-import { listDocuments, deleteDocument, getDocumentContent } from '@/api/documents'
+import { listDocuments, searchDocuments, deleteDocument, getDocumentContent } from '@/api/documents'
 import DocumentsView from '@/views/DocumentsView.vue'
 import '@/test/setup'
 
@@ -153,38 +154,59 @@ describe('DocumentsView.vue', () => {
     expect(mockMessage.error).toHaveBeenCalledWith('删除失败')
   })
 
-  it('filteredDocuments 按 searchText 过滤文件名', async () => {
-    ;(listDocuments as any).mockResolvedValue({
-      documents: [
-        { ...sampleDoc, doc_id: 'd1', filename: 'nginx-502.md' },
-        { ...sampleDoc, doc_id: 'd2', filename: 'apache.md' },
-      ],
-      stats: { total: 2 },
+  it('P2-11：handleSearchInput 非空时防抖后调用 searchDocuments 服务端搜索', async () => {
+    vi.useFakeTimers()
+    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(searchDocuments as any).mockResolvedValue({
+      query: 'nginx',
+      results: [{ ...sampleDoc, filename: 'nginx-502.md' }],
+      count: 1,
     })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
-    expect(vm.filteredDocuments).toHaveLength(2)
-    vm.searchText = 'nginx'
-    expect(vm.filteredDocuments).toHaveLength(1)
-    expect(vm.filteredDocuments[0].filename).toBe('nginx-502.md')
+    ;(listDocuments as any).mockClear()
+
+    vm.handleSearchInput('nginx')
+    // 防抖未到时不发请求
+    expect(searchDocuments).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(300)
+    await flushPromises()
+
+    expect(searchDocuments).toHaveBeenCalledWith('nginx')
+    expect(vm.documents).toHaveLength(1)
+    expect(vm.total).toBe(1)
+    expect(vm.isSearching).toBe(true)
+    // 搜索模式不调用 listDocuments
+    expect(listDocuments).not.toHaveBeenCalled()
+    vi.useRealTimers()
   })
 
-  it('formatFileSize：0/KB/MB/GB 转换', async () => {
+  it('P2-11：handleSearchInput 空值时回到分页列表（fetchDocuments）', async () => {
+    vi.useFakeTimers()
     ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
     const wrapper = mountView()
+    await flushPromises()
     const vm = wrapper.vm as any
-    expect(vm.formatFileSize(0)).toBe('0 B')
-    expect(vm.formatFileSize(1024)).toBe('1 KB')
-    expect(vm.formatFileSize(1048576)).toBe('1 MB')
-    expect(vm.formatFileSize(1073741824)).toBe('1 GB')
+    ;(listDocuments as any).mockClear()
+
+    vm.handleSearchInput('')
+    vi.advanceTimersByTime(300)
+    await flushPromises()
+
+    expect(searchDocuments).not.toHaveBeenCalled()
+    expect(listDocuments).toHaveBeenCalled()
+    expect(vm.isSearching).toBe(false)
+    vi.useRealTimers()
   })
 
-  it('formatDate：YYYY-MM-DD HH:mm 格式', async () => {
+  it('P2-11：doSearch 失败时 message.error', async () => {
     ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(searchDocuments as any).mockRejectedValue(new Error('network'))
     const wrapper = mountView()
     const vm = wrapper.vm as any
-    const result = vm.formatDate('2026-07-01T10:30:00Z')
-    expect(result).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
+    await vm.doSearch('nginx')
+    expect(mockMessage.error).toHaveBeenCalledWith('搜索失败')
+    expect(vm.loading).toBe(false)
   })
 })

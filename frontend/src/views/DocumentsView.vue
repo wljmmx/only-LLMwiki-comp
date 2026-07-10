@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, h } from 'vue'
+import { ref, onMounted, watch, h } from 'vue'
 import {
   NDataTable,
   NButton,
@@ -17,8 +17,9 @@ import {
   useMessage,
 } from 'naive-ui'
 import type { UploadCustomRequestOptions } from 'naive-ui'
-import { listDocuments, deleteDocument, parseDocument, getDocumentContent } from '@/api/documents'
+import { listDocuments, deleteDocument, parseDocument, getDocumentContent, searchDocuments } from '@/api/documents'
 import { recompileDocument } from '@/api/wiki'
+import { formatFileSize, formatDateTime as formatDateTimeUtil } from '@/utils/format'
 import type { DocumentMeta } from '@/types/api'
 
 const message = useMessage()
@@ -29,6 +30,8 @@ const total = ref(0)
 const limit = ref(10)
 const offset = ref(0)
 const searchText = ref('')
+// P2-11：服务端搜索模式（true 时禁用分页，搜索跨全表）
+const isSearching = ref(false)
 // 正在编译为 Wiki 的文档 ID（同一时间只允许一个，LLM 编译较慢）
 const compilingId = ref<string | null>(null)
 const formatFilter = ref<string>('')
@@ -72,15 +75,6 @@ const statusText: Record<string, string> = {
   failed: '失败',
 }
 
-const filteredDocuments = computed(() => {
-  let result = [...documents.value]
-  if (searchText.value) {
-    const keyword = searchText.value.toLowerCase()
-    result = result.filter((doc) => doc.filename.toLowerCase().includes(keyword))
-  }
-  return result
-})
-
 const columns = [
   {
     title: '文件名',
@@ -120,7 +114,7 @@ const columns = [
     key: 'created_at',
     width: 180,
     render(row: DocumentMeta) {
-      return formatDate(row.created_at)
+      return formatDateTimeUtil(row.created_at)
     },
   },
   {
@@ -162,21 +156,9 @@ const columns = [
   },
 ]
 
-function formatFileSize(bytes: number): string {
-  if (!bytes || bytes <= 0 || isNaN(bytes)) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
-}
-
-function formatDate(dateStr: string): string {
-  const date = new Date(dateStr)
-  const pad = (n: number) => n.toString().padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
-}
-
 async function fetchDocuments() {
+  // 退出搜索模式，回到分页列表
+  isSearching.value = false
   loading.value = true
   try {
     const params: Record<string, any> = {
@@ -195,6 +177,34 @@ async function fetchDocuments() {
   } finally {
     loading.value = false
   }
+}
+
+/** P2-11：服务端搜索（跨全表 LIKE，不受分页限制） */
+async function doSearch(q: string) {
+  isSearching.value = true
+  loading.value = true
+  try {
+    const res = await searchDocuments(q)
+    documents.value = res.results
+    total.value = res.count
+  } catch (err) {
+    message.error('搜索失败')
+    console.error(err)
+  } finally {
+    loading.value = false
+  }
+}
+
+// 搜索输入防抖（300ms）：空值回到分页列表，非空走服务端搜索
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+function handleSearchInput(val: string) {
+  searchText.value = val
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    const trimmed = val.trim()
+    if (trimmed) doSearch(trimmed)
+    else fetchDocuments()
+  }, 300)
 }
 
 function handleUpload({ file, onFinish, onError }: UploadCustomRequestOptions) {
@@ -286,6 +296,12 @@ function handlePageSizeChange(size: number) {
 
 watch([formatFilter, statusFilter], () => {
   offset.value = 0
+  // P2-11：切换过滤器退出搜索模式（搜索不携带 format/status），清空搜索框并取消待发搜索
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  searchText.value = ''
   fetchDocuments()
 })
 
@@ -307,10 +323,11 @@ onMounted(() => {
         </NUpload>
 
         <NInput
-          v-model:value="searchText"
-          placeholder="搜索文件名..."
+          :value="searchText"
+          placeholder="搜索文件名/标题..."
           clearable
           style="width: 240px"
+          @update:value="handleSearchInput"
         >
           <template #prefix>🔍</template>
         </NInput>
@@ -334,16 +351,18 @@ onMounted(() => {
     <div class="table-container">
       <NDataTable
         :columns="columns"
-        :data="filteredDocuments"
+        :data="documents"
         :loading="loading"
-        :pagination="{
-          page: offset / limit + 1,
-          pageSize: limit,
-          itemCount: total,
-          pageSizes: [10, 20, 50],
-          showSizePicker: true,
-          onUpdatePage: handlePageChange,
-          onUpdatePageSize: handlePageSizeChange,
+        :pagination="isSearching
+          ? false
+          : {
+            page: offset / limit + 1,
+            pageSize: limit,
+            itemCount: total,
+            pageSizes: [10, 20, 50],
+            showSizePicker: true,
+            onUpdatePage: handlePageChange,
+            onUpdatePageSize: handlePageSizeChange,
         }"
         :bordered="false"
         size="medium"
@@ -373,7 +392,7 @@ onMounted(() => {
               </NTag>
             </NDescriptionsItem>
             <NDescriptionsItem label="上传时间" :span="2">
-              {{ formatDate(currentDoc.created_at) }}
+              {{ formatDateTimeUtil(currentDoc.created_at) }}
             </NDescriptionsItem>
           </NDescriptions>
 

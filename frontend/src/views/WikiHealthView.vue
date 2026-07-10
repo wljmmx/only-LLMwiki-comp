@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, h, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   NTabs,
   NTabPane,
@@ -22,18 +23,22 @@ import {
   getWikiStale,
   recompileStale,
   rebuildIndex,
+  ignoreLintIssue,
   type LintIssue,
   type LintReport,
 } from '@/api/wiki'
 import type { WikiPage } from '@/types/api'
 
 const message = useMessage()
+const router = useRouter()
 
 const activeTab = ref<'lint' | 'drift' | 'orphan'>('lint')
 
 // ============ Tab 1: Lint 报告 ============
 const lintLoading = ref(false)
 const lintReport = ref<LintReport | null>(null)
+/** P1-12b: 正在忽略中的 issue_key 集合（按钮 loading 态） */
+const ignoringKeys = ref<Set<string>>(new Set())
 
 const typeTagMap: Record<
   string,
@@ -47,20 +52,21 @@ const typeTagMap: Record<
   empty_section: { type: 'default', label: '空章节' },
 }
 
+// 对齐后端 SEV_ERROR/SEV_WARN/SEV_INFO（error/warn/info）
 const severityTagMap: Record<
   string,
   { type: 'error' | 'warning' | 'info' | 'default'; label: string }
 > = {
-  critical: { type: 'error', label: '严重' },
-  warning: { type: 'warning', label: '警告' },
+  error: { type: 'error', label: '严重' },
+  warn: { type: 'warning', label: '警告' },
   info: { type: 'info', label: '提示' },
 }
 
 const lintStatCards = computed(() => [
   { label: '检查页面数', value: lintReport.value?.pages_checked ?? 0, color: '#2080f0' },
   { label: '总问题数', value: lintReport.value?.total_issues ?? 0, color: '#d03050' },
-  { label: '严重', value: lintReport.value?.by_severity?.critical ?? 0, color: '#d03050' },
-  { label: '警告', value: lintReport.value?.by_severity?.warning ?? 0, color: '#f0a020' },
+  { label: '已忽略', value: lintReport.value?.ignored_count ?? 0, color: '#909399' },
+  { label: '严重', value: lintReport.value?.by_severity?.error ?? 0, color: '#d03050' },
 ])
 
 const lintColumns = [
@@ -89,15 +95,42 @@ const lintColumns = [
     ellipsis: { tooltip: true },
   },
   {
-    title: '标题',
-    key: 'title',
-    width: 200,
-    ellipsis: { tooltip: true },
-  },
-  {
     title: '消息',
     key: 'message',
     ellipsis: { tooltip: true },
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 160,
+    fixed: 'right',
+    render(row: LintIssue) {
+      const ignoring = ignoringKeys.value.has(row.issue_key)
+      // P1-12a: 跳转到 wiki 编辑页（?slug= 触发 WikiView 选中该页）
+      const editBtn = h(
+        NButton,
+        {
+          size: 'small',
+          quaternary: true,
+          type: 'primary',
+          onClick: () => handleEditPage(row.slug),
+        },
+        { default: () => '编辑' },
+      )
+      const ignoreBtn = h(
+        NButton,
+        {
+          size: 'small',
+          quaternary: true,
+          type: 'default',
+          loading: ignoring,
+          disabled: ignoring,
+          onClick: () => handleIgnoreIssue(row),
+        },
+        { default: () => '忽略' },
+      )
+      return h(NSpace, { size: 4 }, { default: () => [editBtn, ignoreBtn] })
+    },
   },
 ]
 
@@ -115,6 +148,50 @@ async function handleRunLint() {
     message.error('运行检查失败')
   } finally {
     lintLoading.value = false
+  }
+}
+
+/** P1-12a: 跳转到 wiki 编辑页（WikiView 读取 ?slug= query 选中该页） */
+function handleEditPage(slug: string) {
+  router.push({ path: '/wiki', query: { slug } })
+}
+
+/** P1-12b: 忽略一个 lint issue（本地移除并调整计数，后端持久化） */
+async function handleIgnoreIssue(issue: LintIssue) {
+  if (!issue.issue_key || ignoringKeys.value.has(issue.issue_key)) return
+  const next = new Set(ignoringKeys.value)
+  next.add(issue.issue_key)
+  ignoringKeys.value = next
+  try {
+    await ignoreLintIssue(issue.issue_key, {
+      type: issue.type,
+      slug: issue.slug,
+      message: issue.message,
+    })
+    message.success('已忽略该问题')
+    if (lintReport.value) {
+      const issues = lintReport.value.issues.filter(
+        (i) => i.issue_key !== issue.issue_key,
+      )
+      const by_type = { ...lintReport.value.by_type }
+      by_type[issue.type] = Math.max(0, (by_type[issue.type] || 0) - 1)
+      const by_severity = { ...lintReport.value.by_severity }
+      by_severity[issue.severity] = Math.max(0, (by_severity[issue.severity] || 0) - 1)
+      lintReport.value = {
+        ...lintReport.value,
+        issues,
+        total_issues: issues.length,
+        ignored_count: (lintReport.value.ignored_count ?? 0) + 1,
+        by_type,
+        by_severity,
+      }
+    }
+  } catch (e) {
+    message.error('忽略失败')
+  } finally {
+    const rest = new Set(ignoringKeys.value)
+    rest.delete(issue.issue_key)
+    ignoringKeys.value = rest
   }
 }
 
@@ -329,7 +406,7 @@ onMounted(() => {
               :columns="lintColumns"
               :data="lintReport?.issues || []"
               :loading="lintLoading"
-              :row-key="(row: LintIssue) => `${row.type}-${row.slug}-${row.title}`"
+              :row-key="(row: LintIssue) => row.issue_key"
               :max-height="600"
               :scroll-x="700"
             >
