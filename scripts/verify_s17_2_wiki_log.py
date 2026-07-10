@@ -38,9 +38,10 @@ import app.knowledge.wiki_drift as wd_mod
 
 wd_mod.DB_PATH = TMP_DIR / "events.db"
 
+from app.knowledge.okf_adapter import render_log_md  # noqa: E402
+from app.knowledge.wiki_index import list_wiki_pages  # noqa: E402
 from app.knowledge.wiki_log import (  # noqa: E402
     LOG_DOC_KEY,
-    LOG_SLUG,
     MAX_ENTRIES,
     LogEntry,
     append_log_entry,
@@ -48,8 +49,6 @@ from app.knowledge.wiki_log import (  # noqa: E402
     get_log_entries,
     render_log_markdown,
 )
-from app.knowledge.okf_adapter import render_log_md  # noqa: E402
-from app.knowledge.wiki_index import list_wiki_pages  # noqa: E402
 from app.storage.version_control import get_version_control  # noqa: E402
 
 PASS = 0
@@ -98,7 +97,7 @@ def main() -> int:
         )
         check(
             "## Entries" in log["content"],
-            f"含 ## Entries 章节",
+            "含 ## Entries 章节",
         )
 
     # ── 2. 追加新条目（最新在前）──
@@ -177,14 +176,14 @@ def main() -> int:
     # ── 5. render_log_markdown OKF 格式 ──
     print("\n[5] render_log_markdown OKF log.md 格式")
     md = render_log_markdown(limit=10)
-    check(md.startswith("---"), f"以 frontmatter 开头")
-    check("type: log" in md, f"type=log")
-    check("# Change Log" in md, f"含 # Change Log 标题")
-    check("## Entries" in md, f"含 ## Entries 章节")
-    check("nginx-timeout" in md and "nginx-502" in md, f"含所有 entry slug")
-    check("v2" in md, f"含版本号")
-    check("wiki-compiler" in md, f"含 author")
-    check("concept" in md and "incident" in md, f"含 page_type")
+    check(md.startswith("---"), "以 frontmatter 开头")
+    check("type: log" in md, "type=log")
+    check("# Change Log" in md, "含 # Change Log 标题")
+    check("## Entries" in md, "含 ## Entries 章节")
+    check("nginx-timeout" in md and "nginx-502" in md, "含所有 entry slug")
+    check("v2" in md, "含版本号")
+    check("wiki-compiler" in md, "含 author")
+    check("concept" in md and "incident" in md, "含 page_type")
 
     # ── 6. wiki:log 不被 list_wiki_pages 当作概念页 ──
     print("\n[6] list_wiki_pages 排除 log")
@@ -204,7 +203,7 @@ def main() -> int:
     )
     check(
         "real-page" in slugs,
-        f"普通页面仍在列表中",
+        "普通页面仍在列表中",
     )
 
     # ── 7. okf_adapter.render_log_md 优先用持续维护版 ──
@@ -217,7 +216,7 @@ def main() -> int:
     )
     check(
         "nginx-timeout" in okf_log,
-        f"含持续维护的 entry",
+        "含持续维护的 entry",
     )
 
     # ── 8. 降级：无 wiki:log 时从 VC 聚合 ──
@@ -227,16 +226,16 @@ def main() -> int:
     okf_log_fallback = render_log_md(limit=50)
     check(
         "type: log" in okf_log_fallback,
-        f"降级版仍含 type=log",
+        "降级版仍含 type=log",
     )
     check(
         "# Change Log" in okf_log_fallback,
-        f"降级版含 # Change Log",
+        "降级版含 # Change Log",
     )
     # VC 聚合版应列出 wiki:* 的页面（含 real-page）
     check(
         "real-page" in okf_log_fallback or "nginx-timeout" in okf_log_fallback or "nginx-502" in okf_log_fallback,
-        f"降级版从 VC 聚合页面变更",
+        "降级版从 VC 聚合页面变更",
     )
 
     # ── 9. FIFO 截断 ──
@@ -284,15 +283,15 @@ def main() -> int:
     rendered = e.render()
     check(
         "test-slug" in rendered and "v3" in rendered,
-        f"render 含 slug 和 version",
+        "render 含 slug 和 version",
     )
     check(
         "tester" in rendered and "incident" in rendered,
-        f"render 含 author 和 page_type",
+        "render 含 author 和 page_type",
     )
     check(
         rendered.startswith("- `"),
-        f"render 以列表项开头",
+        "render 以列表项开头",
     )
 
     # ── 总结 ──

@@ -59,10 +59,9 @@ import app.knowledge.wiki_drift as wd_mod
 wd_mod.DB_PATH = TMP_DIR / "events.db"
 
 from app.knowledge.okf_adapter import (  # noqa: E402
-    OKF_VERSION,
     OKF_RECOMMENDED_FIELDS,
+    OKF_VERSION,
     TYPE_TO_DIR,
-    build_okf_link,
     bundle_summary,
     derive_resource,
     export_bundle,
@@ -72,7 +71,6 @@ from app.knowledge.okf_adapter import (  # noqa: E402
     list_bundle_concepts,
     normalize_frontmatter_for_okf,
     okf_link_to_wikilink,
-    render_log_md,
     slug_from_concept_id,
     type_dir_for,
     wikilink_to_okf,
@@ -390,19 +388,19 @@ def main() -> int:
     incident_md = (bundle_dir / "incidents" / "nginx-502.md").read_text("utf-8")
     check(
         "[nginx-timeout](/concepts/nginx-timeout.md)" in incident_md,
-        f"incident 页面双链已转换为 OKF 链接",
+        "incident 页面双链已转换为 OKF 链接",
     )
     # 检查正文中无残留 [[wikilink]]（frontmatter 中的 sources 不含 wikilink）
     incident_body = incident_md.split("---", 2)[-1] if incident_md.startswith("---") else incident_md
     check(
         "[[nginx-timeout]]" not in incident_body,
-        f"incident 页面正文无残留 [[wikilink]]",
+        "incident 页面正文无残留 [[wikilink]]",
     )
 
     concept_md = (bundle_dir / "concepts" / "nginx-timeout.md").read_text("utf-8")
     check(
         "[故障页](/incidents/nginx-502.md)" in concept_md,
-        f"concept 页面双链（含显示文本）已转换",
+        "concept 页面双链（含显示文本）已转换",
     )
 
     # frontmatter 规范化验证
@@ -512,17 +510,17 @@ def main() -> int:
     if imported:
         check(
             "[[nginx-timeout]]" in imported["content"],
-            f"导入后双链反向转换为 [[wikilink]]",
+            "导入后双链反向转换为 [[wikilink]]",
         )
         check(
             "[[nginx-timeout]]" in imported["content"]
             and "](/concepts/" not in imported["content"],
-            f"导入后无 OKF MD 链接残留",
+            "导入后无 OKF MD 链接残留",
         )
         # permissive 导入：保留原 review_status（auto），不强制覆盖
         check(
             "review_status" in imported["content"],
-            f"导入页面保留 review_status 字段（permissive）",
+            "导入页面保留 review_status 字段（permissive）",
         )
 
     # ── 12. import 容错：未知 type / 缺失字段 ──
@@ -553,7 +551,7 @@ def main() -> int:
     if imported_bad:
         check(
             "type: concept" in imported_bad["content"],
-            f"缺失 type 补默认 concept",
+            "缺失 type 补默认 concept",
         )
 
     # ── 13. import overwrite 行为 ──
@@ -594,11 +592,11 @@ def main() -> int:
         names = tar.getnames()
     check(
         any("okf-bundle/index.md" in n for n in names),
-        f"tarball 含 okf-bundle/index.md",
+        "tarball 含 okf-bundle/index.md",
     )
     check(
         any("incidents/nginx-502.md" in n for n in names),
-        f"tarball 含 incidents/nginx-502.md",
+        "tarball 含 incidents/nginx-502.md",
     )
 
     # ── 15. 端到端往返：导出 -> 导入 -> 内容一致 ──
@@ -624,7 +622,7 @@ def main() -> int:
     )
     check(
         (bundle2_dir / "incidents" / "nginx-502.md").exists(),
-        f"二次导出目录结构一致",
+        "二次导出目录结构一致",
     )
 
     # ── 总结 ──

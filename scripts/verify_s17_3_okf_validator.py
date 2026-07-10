@@ -50,12 +50,11 @@ from app.knowledge.okf_validator import (  # noqa: E402
     CODE_MISSING_FRONTMATTER,
     CODE_MISSING_RECOMMENDED,
     CODE_MISSING_TYPE,
-    OKFValidationResult,
+    to_lint_issues,
     validate_bundle,
     validate_concept,
     validate_reserved_file,
     validate_wiki,
-    to_lint_issues,
 )
 from app.knowledge.wiki_lint import (  # noqa: E402
     TYPE_OKF_VIOLATION,
@@ -152,7 +151,7 @@ def main() -> int:
     )
     check(
         len([f for f in findings if f.level == "error"]) == 0,
-        f"缺推荐字段不产生 error (permissive)",
+        "缺推荐字段不产生 error (permissive)",
     )
 
     # ── 6-8. validate_reserved_file ──
@@ -171,7 +170,7 @@ def main() -> int:
     )
     check(
         all(f.level == "warn" for f in findings),
-        f"index.md type 错误是 warn 不是 error (permissive)",
+        "index.md type 错误是 warn 不是 error (permissive)",
     )
 
     findings = validate_reserved_file("log.md", {"type": "index"})
@@ -281,11 +280,11 @@ def main() -> int:
     )
     check(
         any(f.code == CODE_LOG_WRONG_TYPE for f in result.findings),
-        f"log.md type 错误被检出",
+        "log.md type 错误被检出",
     )
     check(
         result.valid is False,
-        f"有 error 时 valid=False",
+        "有 error 时 valid=False",
     )
 
     # 目录不存在
@@ -324,15 +323,15 @@ def main() -> int:
     if issues:
         check(
             all("type" in i and "severity" in i and "slug" in i for i in issues),
-            f"每个 issue 含 type/severity/slug",
+            "每个 issue 含 type/severity/slug",
         )
         check(
             all(i["type"] == "okf_violation" for i in issues),
-            f"type 统一为 okf_violation",
+            "type 统一为 okf_violation",
         )
         check(
             all("okf_code" in i["detail"] for i in issues),
-            f"detail 含 okf_code",
+            "detail 含 okf_code",
         )
 
     # ── 17. wiki_lint.lint_all 集成 ──
@@ -355,11 +354,11 @@ def main() -> int:
     )
     check(
         any(i.severity == "error" for i in okf_issues),
-        f"含 error 级 OKF 违规",
+        "含 error 级 OKF 违规",
     )
     check(
         all("okf_code" in i.detail for i in okf_issues),
-        f"OKF issue detail 含 okf_code",
+        "OKF issue detail 含 okf_code",
     )
 
     # ── 18. OKFValidationResult.to_dict 兼容性 ──
@@ -381,13 +380,13 @@ def main() -> int:
     )
     check(
         isinstance(d["findings"], list),
-        f"findings 是 list",
+        "findings 是 list",
     )
     if d["findings"]:
         f0 = d["findings"][0]
         check(
             {"level", "code", "message"}.issubset(f0.keys()),
-            f"finding 含 level/code/message",
+            "finding 含 level/code/message",
         )
 
     # ── 总结 ──

@@ -19,7 +19,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 BACKEND_DIR = Path(__file__).parent.parent / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
@@ -116,7 +116,7 @@ async def main_async() -> int:
     )
     check(
         len(result.recalled_pages) >= 1,
-        f"recalled_pages 含降级 hit",
+        "recalled_pages 含降级 hit",
     )
 
     # ── 3. 降级 hit 上下文加载（用 snippet）──
@@ -131,7 +131,7 @@ async def main_async() -> int:
         )
         check(
             any("[raw]" in c for c in contexts),
-            f"contexts 标注 [raw] 降级来源",
+            "contexts 标注 [raw] 降级来源",
         )
 
     # ── 4. 降级召回失败 → 友好提示 ──
@@ -162,7 +162,7 @@ async def main_async() -> int:
     )
     check(
         not engine3._try_degraded_recall.called,
-        f"permissive=False 不调用降级召回",
+        "permissive=False 不调用降级召回",
     )
 
     # ── 6-7. 降级 hit 属性 ──
@@ -172,7 +172,7 @@ async def main_async() -> int:
     check(hit.score == 0.5, f"score 降权 0.5 (got {hit.score})")
     check(
         "raw 文档" in hit.snippet,
-        f"snippet 含 raw 内容",
+        "snippet 含 raw 内容",
     )
 
     # ── 8. 上下文加载容错：降级 hit 不查 VC ──
@@ -180,8 +180,8 @@ async def main_async() -> int:
     # 验证：降级 hit 的 slug 是 raw doc_id，VC 中无对应 wiki 页面
     # 但仍能进入 contexts（通过 snippet）
     check(
-        vc.get_latest(f"wiki:raw-doc-1") is None,
-        f"VC 中无 raw-doc-1 的 wiki 页面",
+        vc.get_latest("wiki:raw-doc-1") is None,
+        "VC 中无 raw-doc-1 的 wiki 页面",
     )
     # 上面 test 2 已验证 contexts 含 snippet，说明降级 hit 不依赖 VC
 
