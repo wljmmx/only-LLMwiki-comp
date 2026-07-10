@@ -52,6 +52,7 @@ TYPE_DEADLINK = "deadlink"
 TYPE_MISSING_CONCEPT = "missing_concept"
 TYPE_EMPTY_SECTION = "empty_section"
 TYPE_MISSING_TYPE_SECTION = "missing_type_section"
+TYPE_OKF_VIOLATION = "okf_violation"  # P2-1 OKF v0.1 合规违规
 
 
 @dataclass
@@ -224,6 +225,24 @@ def lint_all(*, include_stale: bool = True) -> LintReport:
                     detail={"count": len(placeholders)},
                 )
             )
+
+    # 6. P2-1: OKF v0.1 合规检测
+    try:
+        from app.knowledge.okf_validator import to_lint_issues, validate_wiki
+
+        okf_result = validate_wiki()
+        for issue_dict in to_lint_issues(okf_result):
+            report.add(
+                LintIssue(
+                    type=TYPE_OKF_VIOLATION,
+                    severity=issue_dict["severity"],
+                    slug=issue_dict["slug"],
+                    message=issue_dict["message"],
+                    detail=issue_dict["detail"],
+                )
+            )
+    except Exception as e:
+        logger.warning("wiki_lint_okf_check_failed", error=str(e))
 
     logger.info(
         "wiki_lint_done",

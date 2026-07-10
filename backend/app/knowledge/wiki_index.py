@@ -77,9 +77,9 @@ def list_wiki_pages(limit: int = 500) -> list[dict]:
     rows = vc.list_by_prefix("wiki:", limit)
     pages = []
     for r in rows:
-        # 排除 index 自身
+        # 排除 index 与 log 自身（保留文件，非概念页）
         slug = _slug_from_key(r["doc_key"])
-        if slug == "index":
+        if slug in ("index", "log"):
             continue
         # 读取最新版本内容解析 frontmatter
         latest = vc.get_latest(r["doc_key"])

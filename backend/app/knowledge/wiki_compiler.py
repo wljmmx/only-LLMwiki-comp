@@ -501,7 +501,7 @@ class WikiCompiler:
             md_to_save = self._render_page_md(page, is_new=True)
             outcome = "created"
 
-        self.vc.save_version(
+        save_result = self.vc.save_version(
             doc_key=doc_key,
             title=page.title,
             content=md_to_save,
@@ -510,6 +510,25 @@ class WikiCompiler:
         )
         # 维护 backlink
         update_backlinks(page.slug, md_to_save)
+
+        # P1-2: 持续维护 wiki:log（OKF log.md 保留文件）
+        # 仅在实际写入新版本时追加 log entry（skipped 时不追加）
+        if not save_result.get("skipped"):
+            try:
+                from app.knowledge.wiki_log import append_log_entry
+
+                append_log_entry(
+                    slug=page.slug,
+                    version=save_result.get("version", 1),
+                    summary=self._change_summary(page, outcome),
+                    author="wiki-compiler",
+                    page_type=page.type,
+                    title=page.title,
+                )
+            except Exception as e:
+                logger.warning(
+                    "wiki_log_append_failed", slug=page.slug, error=str(e)
+                )
 
         # S12-2 反向回链：新建页面时，扫描已有页面正文，
         # 在提及新概念处插入 [[new_slug]]（AGENTS.md §五 5.b）
@@ -619,14 +638,53 @@ class WikiCompiler:
     # ── Markdown 渲染 ──
 
     def _render_page_md(self, page: WikiPage, *, is_new: bool) -> str:
-        """渲染整页 Markdown（frontmatter + body）"""
+        """渲染整页 Markdown（frontmatter + body + OKF Citations）"""
         meta = self._build_frontmatter_meta(page, is_new=is_new)
-        return self._assemble_md(meta, page.body_md)
+        # P3-3: 追加 OKF 兼容的 ## Citations 章节
+        body_with_citations = self._append_okf_citations(page.body_md, page)
+        return self._assemble_md(meta, body_with_citations)
+
+    @staticmethod
+    def _append_okf_citations(body: str, page: WikiPage) -> str:
+        """P3-3: 在 body 末尾追加 OKF Citations 章节
+
+        OKF 用 # Citations / ## Citations 章节做来源引用，格式 [n] [text](uri)。
+        与中文 ## 来源 章节共存（来源是显式引用，Citations 是 OKF 标准化形式）。
+
+        若 body 已含 ## Citations 章节则不重复追加。
+        """
+        if not page.sources:
+            return body
+        if "## Citations" in body or "# Citations" in body:
+            return body  # 已有，不重复
+
+        lines = ["", "## Citations", ""]
+        for i, src in enumerate(page.sources, 1):
+            doc_id = src.get("doc_id", "")
+            title = src.get("title", doc_id)
+            checksum = src.get("checksum", "")
+            # OKF resource URI 形式
+            uri = f"opskg://doc/{doc_id}" if doc_id else ""
+            citation_line = f"[{i}] {title}"
+            if uri:
+                citation_line += f" ([{doc_id}]({uri}))"
+            if checksum:
+                citation_line += f"  \n  checksum: `{checksum}`"
+            lines.append(citation_line)
+        lines.append("")
+        return body.rstrip() + "\n" + "\n".join(lines)
 
     @staticmethod
     def _build_frontmatter_meta(page: WikiPage, *, is_new: bool) -> dict:
         now = datetime.now(timezone.utc).isoformat()
-        return {
+        # P1-1: 生成 OKF v0.1 推荐字段（description/resource/timestamp）
+        # 复用 okf_adapter 工具函数，保证编译期与导出期字段语义一致
+        from app.knowledge.okf_adapter import (
+            derive_resource,
+            extract_description,
+        )
+
+        meta = {
             "slug": page.slug,
             "title": page.title,
             "type": page.type,
@@ -634,9 +692,21 @@ class WikiCompiler:
             "sources": page.sources,
             "created_at": now if is_new else None,
             "updated_at": now,
+            # OKF 推荐字段（编译期生成，导出期无需补全）
+            "description": extract_description(page.body_md),
+            "resource": derive_resource(
+                {"slug": page.slug, "sources": page.sources}
+            ),
+            "timestamp": now,  # OKF 推荐字段，= updated_at
             "review_status": page.review_status,
             "stale": bool(page.stale_items),
         }
+        # 移除空值，避免 frontmatter 噪音
+        if not meta["description"]:
+            meta.pop("description", None)
+        if not meta["resource"]:
+            meta.pop("resource", None)
+        return meta
 
     @staticmethod
     def _assemble_md(meta: dict, body: str) -> str:

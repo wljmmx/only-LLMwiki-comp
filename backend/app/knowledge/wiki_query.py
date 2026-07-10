@@ -481,24 +481,39 @@ class WikiQAEngine:
         recall_limit: int = 5,
         expand_backlinks: bool = True,
         writeback: bool = True,
+        permissive: bool = True,
     ) -> WikiQueryResult:
         """回答用户问题
 
         流程（AGENTS.md §六）：
             1. 召回相关 wiki 页面
-            2. 若召回为空 → 提示知识库不足
+            2. 若召回为空 → permissive 降级（raw 文档检索 / OKF 导入提示）
             3. 加载页面正文作为上下文
             4. LLM 基于上下文回答，引用 [[slug]]
             5. S12-1 知识复利：从回答中提取新事实回写 wiki（writeback=True 时）
+
+        Args:
+            permissive: P2-2 容错消费模式。True 时召回为空会尝试降级到 raw 文档
+                       检索，而非直接拒绝。对齐 OKF permissive consumption 哲学。
         """
         # 1. 召回
         recalled = await recall_pages(question, limit=recall_limit)
         if not recalled:
-            return WikiQueryResult(
-                question=question,
-                answer="知识库中暂无相关 wiki 页面。建议先上传相关运维文档，由 wiki_compiler 编译后再提问。",
-                insufficient_knowledge=True,
-            )
+            # P2-2: permissive 降级 —— 尝试 raw 文档检索兜底
+            if permissive:
+                degraded = await self._try_degraded_recall(question, recall_limit)
+                if degraded:
+                    recalled = degraded
+            if not recalled:
+                return WikiQueryResult(
+                    question=question,
+                    answer=(
+                        "知识库中暂无相关 wiki 页面。建议先上传相关运维文档，"
+                        "由 wiki_compiler 编译后再提问；或通过 OKF bundle 导入"
+                        "（POST /api/okf/import）外部知识。"
+                    ),
+                    insufficient_knowledge=True,
+                )
 
         # 2. backlink 扩展（最多补 2 个）
         if expand_backlinks:
@@ -532,6 +547,15 @@ class WikiQAEngine:
         contexts: list[str] = []
         cited: list[str] = []
         for hit in recalled:
+            # P2-2: 降级召回（type=raw-fallback）用 snippet 作为上下文
+            if hit.type == "raw-fallback":
+                if hit.snippet:
+                    contexts.append(
+                        f"## [raw] {hit.title}\n\n{hit.snippet}\n\n"
+                        f"> 注：此内容来自 raw 文档降级召回，建议编译为 wiki 页面。"
+                    )
+                    cited.append(hit.slug)
+                continue
             latest = self.vc.get_latest(_key_from_slug(hit.slug))
             if not latest:
                 continue
@@ -575,6 +599,60 @@ class WikiQAEngine:
                 logger.warning("wiki_writeback_failed", error=str(e))
 
         return result
+
+    # ────────── P2-2: permissive 降级召回 ──────────
+
+    async def _try_degraded_recall(
+        self, question: str, limit: int
+    ) -> list[WikiPageHit]:
+        """P2-2 容错消费：wiki 召回为空时，降级到 raw 文档检索兜底
+
+        对齐 OKF permissive consumption 哲学：消费者不应因主路径无结果
+        就直接拒绝，而应尝试降级路径。
+
+        降级策略：
+        1. 尝试用 SearchEngine 对 raw 文档做向量/关键词检索
+        2. 把命中的 raw 文档包装为 WikiPageHit（type="raw-fallback"，
+           score 较低），让 LLM 仍能基于 raw 内容回答
+        3. 在回答中标注"来自 raw 文档，建议编译为 wiki"
+
+        Returns:
+            WikiPageHit 列表（可能为空）
+        """
+        try:
+            from app.search import get_search_engine
+
+            engine = get_search_engine()
+            # search 是同步方法
+            hits = engine.search(question, limit=limit)
+            if not hits:
+                return []
+
+            degraded: list[WikiPageHit] = []
+            for h in hits[:limit]:
+                # 用 raw 文档构造一个降级 hit
+                # score 降权（×0.5），表明这是兜底结果
+                score = float(
+                    h.get("combined_score", h.get("score", 1.0))
+                )
+                degraded.append(
+                    WikiPageHit(
+                        slug=h.get("doc_id", ""),
+                        title=h.get("title", h.get("doc_id", "raw-doc")),
+                        type="raw-fallback",  # 标记降级来源
+                        score=score * 0.5,
+                        snippet=h.get("snippet", ""),
+                    )
+                )
+            logger.info(
+                "wiki_query_degraded_recall",
+                question=question,
+                hits=len(degraded),
+            )
+            return degraded
+        except Exception as e:
+            logger.debug("wiki_query_degraded_failed", error=str(e))
+            return []
 
     # ────────── S12-1 知识复利：新事实回写 ──────────
 

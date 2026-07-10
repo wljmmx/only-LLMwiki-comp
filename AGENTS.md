@@ -185,6 +185,39 @@ backlink 由系统自动维护，无需手写。每个页面底部的 `## 来源
 | SearchEngine | wiki Q&A 的兜底召回（向量检索） |
 | RunbookGenerator | 升级为"规则召回 + LLM 编译成 wiki 风格 Runbook" |
 
+### 9.1 与 OKF（Open Knowledge Format v0.1）的关系
+
+OpsKG 是 **OKF 一等公民 + 运维增强平台**。OKF 是格式契约，OpsKG 在其之上提供平台增强。
+
+**对齐方式（平台增强 + 格式中立）**：
+- 内部存储沿用 DB（VersionControl），通过 `okf_adapter` 适配层导出/导入为 OKF bundle（文件目录树 + 标准 MD 链接）
+- 双轨链接：内部 `[[wikilink]]`（性能优），导出统一经 `wikilink_to_okf()` 转换为 `[display](/{type_dir}/{slug}.md)`（互操作优）
+- `okf_validator` 校验 OKF v0.1 三硬性约束，集成到 `wiki_lint` 作为 `TYPE_OKF_VIOLATION`
+
+**OKF 三硬性约束对齐**：
+1. 每个概念文件含可解析 YAML frontmatter — WikiCompiler 编译时即生成
+2. frontmatter 含非空 `type` — 6 类页面类型 + index/log 保留文件
+3. 保留文件 `index.md` / `log.md` 守职责 — `wiki:index` / `wiki:log` 特殊页面持续维护
+
+**OKF 推荐字段对齐（编译期生成）**：
+- `title` / `description`（正文概述首段抽取）/ `resource`（sources/properties 映射 URI）/ `tags` / `timestamp`（= updated_at）
+
+**type 词表**：OpsKG 使用 6 类页面类型（entity/concept/incident/runbook/service/host）+ 2 类保留文件类型（index/log）。完整映射见 `okf_types.yaml`。OKF 允许自定义 type（minimally opinionated），外部消费者可通过 `types.md` 发现词表语义。
+
+**扩展字段（OKF 容忍未知字段）**：
+- `slug` — 内部唯一标识（OKF 用文件路径作 concept ID，导出时映射）
+- `sources` — raw 文档引用（`[{doc_id, title, checksum}]`，导出时映射为 `resource` URI）
+- `review_status` — 审查状态（auto/review_needed/approved）
+- `stale` — 漂移标记
+- `created_at` / `updated_at` — 版本时间戳
+
+**互操作能力**：
+- `GET /api/okf/export` — 导出整个 wiki 为 OKF bundle tarball
+- `POST /api/okf/import` — 上传 tarball 导入（permissive consumption）
+- `POST /api/okf/validate` — 校验 tarball 合规性
+- `GET /api/okf/validate/wiki` — 校验内部 wiki 合规性
+- `GET /api/okf/preview` — 预览 bundle 摘要
+
 ## 十、演化原则
 
 - 本文件（AGENTS.md）由人与 LLM 共同演化
