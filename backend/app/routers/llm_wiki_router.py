@@ -44,7 +44,9 @@ from app.knowledge import (
     get_outlinks,
     get_wiki_compiler,
     get_wiki_qa_engine,
+    ignore_issue,
     lint_all,
+    list_ignored_issues,
     list_stale_pages,
     list_wiki_pages,
     mark_pages_stale,
@@ -52,6 +54,7 @@ from app.knowledge import (
     recall_pages,
     render_wikilinks_html,
     suggest_missing_pages,
+    unignore_issue,
     update_backlinks,
 )
 from app.parsers import supported_formats
@@ -624,6 +627,51 @@ async def llm_wiki_lint_suggestions(limit: int = 20) -> dict:
     """建议需要补全的缺失 wiki 页面（基于死链被引次数）"""
     items = suggest_missing_pages(limit=limit)
     return {"count": len(items), "suggestions": items}
+
+
+# ────────── P1-12b: Lint issue 忽略 ──────────
+
+
+class LintIgnoreRequest(BaseModel):
+    """POST /llm-wiki/lint/ignore 请求体"""
+
+    issue_key: str = Field(
+        ..., description="lint issue 稳定标识（sha1(type|slug|message)[:16]）"
+    )
+    type: str = Field(..., description="问题类型（TYPE_*）")
+    slug: str = Field(..., description="受影响页面 slug")
+    message: str = Field(..., description="问题消息（用于幂等去重与回溯）")
+    reason: str = Field("", description="忽略原因（可选）")
+
+
+@router.post("/llm-wiki/lint/ignore", dependencies=[Depends(verify_token)])
+async def llm_wiki_lint_ignore(payload: LintIgnoreRequest) -> dict:
+    """忽略一个 lint issue（幂等）
+
+    忽略后，后续 `lint_all` 会过滤掉该 issue，不再计入 total_issues/by_*。
+    取消忽略用 DELETE /llm-wiki/lint/ignore/{issue_key}。
+    """
+    return ignore_issue(
+        payload.issue_key,
+        type=payload.type,
+        slug=payload.slug,
+        message=payload.message,
+        reason=payload.reason,
+    )
+
+
+@router.delete("/llm-wiki/lint/ignore/{issue_key}", dependencies=[Depends(verify_token)])
+async def llm_wiki_lint_unignore(issue_key: str) -> dict:
+    """取消忽略一个 lint issue"""
+    deleted = unignore_issue(issue_key)
+    return {"issue_key": issue_key, "unignored": deleted}
+
+
+@router.get("/llm-wiki/lint/ignored", dependencies=[Depends(verify_token)])
+async def llm_wiki_lint_ignored() -> dict:
+    """列出所有已忽略的 lint issue"""
+    items = list_ignored_issues()
+    return {"count": len(items), "items": items}
 
 
 # ────────── P1-4 漂移自动重编译 ──────────

@@ -185,20 +185,34 @@ export function queryWikiStream(
 
 // S7-7: Lint 健康检查
 export interface LintIssue {
+  /** P1-12b: 稳定标识 sha1(type|slug|message)[:16]，用于忽略/恢复 */
+  issue_key: string
   type: string
   severity: string
   slug: string
-  title: string
   message: string
-  detail?: string
+  detail?: Record<string, any>
 }
 
 export interface LintReport {
   pages_checked: number
   total_issues: number
+  /** P1-12b: 已被忽略、从 total_issues 中扣除的数量 */
+  ignored_count: number
   by_type: Record<string, number>
   by_severity: Record<string, number>
   issues: LintIssue[]
+}
+
+// P1-12b: 已忽略的 lint issue 条目
+export interface LintIgnoreEntry {
+  issue_key: string
+  type: string
+  slug: string
+  message: string
+  reason: string
+  ignored_by: string
+  created_at: string
 }
 
 export function runWikiLint(includeStale = true) {
@@ -211,6 +225,29 @@ export function getLintSuggestions(limit = 20) {
   return api.get<any, { count: number; suggestions: any[] }>('/llm-wiki/lint/suggestions', {
     params: { limit },
   })
+}
+
+// P1-12b: 忽略 / 取消忽略 lint issue
+export function ignoreLintIssue(
+  issue_key: string,
+  payload: { type: string; slug: string; message: string; reason?: string },
+) {
+  return api.post<any, { issue_key: string; ignored: boolean }>(
+    '/llm-wiki/lint/ignore',
+    { issue_key, ...payload },
+  )
+}
+
+export function unignoreLintIssue(issue_key: string) {
+  return api.delete<any, { issue_key: string; unignored: boolean }>(
+    `/llm-wiki/lint/ignore/${issue_key}`,
+  )
+}
+
+export function listIgnoredLintIssues() {
+  return api.get<any, { count: number; items: LintIgnoreEntry[] }>(
+    '/llm-wiki/lint/ignored',
+  )
 }
 
 // S7-8: 漂移监控

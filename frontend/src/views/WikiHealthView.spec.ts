@@ -20,6 +20,7 @@ vi.mock('@/api/wiki', () => ({
   getWikiStale: vi.fn(),
   recompileStale: vi.fn(),
   rebuildIndex: vi.fn(),
+  ignoreLintIssue: vi.fn(),
 }))
 
 import {
@@ -28,6 +29,7 @@ import {
   getWikiStale,
   recompileStale,
   rebuildIndex,
+  ignoreLintIssue,
 } from '@/api/wiki'
 import WikiHealthView from '@/views/WikiHealthView.vue'
 import '@/test/setup'
@@ -35,21 +37,22 @@ import '@/test/setup'
 const sampleLintReport = {
   pages_checked: 5,
   total_issues: 2,
+  ignored_count: 0,
   by_type: { contradiction: 1, stale: 1 },
-  by_severity: { critical: 1, warning: 1 },
+  by_severity: { error: 1, warn: 1 },
   issues: [
     {
+      issue_key: 'key-contradiction-1',
       type: 'contradiction',
-      severity: 'critical',
+      severity: 'error',
       slug: 'nginx-502',
-      title: 'Nginx 502',
       message: '端口冲突',
     },
     {
+      issue_key: 'key-stale-2',
       type: 'stale',
-      severity: 'warning',
+      severity: 'warn',
       slug: 'reverse-proxy',
-      title: '反向代理',
       message: '原始文档已更新',
     },
   ],
@@ -223,8 +226,8 @@ describe('WikiHealthView.vue', () => {
     const cards = vm.lintStatCards
     expect(cards[0].value).toBe(5) // pages_checked
     expect(cards[1].value).toBe(2) // total_issues
-    expect(cards[2].value).toBe(1) // critical
-    expect(cards[3].value).toBe(1) // warning
+    expect(cards[2].value).toBe(0) // ignored_count
+    expect(cards[3].value).toBe(1) // error
   })
 
   it('formatDate：YYYY-MM-DD HH:mm 格式', () => {
@@ -233,5 +236,50 @@ describe('WikiHealthView.vue', () => {
     const result = vm.formatDate('2026-07-01T10:30:00Z')
     expect(typeof result).toBe('string')
     expect(result).toContain('2026')
+  })
+
+  // ────────── P1-12b: Lint 忽略 ──────────
+
+  it('handleIgnoreIssue 成功后本地移除该 issue 并调整计数', async () => {
+    ;(runWikiLint as any).mockResolvedValue(sampleLintReport)
+    ;(ignoreLintIssue as any).mockResolvedValue({
+      issue_key: 'key-contradiction-1',
+      ignored: true,
+    })
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    await vm.handleRunLint()
+    expect(vm.lintReport.issues).toHaveLength(2)
+
+    await vm.handleIgnoreIssue(sampleLintReport.issues[0])
+    await flushPromises()
+
+    expect(ignoreLintIssue).toHaveBeenCalledWith('key-contradiction-1', {
+      type: 'contradiction',
+      slug: 'nginx-502',
+      message: '端口冲突',
+    })
+    expect(vm.lintReport.issues).toHaveLength(1)
+    expect(vm.lintReport.issues[0].issue_key).toBe('key-stale-2')
+    expect(vm.lintReport.total_issues).toBe(1)
+    expect(vm.lintReport.ignored_count).toBe(1)
+    expect(vm.lintReport.by_severity.error).toBe(0)
+    expect(vm.lintReport.by_type.contradiction).toBe(0)
+    expect(mockMessage.success).toHaveBeenCalledWith('已忽略该问题')
+  })
+
+  it('handleIgnoreIssue 失败时 message.error 且不移除 issue', async () => {
+    ;(runWikiLint as any).mockResolvedValue(sampleLintReport)
+    ;(ignoreLintIssue as any).mockRejectedValue(new Error('fail'))
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    await vm.handleRunLint()
+    await vm.handleIgnoreIssue(sampleLintReport.issues[0])
+    await flushPromises()
+
+    expect(mockMessage.error).toHaveBeenCalledWith('忽略失败')
+    expect(vm.lintReport.issues).toHaveLength(2)
+    expect(vm.lintReport.total_issues).toBe(2)
+    expect(vm.lintReport.ignored_count).toBe(0)
   })
 })
