@@ -1,7 +1,9 @@
 # OpsKG × OKF 对齐演进路线图
 
-> 分支：`okf/okf-v0.1-pre-order` | 起始：2026-07-10 | 目标：将 OpsKG 升级为 OKF v0.1 一等公民 + 运维增强平台
+> 分支：`okf/okf-v0.1-pre-order` | 起始：2026-07-10 | 状态：**已完成 P0-P3 全部阶段**
+> 目标：将 OpsKG 升级为 OKF v0.1 一等公民 + 运维增强平台
 > 依据：[OKF v0.1 SPEC](https://openknowledgeformat.com/what-is-okf) + [Karpathy LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
+> 验证：S17-1(82) + S17-2(38) + S17-3(35) + S17-4(19) + S12-2(25) = **199 assertions 全过**
 
 ## 一、设计原则
 
@@ -36,34 +38,34 @@
 
 ## 五、分阶段路线图
 
-### 阶段 P0 — 互操作阻断解除（高优先）
+### 阶段 P0 — 互操作阻断解除（高优先）✅
 
-| 编号 | 工作项 | 文件 | 验收 |
-|------|--------|------|------|
-| P0-1 | OKF 适配层核心 | `backend/app/knowledge/okf_adapter.py` | 导出/导入 + 双链转换 + frontmatter 规范化 |
-| P0-2 | API 端点 + Router | `backend/app/routers/okf_router.py` + `main.py` | `GET /api/okf/export`、`POST /api/okf/import`、`POST /api/okf/validate` |
+| 编号 | 工作项 | 文件 | 验收 | 状态 |
+|------|--------|------|------|------|
+| P0-1 | OKF 适配层核心 | `backend/app/knowledge/okf_adapter.py` | 导出/导入 + 双链转换 + frontmatter 规范化 | ✅ 64edc4c |
+| P0-2 | API 端点 + Router | `backend/app/routers/okf_router.py` + `main.py` | 6 端点（export/import/validate/preview/version/import-dir） | ✅ e5a2416 |
 
-### 阶段 P1 — 格式规范对齐（中优先）
+### 阶段 P1 — 格式规范对齐（中优先）✅
 
-| 编号 | 工作项 | 文件 | 验收 |
-|------|--------|------|------|
-| P1-1 | frontmatter 扩展 | `wiki_compiler.py` `_build_frontmatter_meta` | description/resource/timestamp 字段 |
-| P1-2 | log.md 持续维护 | `wiki_log.py`（新）+ `wiki_compiler.py` | `wiki:log` 特殊页面 + 导出为 `log.md` |
+| 编号 | 工作项 | 文件 | 验收 | 状态 |
+|------|--------|------|------|------|
+| P1-1 | frontmatter 扩展 | `wiki_compiler.py` `_build_frontmatter_meta` | description/resource/timestamp 字段编译期生成 | ✅ f7f0c16 |
+| P1-2 | log.md 持续维护 | `wiki_log.py`（新）+ `wiki_compiler.py` | `wiki:log` 特殊页面 + 导出为 `log.md` + FIFO 截断 | ✅ 207d834 |
 
-### 阶段 P2 — 质量与生态（中优先）
+### 阶段 P2 — 质量与生态（中优先）✅
 
-| 编号 | 工作项 | 文件 | 验收 |
-|------|--------|------|------|
-| P2-1 | OKF Validator + Lint 扩展 | `okf_validator.py`（新）+ `wiki_lint.py` | `TYPE_OKF_VIOLATION` + JSON 输出兼容 `okf validate` |
-| P2-2 | 消费侧容错强化 | `wiki_query.py` | 召回为空时降级 + 容忍未知 type |
+| 编号 | 工作项 | 文件 | 验收 | 状态 |
+|------|--------|------|------|------|
+| P2-1 | OKF Validator + Lint 扩展 | `okf_validator.py`（新）+ `wiki_lint.py` | `TYPE_OKF_VIOLATION` + JSON 输出兼容 `okf validate` | ✅ 7d34683 |
+| P2-2 | 消费侧容错强化 | `wiki_query.py` | 召回为空时降级 raw 文档检索 + 容忍未知 type | ✅ 90b298e |
 
-### 阶段 P3 — 生态对齐（低优先）
+### 阶段 P3 — 生态对齐（低优先）✅
 
-| 编号 | 工作项 | 文件 | 验收 |
-|------|--------|------|------|
-| P3-1 | AGENTS.md §九 演进 | `AGENTS.md` | "与 OKF 的关系" 小节 |
-| P3-2 | type 词表声明 | `okf_types.yaml`（新） | 12 类实体 → OKF type 映射 |
-| P3-3 | Citations 规范化 | `wiki_compiler.py` | `## Citations` 章节 + `[1] [text](uri)` 格式 |
+| 编号 | 工作项 | 文件 | 验收 | 状态 |
+|------|--------|------|------|------|
+| P3-1 | AGENTS.md §9.1 演进 | `AGENTS.md` | "与 OKF 的关系" 小节 + 扩展字段语义 | ✅ d314edc |
+| P3-2 | type 词表声明 | `okf_types.yaml`（新） | 6 概念类型 + 2 保留类型 + resource_scheme | ✅ d314edc |
+| P3-3 | Citations 规范化 | `wiki_compiler.py` | `## Citations` 章节 + `[n] [text](uri)` 格式 | ✅ d314edc |
 
 ## 六、Bundle 目录结构约定
 
