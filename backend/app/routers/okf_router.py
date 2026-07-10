@@ -30,6 +30,10 @@ from app.knowledge import (
     import_bundle_tarball,
     list_bundle_concepts,
 )
+from app.knowledge.okf_validator import (
+    validate_bundle as validate_okf_bundle,
+    validate_wiki as validate_okf_wiki,
+)
 
 router = APIRouter()
 
@@ -188,7 +192,7 @@ async def import_okf_bundle_from_dir(payload: dict) -> dict:
 
 
 @router.post("/okf/validate", dependencies=[Depends(verify_token)])
-async def validate_okf_bundle(file: UploadFile = File(...)) -> dict:
+async def validate_okf_bundle_endpoint(file: UploadFile = File(...)) -> dict:
     """校验上传的 tarball 是否符合 OKF v0.1 三硬性约束
 
     三约束：
@@ -223,151 +227,18 @@ async def validate_okf_bundle(file: UploadFile = File(...)) -> dict:
         if subdirs:
             bundle_root = subdirs[0]
 
-        # 校验
-        validation = _validate_bundle(bundle_root)
-        return validation
+        # 校验（用 okf_validator）
+        result = validate_okf_bundle(bundle_root)
+        d = result.to_dict()
+        d["bundle"] = bundle_root.name
+        return d
 
 
-def _validate_bundle(bundle_dir: Path) -> dict:
-    """执行 OKF v0.1 三硬性约束校验
+@router.get("/okf/validate/wiki", dependencies=[Depends(verify_token)])
+async def validate_internal_wiki() -> dict:
+    """校验内部 wiki（DB 存储）的 OKF 合规性
 
-    Returns:
-        与 `okf validate` CLI 兼容的 JSON：
-        {valid, errors, warnings, findings}
+    无需导出，直接扫描 DB 中的 wiki 页面。
     """
-    findings: list[dict] = []
-    errors = 0
-    warnings = 0
-
-    concepts = list_bundle_concepts(bundle_dir)
-    if not concepts:
-        findings.append(
-            {
-                "level": "warn",
-                "code": "empty_bundle",
-                "message": "bundle 中无概念文件",
-            }
-        )
-        warnings += 1
-
-    import yaml as _yaml
-
-    for c in concepts:
-        rel = c.rel_path
-        # 约束 1: 可解析 YAML frontmatter
-        if not c.frontmatter:
-            findings.append(
-                {
-                    "level": "error",
-                    "code": "missing_frontmatter",
-                    "file": rel,
-                    "message": "概念文件缺少可解析的 YAML frontmatter",
-                }
-            )
-            errors += 1
-            continue
-
-        # 约束 2: type 非空
-        type_val = c.frontmatter.get("type")
-        if not type_val or not str(type_val).strip():
-            findings.append(
-                {
-                    "level": "error",
-                    "code": "missing_type",
-                    "file": rel,
-                    "message": "frontmatter 缺少非空 type 字段",
-                }
-            )
-            errors += 1
-
-        # 推荐字段缺失（warn，不阻断）
-        for field in ("title", "description", "resource", "tags", "timestamp"):
-            if not c.frontmatter.get(field):
-                findings.append(
-                    {
-                        "level": "warn",
-                        "code": f"missing_recommended_{field}",
-                        "file": rel,
-                        "message": f"缺少推荐字段: {field}",
-                    }
-                )
-                warnings += 1
-
-    # 约束 3: 保留文件守职责（存在时检查）
-    index_path = bundle_dir / "index.md"
-    if index_path.exists():
-        try:
-            content = index_path.read_text(encoding="utf-8")
-            meta, _ = _split_frontmatter(content)
-            if meta.get("type") != "index":
-                findings.append(
-                    {
-                        "level": "warn",
-                        "code": "index_wrong_type",
-                        "file": "index.md",
-                        "message": f"index.md 的 type 应为 'index'，实际为 '{meta.get('type')}'",
-                    }
-                )
-                warnings += 1
-        except Exception as e:
-            findings.append(
-                {
-                    "level": "error",
-                    "code": "index_unparseable",
-                    "file": "index.md",
-                    "message": f"index.md 解析失败: {e}",
-                }
-            )
-            errors += 1
-
-    log_path = bundle_dir / "log.md"
-    if log_path.exists():
-        try:
-            content = log_path.read_text(encoding="utf-8")
-            meta, _ = _split_frontmatter(content)
-            if meta.get("type") != "log":
-                findings.append(
-                    {
-                        "level": "warn",
-                        "code": "log_wrong_type",
-                        "file": "log.md",
-                        "message": f"log.md 的 type 应为 'log'，实际为 '{meta.get('type')}'",
-                    }
-                )
-                warnings += 1
-        except Exception as e:
-            findings.append(
-                {
-                    "level": "error",
-                    "code": "log_unparseable",
-                    "file": "log.md",
-                    "message": f"log.md 解析失败: {e}",
-                }
-            )
-            errors += 1
-
-    return {
-        "bundle": str(bundle_dir.name),
-        "okf_version": OKF_VERSION,
-        "valid": errors == 0,
-        "errors": errors,
-        "warnings": warnings,
-        "findings": findings,
-        "concept_count": len(concepts),
-    }
-
-
-def _split_frontmatter(md: str) -> tuple[dict, str]:
-    """拆分 frontmatter 与正文"""
-    if not md.startswith("---"):
-        return {}, md
-    parts = md.split("---", 2)
-    if len(parts) < 3:
-        return {}, md
-    try:
-        import yaml as _yaml
-
-        meta = _yaml.safe_load(parts[1]) or {}
-    except Exception:
-        meta = {}
-    return meta, parts[2].lstrip("\n")
+    result = validate_okf_wiki()
+    return result.to_dict()
