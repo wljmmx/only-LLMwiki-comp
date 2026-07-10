@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, h, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   NTabs,
   NTabPane,
@@ -29,6 +30,7 @@ import {
 import type { WikiPage } from '@/types/api'
 
 const message = useMessage()
+const router = useRouter()
 
 const activeTab = ref<'lint' | 'drift' | 'orphan'>('lint')
 
@@ -100,11 +102,22 @@ const lintColumns = [
   {
     title: '操作',
     key: 'actions',
-    width: 100,
+    width: 160,
     fixed: 'right',
     render(row: LintIssue) {
       const ignoring = ignoringKeys.value.has(row.issue_key)
-      return h(
+      // P1-12a: 跳转到 wiki 编辑页（?slug= 触发 WikiView 选中该页）
+      const editBtn = h(
+        NButton,
+        {
+          size: 'small',
+          quaternary: true,
+          type: 'primary',
+          onClick: () => handleEditPage(row.slug),
+        },
+        { default: () => '编辑' },
+      )
+      const ignoreBtn = h(
         NButton,
         {
           size: 'small',
@@ -116,6 +129,7 @@ const lintColumns = [
         },
         { default: () => '忽略' },
       )
+      return h(NSpace, { size: 4 }, { default: () => [editBtn, ignoreBtn] })
     },
   },
 ]
@@ -135,6 +149,11 @@ async function handleRunLint() {
   } finally {
     lintLoading.value = false
   }
+}
+
+/** P1-12a: 跳转到 wiki 编辑页（WikiView 读取 ?slug= query 选中该页） */
+function handleEditPage(slug: string) {
+  router.push({ path: '/wiki', query: { slug } })
 }
 
 /** P1-12b: 忽略一个 lint issue（本地移除并调整计数，后端持久化） */

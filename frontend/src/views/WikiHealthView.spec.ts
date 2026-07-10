@@ -23,6 +23,12 @@ vi.mock('@/api/wiki', () => ({
   ignoreLintIssue: vi.fn(),
 }))
 
+// P1-12a: mock vue-router（捕获 router.push 调用）
+const mockPush = vi.fn()
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: mockPush }),
+}))
+
 import {
   runWikiLint,
   getWikiOrphans,
@@ -281,5 +287,17 @@ describe('WikiHealthView.vue', () => {
     expect(vm.lintReport.issues).toHaveLength(2)
     expect(vm.lintReport.total_issues).toBe(2)
     expect(vm.lintReport.ignored_count).toBe(0)
+  })
+
+  // ────────── P1-12a: 跳转编辑 ──────────
+
+  it('handleEditPage 调用 router.push 跳转到 /wiki?slug=<slug>', async () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    vm.handleEditPage('nginx-502')
+    expect(mockPush).toHaveBeenCalledWith({
+      path: '/wiki',
+      query: { slug: 'nginx-502' },
+    })
   })
 })

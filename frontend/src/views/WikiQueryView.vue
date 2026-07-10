@@ -5,6 +5,13 @@ import { NInput, NButton, NCard, NTag, NSpace, NAlert, NDivider } from 'naive-ui
 import { queryWikiStream } from '@/api/wiki'
 import type { WikiQueryResult, ChatHistoryEntry } from '@/api/wiki'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
+import {
+  computeFeedbackFingerprint,
+  getFeedback,
+  setFeedback as persistFeedback,
+  clearFeedback as removeFeedback,
+  type FeedbackRating,
+} from '@/utils/queryFeedback'
 import AppIcon from '@/components/common/AppIcon.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
@@ -29,10 +36,17 @@ interface ChatTurn {
   recalled_pages?: { slug: string; title: string; type: string; score: number }[]
   insufficient_knowledge?: boolean
   error?: string | null
+  /** P2-13a: 该轮的问题原文（assistant 轮用于计算反馈指纹） */
+  question?: string
+  /** P2-13a: 该轮的反馈指纹（assistant 轮） */
+  fingerprint?: string
 }
 const conversation = ref<ChatTurn[]>([])
 /** 会话历史滚动容器引用 */
 const conversationRef = ref<HTMLElement | null>(null)
+
+/** P2-13a: 当前轮反馈 rating（从 localStorage 读取，null=未反馈） */
+const currentFeedback = ref<FeedbackRating | null>(null)
 
 const hasError = computed(() => !!result.value?.error)
 const hasAnswer = computed(
@@ -44,6 +58,42 @@ const renderedAnswer = computed(() =>
   renderWikiMarkdown(result.value?.answer || streamingAnswer.value || ''),
 )
 
+/** P2-13a: 当前轮反馈指纹 */
+const currentFingerprint = computed(() => {
+  if (!result.value) return ''
+  return computeFeedbackFingerprint(result.value.question, result.value.cited_slugs)
+})
+
+/** P2-13a: 历史轮反馈 rating（按 fingerprint 从 localStorage 读） */
+function getTurnFeedback(turn: ChatTurn): FeedbackRating | null {
+  if (!turn.fingerprint) return null
+  return getFeedback(turn.fingerprint)
+}
+
+/** P2-13a: 处理反馈点击 — 同值再点取消，异值切换 */
+function handleFeedback(turn: ChatTurn | null, rating: FeedbackRating) {
+  const fp = turn?.fingerprint || currentFingerprint.value
+  if (!fp) return
+  const current = turn ? getTurnFeedback(turn) : currentFeedback.value
+  if (current === rating) {
+    // 再点同值 → 取消
+    removeFeedback(fp)
+    if (turn) {
+      // 历史轮：触发响应式更新
+      conversation.value = [...conversation.value]
+    } else {
+      currentFeedback.value = null
+    }
+  } else {
+    persistFeedback(fp, rating)
+    if (turn) {
+      conversation.value = [...conversation.value]
+    } else {
+      currentFeedback.value = rating
+    }
+  }
+}
+
 /** P2-13b: 把上一轮已完成的结果归档到会话历史 */
 function archiveCurrentTurn() {
   if (!result.value) return
@@ -51,6 +101,7 @@ function archiveCurrentTurn() {
   const answerText = r.answer || streamingAnswer.value
   // 只归档有实质内容的轮次（有回答或有错误）
   if (answerText || r.error) {
+    const fp = currentFingerprint.value
     conversation.value.push({ role: 'user', content: r.question })
     conversation.value.push({
       role: 'assistant',
@@ -59,10 +110,14 @@ function archiveCurrentTurn() {
       recalled_pages: r.recalled_pages,
       insufficient_knowledge: r.insufficient_knowledge,
       error: r.error,
+      question: r.question,
+      fingerprint: fp,
     })
   }
   result.value = null
   streamingAnswer.value = ''
+  // P2-13a: 重置当前轮反馈状态
+  currentFeedback.value = null
 }
 
 /** P2-13b: 构建发给后端的历史（仅 role+content，过滤错误轮次） */
@@ -117,6 +172,10 @@ function handleQuery() {
         }
         loading.value = false
         abortController = null
+        // P2-13a: 从 localStorage 读已有反馈（同一问题可能反馈过）
+        currentFeedback.value = currentFingerprint.value
+          ? getFeedback(currentFingerprint.value)
+          : null
         void nextTick(scrollToBottom)
       },
       onError: (message) => {
@@ -144,6 +203,8 @@ function handleNewConversation() {
   streamingAnswer.value = ''
   asked.value = false
   question.value = ''
+  // P2-13a: 重置当前轮反馈
+  currentFeedback.value = null
 }
 
 /** P1-4: 取消流式查询 */
@@ -290,6 +351,26 @@ onUnmounted(() => {
                 </n-space>
               </div>
             </template>
+            <!-- P2-13a: 历史轮反馈 -->
+            <div v-if="!turn.error && !turn.insufficient_knowledge" class="feedback-bar">
+              <span class="feedback-label">回答有帮助吗？</span>
+              <n-button
+                size="tiny"
+                :type="getTurnFeedback(turn) === 'up' ? 'primary' : 'default'"
+                :ghost="getTurnFeedback(turn) === 'up'"
+                @click="handleFeedback(turn, 'up')"
+              >
+                👍 有用
+              </n-button>
+              <n-button
+                size="tiny"
+                :type="getTurnFeedback(turn) === 'down' ? 'error' : 'default'"
+                :ghost="getTurnFeedback(turn) === 'down'"
+                @click="handleFeedback(turn, 'down')"
+              >
+                👎 无用
+              </n-button>
+            </div>
           </n-card>
         </div>
       </template>
@@ -387,6 +468,27 @@ onUnmounted(() => {
               </n-card>
             </n-space>
           </template>
+
+          <!-- P2-13a: 当前轮反馈（回答完成后显示） -->
+          <div v-if="hasAnswer && !loading" class="feedback-bar current-feedback">
+            <span class="feedback-label">回答有帮助吗？</span>
+            <n-button
+              size="tiny"
+              :type="currentFeedback === 'up' ? 'primary' : 'default'"
+              :ghost="currentFeedback === 'up'"
+              @click="handleFeedback(null, 'up')"
+            >
+              👍 有用
+            </n-button>
+            <n-button
+              size="tiny"
+              :type="currentFeedback === 'down' ? 'error' : 'default'"
+              :ghost="currentFeedback === 'down'"
+              @click="handleFeedback(null, 'down')"
+            >
+              👎 无用
+            </n-button>
+          </div>
         </template>
       </div>
     </div>
@@ -604,5 +706,25 @@ onUnmounted(() => {
   background: var(--n-primary-color, #2080f0);
   color: #fff;
   border-bottom-right-radius: 4px;
+}
+
+/* P2-13a: 答案反馈条 */
+.feedback-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--n-border-color, #e5e7eb);
+}
+
+.feedback-label {
+  font-size: 12px;
+  color: var(--n-text-color-3, #9ca3af);
+  margin-right: 4px;
+}
+
+.current-feedback {
+  margin-top: 20px;
 }
 </style>

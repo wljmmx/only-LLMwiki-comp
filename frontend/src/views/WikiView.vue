@@ -24,6 +24,9 @@ const currentPage = ref<WikiPage | null>(null)
 const backlinks = ref<BacklinkItem[]>([])
 const selectedKey = ref<string | null>(null)
 
+/** P1-12a: 读取 ?slug= query 支持外部跳转（如 WikiHealthView 的"编辑"按钮、WikiQueryView 的引用来源） */
+const route = useRoute()
+
 // S16-2：编辑模式状态
 const isEditing = ref(false)
 const hasLock = ref(false)
@@ -157,8 +160,14 @@ async function loadPages() {
     const res = await listWikiPages()
     pages.value = res.pages
     if (pages.value.length > 0 && !selectedKey.value) {
-      selectedKey.value = pages.value[0].slug
-      await loadPage(pages.value[0].slug)
+      // P1-12a: 优先选中 ?slug= query 指定的页面（支持外部跳转），否则首个
+      const querySlug = typeof route.query.slug === 'string' ? route.query.slug : null
+      const targetSlug =
+        querySlug && pages.value.some((p) => p.slug === querySlug)
+          ? querySlug
+          : pages.value[0].slug
+      selectedKey.value = targetSlug
+      await loadPage(targetSlug)
     }
   } finally {
     treeLoading.value = false

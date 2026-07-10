@@ -36,6 +36,7 @@ vi.mock('@/utils/wikiRender', () => ({
 }))
 
 import { queryWikiStream } from '@/api/wiki'
+import { _clearAllForTest as clearFeedbackStore } from '@/utils/queryFeedback'
 import WikiQueryView from '@/views/WikiQueryView.vue'
 import '@/test/setup'
 
@@ -49,6 +50,7 @@ describe('WikiQueryView.vue', () => {
     capturedCallbacks = null
     lastAbortController = null
     lastOptions = undefined
+    clearFeedbackStore()
     vi.spyOn(console, 'error').mockImplementation(() => {})
   })
   afterEach(() => {
@@ -300,5 +302,182 @@ describe('WikiQueryView.vue', () => {
     expect(vm.result).toBe(null)
     expect(vm.asked).toBe(false)
     expect(vm.question).toBe('')
+  })
+
+  // ────────── P2-13a: 答案反馈 ──────────
+
+  it('回答完成后 currentFeedback 初始为 null', async () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    vm.question = '什么是 nginx'
+    vm.handleQuery()
+    capturedCallbacks!.onMeta({
+      recalled_pages: [],
+      cited_slugs: ['nginx-502'],
+      insufficient_knowledge: false,
+    })
+    capturedCallbacks!.onDelta('Nginx 是反向代理')
+    capturedCallbacks!.onDone({ writebacks: [] })
+    await flushPromises()
+
+    expect(vm.currentFeedback).toBe(null)
+    expect(vm.currentFingerprint).not.toBe('')
+  })
+
+  it('handleFeedback 点 👍 → currentFeedback=up 并持久化', async () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    vm.question = '什么是 nginx'
+    vm.handleQuery()
+    capturedCallbacks!.onMeta({
+      recalled_pages: [],
+      cited_slugs: ['nginx-502'],
+      insufficient_knowledge: false,
+    })
+    capturedCallbacks!.onDelta('Nginx 是反向代理')
+    capturedCallbacks!.onDone({ writebacks: [] })
+    await flushPromises()
+
+    vm.handleFeedback(null, 'up')
+    expect(vm.currentFeedback).toBe('up')
+
+    // 验证持久化：getFeedback 能读回
+    const { getFeedback } = await import('@/utils/queryFeedback')
+    expect(getFeedback(vm.currentFingerprint)).toBe('up')
+  })
+
+  it('handleFeedback 同值再点 → 取消（currentFeedback 恢复 null）', async () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    vm.question = '什么是 nginx'
+    vm.handleQuery()
+    capturedCallbacks!.onMeta({
+      recalled_pages: [],
+      cited_slugs: ['nginx-502'],
+      insufficient_knowledge: false,
+    })
+    capturedCallbacks!.onDone({ writebacks: [] })
+    await flushPromises()
+
+    vm.handleFeedback(null, 'up')
+    expect(vm.currentFeedback).toBe('up')
+    // 再点 up → 取消
+    vm.handleFeedback(null, 'up')
+    expect(vm.currentFeedback).toBe(null)
+  })
+
+  it('handleFeedback 切换 up → down', async () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    vm.question = '什么是 nginx'
+    vm.handleQuery()
+    capturedCallbacks!.onMeta({
+      recalled_pages: [],
+      cited_slugs: ['nginx-502'],
+      insufficient_knowledge: false,
+    })
+    capturedCallbacks!.onDone({ writebacks: [] })
+    await flushPromises()
+
+    vm.handleFeedback(null, 'up')
+    vm.handleFeedback(null, 'down')
+    expect(vm.currentFeedback).toBe('down')
+  })
+
+  it('同一问题二次提问后 currentFeedback 从 localStorage 恢复', async () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+
+    // 第一轮：提问 + 反馈 up
+    vm.question = '什么是 nginx'
+    vm.handleQuery()
+    capturedCallbacks!.onMeta({
+      recalled_pages: [],
+      cited_slugs: ['nginx-502'],
+      insufficient_knowledge: false,
+    })
+    capturedCallbacks!.onDone({ writebacks: [] })
+    await flushPromises()
+    vm.handleFeedback(null, 'up')
+    expect(vm.currentFeedback).toBe('up')
+
+    // 第二轮（触发归档）
+    vm.question = '追问'
+    vm.handleQuery()
+    capturedCallbacks!.onMeta({
+      recalled_pages: [],
+      cited_slugs: ['nginx-502'],
+      insufficient_knowledge: false,
+    })
+    capturedCallbacks!.onDone({ writebacks: [] })
+    await flushPromises()
+
+    // 第三轮：再用同一问题"什么是 nginx"提问
+    vm.question = '什么是 nginx'
+    vm.handleQuery()
+    capturedCallbacks!.onMeta({
+      recalled_pages: [],
+      cited_slugs: ['nginx-502'],
+      insufficient_knowledge: false,
+    })
+    capturedCallbacks!.onDone({ writebacks: [] })
+    await flushPromises()
+
+    // 指纹一致 → currentFeedback 应恢复为 up
+    expect(vm.currentFeedback).toBe('up')
+  })
+
+  it('历史轮反馈：归档后 getTurnFeedback 读取持久化值', async () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    vm.question = '什么是 nginx'
+    vm.handleQuery()
+    capturedCallbacks!.onMeta({
+      recalled_pages: [],
+      cited_slugs: ['nginx-502'],
+      insufficient_knowledge: false,
+    })
+    capturedCallbacks!.onDelta('Nginx 是反向代理')
+    capturedCallbacks!.onDone({ writebacks: [] })
+    await flushPromises()
+    vm.handleFeedback(null, 'up')
+
+    // 发起第二轮触发归档（需完成第二轮才能让第一轮归档进 conversation）
+    vm.question = '追问'
+    vm.handleQuery()
+    capturedCallbacks!.onMeta({
+      recalled_pages: [],
+      cited_slugs: ['nginx-502'],
+      insufficient_knowledge: false,
+    })
+    capturedCallbacks!.onDelta('追问回答')
+    capturedCallbacks!.onDone({ writebacks: [] })
+    await flushPromises()
+
+    // 归档的 assistant 轮含 fingerprint，getTurnFeedback 读回 up
+    const assistantTurn = vm.conversation.find((t: any) => t.role === 'assistant')
+    expect(assistantTurn).toBeTruthy()
+    expect(assistantTurn.fingerprint).toBeTruthy()
+    expect(vm.getTurnFeedback(assistantTurn)).toBe('up')
+  })
+
+  it('handleNewConversation 重置 currentFeedback', async () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    vm.question = '什么是 nginx'
+    vm.handleQuery()
+    capturedCallbacks!.onMeta({
+      recalled_pages: [],
+      cited_slugs: ['nginx-502'],
+      insufficient_knowledge: false,
+    })
+    capturedCallbacks!.onDone({ writebacks: [] })
+    await flushPromises()
+    vm.handleFeedback(null, 'up')
+    expect(vm.currentFeedback).toBe('up')
+
+    vm.handleNewConversation()
+    await flushPromises()
+    expect(vm.currentFeedback).toBe(null)
   })
 })
