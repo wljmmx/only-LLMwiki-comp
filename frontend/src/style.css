@@ -1,10 +1,115 @@
+/* ============================================================
+ * OpsKG 设计令牌层（Design Tokens）
+ * P0-1: 统一颜色/字号/间距/圆角/阴影变量，消除硬编码
+ * ============================================================ */
+
+:root {
+  /* ── 品牌色 ── */
+  --opskg-color-primary: #2080f0;
+  --opskg-color-success: #18a058;
+  --opskg-color-warning: #f0a020;
+  --opskg-color-danger: #d03050;
+  --opskg-color-info: #70c0e8;
+
+  /* ── 文本（对比度达 WCAG AA 4.5:1+）── */
+  --opskg-text-1: #1f2937;   /* 主文本 */
+  --opskg-text-2: #6b7280;   /* 次文本（4.6:1） */
+  --opskg-text-3: #9ca3af;   /* 占位/元信息 */
+
+  /* ── 背景 ── */
+  --opskg-bg-body: #f9fafb;
+  --opskg-bg-elevated: #ffffff;     /* 卡片/抽屉/弹层 */
+  --opskg-bg-overlay: rgba(0, 0, 0, 0.5);
+  --opskg-bg-hover: #f3f4f6;
+
+  /* ── 边框 ── */
+  --opskg-border-color: #e5e7eb;
+  --opskg-border-color-strong: #d1d5db;
+
+  /* ── 字号（1.125 比例）── */
+  --opskg-fs-xs: 12px;
+  --opskg-fs-sm: 13px;
+  --opskg-fs-base: 14px;
+  --opskg-fs-lg: 16px;
+  --opskg-fs-xl: 20px;
+  --opskg-fs-2xl: 24px;
+  --opskg-fs-3xl: 32px;
+
+  /* ── 间距（4 倍数系统）── */
+  --opskg-sp-1: 4px;
+  --opskg-sp-2: 8px;
+  --opskg-sp-3: 12px;
+  --opskg-sp-4: 16px;
+  --opskg-sp-6: 24px;
+  --opskg-sp-8: 32px;
+  --opskg-sp-12: 48px;
+  --opskg-sp-16: 64px;
+
+  /* ── 圆角 ── */
+  --opskg-radius-sm: 4px;
+  --opskg-radius-md: 8px;
+  --opskg-radius-lg: 12px;
+  --opskg-radius-full: 9999px;
+
+  /* ── 阴影 ── */
+  --opskg-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --opskg-shadow-popover: 0 8px 32px rgba(0, 0, 0, 0.16);
+  --opskg-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.12);
+
+  /* ── 焦点（可访问性）── */
+  --opskg-focus-ring: 0 0 0 2px var(--opskg-color-primary);
+
+  /* ── 动画 ── */
+  --opskg-transition-fast: 0.15s ease;
+  --opskg-transition-base: 0.25s ease;
+  --opskg-transition-slow: 0.4s ease;
+
+  /* ── 布局 ── */
+  --opskg-sidebar-width: 240px;
+  --opskg-sidebar-collapsed-width: 64px;
+  --opskg-content-max-width: 1440px;
+  --opskg-reading-width: 960px;
+
+  /* ── z-index 层级 ── */
+  --opskg-z-drawer: 1000;
+  --opskg-z-modal: 1100;
+  --opskg-z-popover: 1200;
+  --opskg-z-tooltip: 1300;
+  --opskg-z-tour: 1400;
+}
+
+/* ── 深色主题覆盖 ── */
+[data-theme='dark'] {
+  --opskg-text-1: #e5e7eb;
+  --opskg-text-2: #9ca3af;
+  --opskg-text-3: #6b7280;
+
+  --opskg-bg-body: #18181c;
+  --opskg-bg-elevated: #1f1f23;
+  --opskg-bg-overlay: rgba(0, 0, 0, 0.7);
+  --opskg-bg-hover: #2a2a2e;
+
+  --opskg-border-color: #2a2a2e;
+  --opskg-border-color-strong: #3a3a3e;
+
+  --opskg-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --opskg-shadow-popover: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --opskg-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* ============================================================
+ * 全局 Reset
+ * ============================================================ */
+
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
-html, body, #app {
+html,
+body,
+#app {
   height: 100%;
   width: 100%;
 }
@@ -12,18 +117,47 @@ html, body, #app {
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  font-size: 14px;
+  font-size: var(--opskg-fs-base);
   line-height: 1.5;
-  color: #1f2937;
-  background: #f9fafb;
+  color: var(--opskg-text-1);
+  background: var(--opskg-bg-body);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  transition: background var(--opskg-transition-base), color var(--opskg-transition-base);
 }
 
 a {
   color: inherit;
   text-decoration: none;
 }
+
+/* ── 可访问性：焦点样式 ── */
+:focus-visible {
+  outline: 2px solid var(--opskg-color-primary);
+  outline-offset: 2px;
+}
+
+/* ── skip-link（键盘用户跳过侧栏直达主内容）── */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  z-index: var(--opskg-z-tooltip);
+  padding: var(--opskg-sp-2) var(--opskg-sp-4);
+  background: var(--opskg-color-primary);
+  color: #fff;
+  border-radius: var(--opskg-radius-md);
+  font-size: var(--opskg-fs-sm);
+  transition: top var(--opskg-transition-fast);
+}
+
+.skip-link:focus {
+  top: 0;
+}
+
+/* ============================================================
+ * 滚动条（跨浏览器）
+ * ============================================================ */
 
 ::-webkit-scrollbar {
   width: 6px;
@@ -35,10 +169,78 @@ a {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #d1d5db;
-  border-radius: 3px;
+  background: var(--opskg-border-color-strong);
+  border-radius: var(--opskg-radius-sm);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #9ca3af;
+  background: var(--opskg-text-3);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--opskg-border-color-strong) transparent;
+}
+
+/* ============================================================
+ * 共享工具类（替代各视图重复 CSS）
+ * P1-2: PageHeader / loading-container 等
+ * ============================================================ */
+
+.page-header {
+  margin-bottom: var(--opskg-sp-6);
+}
+
+.page-title {
+  font-size: var(--opskg-fs-2xl);
+  font-weight: 600;
+  color: var(--opskg-text-1);
+  margin: 0;
+}
+
+.page-desc {
+  font-size: var(--opskg-fs-sm);
+  color: var(--opskg-text-2);
+  margin-top: var(--opskg-sp-1);
+}
+
+.loading-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  width: 100%;
+}
+
+/* ── 路由过渡动画 ── */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity var(--opskg-transition-fast);
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* ── 响应式断点工具 ── */
+/* < 768px 隐藏，≥ 768px 显示 */
+.hidden-mobile {
+  display: none;
+}
+@media (min-width: 768px) {
+  .hidden-mobile {
+    display: initial;
+  }
+}
+
+/* ≥ 1024px 显示，< 1024px 隐藏 */
+.hidden-tablet {
+  display: initial;
+}
+@media (max-width: 1023px) {
+  .hidden-tablet {
+    display: none;
+  }
 }
