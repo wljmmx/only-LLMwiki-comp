@@ -225,7 +225,7 @@ class DocumentStore:
                ORDER BY created_at DESC LIMIT ?""",
             (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%", limit),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [_normalize_doc(dict(r)) for r in rows]
 
     def get_stats(self) -> dict:
         """文档统计"""

@@ -28,11 +28,15 @@ describe('format.ts', () => {
     it('小于 1KB 显示 B', () => {
       expect(formatFileSize(512)).toBe('512 B')
     })
-    it('KB 保留一位小数', () => {
+    it('KB 整数不带小数', () => {
+      expect(formatFileSize(1024)).toBe('1 KB')
+    })
+    it('KB 非整数保留一位小数', () => {
       expect(formatFileSize(1536)).toBe('1.5 KB')
     })
-    it('MB 转换', () => {
-      expect(formatFileSize(1048576)).toBe('1.0 MB')
+    it('MB/GB 整数转换', () => {
+      expect(formatFileSize(1048576)).toBe('1 MB')
+      expect(formatFileSize(1073741824)).toBe('1 GB')
     })
     it('0 或负数返回 0 B', () => {
       expect(formatFileSize(0)).toBe('0 B')

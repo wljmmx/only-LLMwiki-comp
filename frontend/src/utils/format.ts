@@ -34,5 +34,7 @@ export function formatFileSize(bytes: number): string {
     size /= 1024
     unitIndex++
   }
-  return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
+  // 整数不带小数，非整数保留一位
+  const formatted = size % 1 === 0 ? size.toFixed(0) : size.toFixed(1)
+  return `${formatted} ${units[unitIndex]}`
 }
