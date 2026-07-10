@@ -626,7 +626,14 @@ class WikiCompiler:
     @staticmethod
     def _build_frontmatter_meta(page: WikiPage, *, is_new: bool) -> dict:
         now = datetime.now(timezone.utc).isoformat()
-        return {
+        # P1-1: 生成 OKF v0.1 推荐字段（description/resource/timestamp）
+        # 复用 okf_adapter 工具函数，保证编译期与导出期字段语义一致
+        from app.knowledge.okf_adapter import (
+            derive_resource,
+            extract_description,
+        )
+
+        meta = {
             "slug": page.slug,
             "title": page.title,
             "type": page.type,
@@ -634,9 +641,21 @@ class WikiCompiler:
             "sources": page.sources,
             "created_at": now if is_new else None,
             "updated_at": now,
+            # OKF 推荐字段（编译期生成，导出期无需补全）
+            "description": extract_description(page.body_md),
+            "resource": derive_resource(
+                {"slug": page.slug, "sources": page.sources}
+            ),
+            "timestamp": now,  # OKF 推荐字段，= updated_at
             "review_status": page.review_status,
             "stale": bool(page.stale_items),
         }
+        # 移除空值，避免 frontmatter 噪音
+        if not meta["description"]:
+            meta.pop("description", None)
+        if not meta["resource"]:
+            meta.pop("resource", None)
+        return meta
 
     @staticmethod
     def _assemble_md(meta: dict, body: str) -> str:
