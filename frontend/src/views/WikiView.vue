@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { NSplit, NTree, NCard, NTag, NSpace, NSpin, NEmpty, NThing, NButton, NTooltip } from 'naive-ui'
 import type { TreeOption } from 'naive-ui'
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
