@@ -578,18 +578,15 @@ def test_k8s_compatibility() -> None:
         "port: 80" in content,
     )
 
-    # K8s Ingress /api rewrite-target（与 Docker nginx /api strip 一致）
+    # P1-1: 单镜像架构 — Ingress 全量转发，不需要 rewrite-target
+    # 容器内 nginx 处理 /api strip、/auth、/health、/ 静态文件等路由
     ingress = ROOT / "deploy" / "k8s" / "ingress.yaml"
     check("ingress.yaml 存在", ingress.exists())
     if ingress.exists():
         ingress_content = ingress.read_text(encoding="utf-8")
         check(
-            "K8s Ingress /api 含 rewrite-target",
-            "rewrite-target" in ingress_content and "/api" in ingress_content,
-        )
-        check(
-            "K8s Ingress rewrite-target=/$2（strip /api）",
-            "/$2" in ingress_content,
+            "K8s Ingress 全量转发到 opskg-backend（P1-1 单镜像）",
+            "opskg-backend" in ingress_content and "opskg-ingress" in ingress_content,
         )
 
 
@@ -611,10 +608,10 @@ def test_docker_compose_compatibility() -> None:
         "backend" in content and "build" in content,
     )
 
-    # docker-compose 的 backend 端口暴露 8000
+    # P1-1: 单镜像架构 — docker-compose 暴露 8080（nginx 入口）
     check(
-        "docker-compose backend 暴露 8000",
-        "8000:8000" in content,
+        "docker-compose backend 暴露 8080（P1-1 单镜像）",
+        ":8080" in content,
     )
 
 

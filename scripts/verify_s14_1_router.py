@@ -32,6 +32,7 @@ ROUTER = FRONTEND / "src" / "router" / "index.ts"
 ROUTER_SPEC = FRONTEND / "src" / "router" / "index.spec.ts"
 FORBIDDEN_VIEW = FRONTEND / "src" / "views" / "ForbiddenView.vue"
 NOTFOUND_VIEW = FRONTEND / "src" / "views" / "NotFoundView.vue"
+ROLE_UTIL = FRONTEND / "src" / "utils" / "role.ts"
 
 PASS = 0
 FAIL = 0
@@ -90,6 +91,7 @@ check("NotFoundView.vue 存在", NOTFOUND_VIEW.exists())
 section("2. router/index.ts 结构")
 
 router_content = ROUTER.read_text(encoding="utf-8")
+role_util_content = ROLE_UTIL.read_text(encoding="utf-8") if ROLE_UTIL.exists() else ""
 
 # RouteMeta 类型扩展
 check(
@@ -137,7 +139,8 @@ check(
 )
 check(
     "导出 hasRequiredRole 函数",
-    "export function hasRequiredRole" in router_content,
+    "export function hasRequiredRole" in role_util_content
+    or "export { hasRequiredRole }" in router_content,
 )
 check(
     "导出 _resetAuthInitializedForTest 函数",
@@ -234,7 +237,7 @@ check(
 )
 check(
     "守卫通过 state 传递 requiredRoles",
-    "state: { requiredRoles: to.meta.requireRole }" in router_content,
+    "requiredRoles: to.meta.requireRole" in router_content,
 )
 check(
     "守卫在 dev 模式（authRequired === false）不检查角色",
@@ -256,16 +259,16 @@ section("6. hasRequiredRole 纯函数逻辑")
 
 check(
     "hasRequiredRole 无 requireRole 时返回 true",
-    "if (!requireRole || requireRole.length === 0)" in router_content
-    and "return true" in router_content,
+    "if (!requireRole || requireRole.length === 0)" in role_util_content
+    and "return true" in role_util_content,
 )
 check(
     "hasRequiredRole userRole 为空时返回 false",
-    "if (!userRole)" in router_content and "return false" in router_content,
+    "if (!userRole)" in role_util_content and "return false" in role_util_content,
 )
 check(
     "hasRequiredRole 使用 includes 检查角色匹配",
-    "requireRole.includes" in router_content,
+    "requireRole.includes" in role_util_content,
 )
 
 
