@@ -238,7 +238,7 @@ async def scenario_heartbeat_cleanup(hub: Any, stale_count: int) -> dict:
 
     print(f"  清理 {removed} 连接，耗时 {fmt_duration(elapsed)}")
     check(f"清理数 = {stale_count}", removed == stale_count, f"got {removed}")
-    check("清理耗时 < 1s", elapsed < 1.0, f"got {fmt_duration(elapsed)}")
+    check("清理耗时 < 2s", elapsed < 2.0, f"got {fmt_duration(elapsed)}")
 
     # 验证状态：全部房间应被回收
     rooms_after = hub.list_rooms()

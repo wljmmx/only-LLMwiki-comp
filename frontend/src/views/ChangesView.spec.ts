@@ -215,10 +215,7 @@ describe('ChangesView.vue', () => {
     ;(listChanges as any).mockResolvedValue({ changes: [], count: 0 })
     mountView()
     await flushPromises()
-    expect(formatDateTime((undefined as any) || '') || '-').toBe('-')
-    expect(formatDateTime('' || '') || '-').toBe('-')
-    const result = formatDateTime('2026-07-01T10:30:00Z' || '') || '-'
-    expect(typeof result).toBe('string')
-    expect(result).toContain('2026')
+    expect(formatDateTime('') || '-').toBe('-')
+    expect(formatDateTime('2026-07-01T10:30:00Z') || '-').toContain('2026')
   })
 })

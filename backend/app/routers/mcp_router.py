@@ -27,7 +27,7 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from app.auth import get_current_user, verify_token
+from app.auth import verify_token
 from app.mcp import handle_request as mcp_handle_request
 from app.mcp.progress import (
     reset_progress_context,

@@ -5,14 +5,38 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+from pathlib import Path
 
 os.environ.setdefault("OPSKG_API_TOKEN", "")
+os.environ.setdefault("OPSKG_SETUP_TOKEN", "")
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _clean_auth_store():
+    """清理 auth store 用户表，使 _setup_auth_guard 走"首次配置→放行"路径。
+
+    其他测试（test_auth.py 等）可能在 data/auth.db 中创建了用户，
+    导致 _setup_auth_guard 判定系统已初始化而返回 403。
+    """
+    db_path = Path(__file__).parent.parent / "data" / "auth.db"
+    if db_path.exists():
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("DELETE FROM users")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # 表不存在时忽略
+        finally:
+            conn.close()
+    yield
 
 
 # ────────── /setup/status ──────────

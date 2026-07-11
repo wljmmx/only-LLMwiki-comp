@@ -345,10 +345,14 @@ def main() -> int:
           "error" in panel_content
           and "重试" in panel_content)
 
-    check("时间格式 MM-DD HH:MM:SS（历史事件需显示日期）",
-          "formatTime" in panel_content
-          and "getMonth" in panel_content
-          and "getDate" in panel_content)
+    # P4-1: formatTime 重构为共享 formatClockWithDate（从 @/utils/format 导入）
+    # formatClockWithDate 在 utils/format.ts 中实现 MM-DD HH:mm:ss
+    format_ts = (FRONTEND_DIR / "src" / "utils" / "format.ts").read_text(encoding="utf-8")
+    check("时间格式 MM-DD HH:MM:SS（历史事件需显示日期，P4-1 共享工具）",
+          "formatClockWithDate" in panel_content
+          and "from '@/utils/format'" in panel_content
+          and "getMonth" in format_ts
+          and "getDate" in format_ts)
 
     check("5 类事件颜色（与 CollabPanel 一致）",
           "user_joined" in panel_content

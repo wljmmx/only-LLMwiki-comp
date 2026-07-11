@@ -29,7 +29,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.auth.token_auth import get_current_user, require_role
+from app.auth.token_auth import get_current_user
 from app.config import get_settings
 
 logger = structlog.get_logger()

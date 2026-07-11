@@ -22,7 +22,7 @@ export function getWikiPage(slug: string) {
 
 // S16-2：用户直接编辑 wiki page
 export function updateWikiPage(slug: string, payload: WikiPageUpdatePayload) {
-  return api.put<unknown, WikiPageUpdateResult>(`/llm-wiki/page/${slug}`, payload)
+  return api.put<any, WikiPageUpdateResult>(`/llm-wiki/page/${slug}`, payload)
 }
 
 export function getWikiBacklinks(slug: string) {

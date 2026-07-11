@@ -27,7 +27,6 @@ P3-5 升级：规则召回 + LLM 编译成 wiki 风格 Runbook
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -291,14 +290,14 @@ class RunbookGenerator:
     ) -> str:
         """构造 LLM 编译 prompt"""
         parts: list[str] = []
-        parts.append(f"请把以下运维知识素材编译为一个 wiki 风格的 Runbook 页面正文。\n")
-        parts.append(f"# 编译目标")
+        parts.append("请把以下运维知识素材编译为一个 wiki 风格的 Runbook 页面正文。\n")
+        parts.append("# 编译目标")
         parts.append(f"- 故障现象: {symptom}")
         if service:
             parts.append(f"- 受影响服务: {service}")
         if host:
             parts.append(f"- 受影响主机: {host}")
-        parts.append(f"- 页面骨架: runbook 页（必含：概述/影响分析/排查步骤/处置方案/来源）\n")
+        parts.append("- 页面骨架: runbook 页（必含：概述/影响分析/排查步骤/处置方案/来源）\n")
 
         parts.append("# 召回素材\n")
         if sources.commands:

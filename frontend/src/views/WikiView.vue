@@ -248,30 +248,30 @@ onMounted(() => {
             </div>
             <!-- P1-6：页面元信息条（更新时间 · 版本 · 审查状态 · 来源数） -->
             <div v-if="pageMeta" class="page-meta-bar">
-              <NTooltip :trigger="['hover', 'focus']">
+              <NTooltip trigger="hover">
                 <template #trigger>
-                  <span class="meta-item" tabindex="0">更新于 {{ formatDate(pageMeta.updatedAt) }}</span>
+                  <span class="meta-item" tabindex="0" title="页面最后更新时间">更新于 {{ formatDate(pageMeta.updatedAt) }}</span>
                 </template>
                 页面最后更新时间
               </NTooltip>
               <span class="meta-sep" aria-hidden="true">·</span>
-              <NTooltip :trigger="['hover', 'focus']">
+              <NTooltip trigger="hover">
                 <template #trigger>
-                  <span class="meta-item" tabindex="0">v{{ pageMeta.version ?? 1 }}</span>
+                  <span class="meta-item" tabindex="0" title="页面版本号">v{{ pageMeta.version ?? 1 }}</span>
                 </template>
                 页面版本号
               </NTooltip>
               <span class="meta-sep" aria-hidden="true">·</span>
-              <NTooltip :trigger="['hover', 'focus']">
+              <NTooltip trigger="hover">
                 <template #trigger>
-                  <span class="meta-item" tabindex="0">{{ pageMeta.reviewStatusLabel }}</span>
+                  <span class="meta-item" tabindex="0" title="审查状态">{{ pageMeta.reviewStatusLabel }}</span>
                 </template>
                 审查状态
               </NTooltip>
               <span class="meta-sep" aria-hidden="true">·</span>
-              <NTooltip :trigger="['hover', 'focus']">
+              <NTooltip trigger="hover">
                 <template #trigger>
-                  <span class="meta-item" tabindex="0">来源 {{ pageMeta.sourcesCount }}</span>
+                  <span class="meta-item" tabindex="0" title="引用的原始文档数量">来源 {{ pageMeta.sourcesCount }}</span>
                 </template>
                 引用的原始文档数量
               </NTooltip>

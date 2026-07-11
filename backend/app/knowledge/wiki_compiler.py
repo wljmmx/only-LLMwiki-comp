@@ -30,7 +30,7 @@ import yaml
 from app.config import get_settings
 from app.core.llm import ChatMessage, get_llm_client
 from app.extraction import KnowledgeExtractor
-from app.extraction.types import EntityType, ExtractionResult, ExtractedEntity
+from app.extraction.types import EntityType, ExtractedEntity, ExtractionResult
 from app.knowledge.wiki_drift import clear_stale, record_compiled_checksum
 from app.knowledge.wiki_index import _key_from_slug, list_wiki_pages, rebuild_index
 from app.knowledge.wikilink import WIKILINK_RE, update_backlinks

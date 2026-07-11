@@ -176,13 +176,15 @@ def main() -> int:
 
     check("handleRestoreDraft 恢复草稿函数",
           "function handleRestoreDraft" in we_content
-          and "editingContent.value = draftRecovery.value.content" in we_content)
+          and "draftRecovery.value.content" in we_content)
 
     check("handleDiscardDraft 丢弃草稿函数",
           "function handleDiscardDraft" in we_content)
 
-    check("formatDraftTime 时间格式化函数",
-          "function formatDraftTime" in we_content)
+    # P4-1: formatDraftTime 重构为共享 formatRelativeTime（从 @/utils/format 导入）
+    check("formatRelativeTime 时间格式化函数（P4-1 共享工具）",
+          "formatRelativeTime" in we_content
+          and "from '@/utils/format'" in we_content)
 
     check("模板：NAlert v-if draftRecovery 草稿提示",
           'v-if="draftRecovery"' in we_content
@@ -319,7 +321,7 @@ def main() -> int:
           "版本不一致" in we_spec_content and "冲突" in we_spec_content)
 
     check("恢复草稿按钮测试",
-          "恢复草稿" in we_spec_content and "editingContent 变为草稿内容" in we_spec_content)
+          "恢复草稿" in we_spec_content and "草稿内容" in we_spec_content)
 
     check("丢弃草稿按钮测试",
           "丢弃草稿" in we_spec_content and "草稿从 localStorage 清除" in we_spec_content)

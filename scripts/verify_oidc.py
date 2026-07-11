@@ -195,14 +195,19 @@ def test_pkce() -> None:
 
 
 def test_state_store() -> None:
-    section("4. State 存储")
-    from app.auth.oidc import _state_store, pop_state, save_state
+    section("4. State 存储（DB 持久化，P0-6）")
+    from app.auth.oidc import _get_mapping_db, pop_state, save_state
 
-    _state_store.clear()
+    # 清理 DB 中的历史 state（P0-6: state 持久化到 SQLite）
+    conn = _get_mapping_db()
+    try:
+        conn.execute("DELETE FROM oidc_states")
+        conn.commit()
+    finally:
+        conn.close()
 
     state = save_state("google", "verifier123", "/dashboard")
     check("save_state 返回非空 state", len(state) > 0)
-    check("state 已存入内存", state in _state_store)
 
     # 第一次 pop 应返回数据
     data = pop_state(state)
@@ -214,7 +219,7 @@ def test_state_store() -> None:
     # 第二次 pop 应返回 None（一次性）
     data2 = pop_state(state)
     check("state 一次性消费", data2 is None)
-    check("state 消费后从内存删除", state not in _state_store)
+    check("state 消费后从 DB 删除", pop_state(state) is None)
 
 
 # ────────── 测试 5：find_or_create_user ──────────

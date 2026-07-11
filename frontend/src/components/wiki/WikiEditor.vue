@@ -19,7 +19,8 @@
  */
 import { ref, computed, watch, onMounted } from 'vue'
 import { NButton, NInput, NCard, NSpace, NText, NAlert, NSelect, NDynamicTags } from 'naive-ui'
-import { updateWikiPage, listWikiPages } from '@/api/wiki'
+import { updateWikiPage } from '@/api/wiki'
+import { listWikiPages } from '@/api/wiki'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
 import {
   parseFrontmatter,

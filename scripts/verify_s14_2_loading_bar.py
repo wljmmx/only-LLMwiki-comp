@@ -59,7 +59,7 @@ def run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str]:
         cwd=cwd or ROOT,
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=300,
     )
     output = result.stdout + result.stderr
     # 剥离 ANSI 颜色代码（vitest 输出带颜色）

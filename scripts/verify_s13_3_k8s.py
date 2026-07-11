@@ -184,8 +184,8 @@ def test_backend_deployment() -> None:
         return
     c = containers[0]
 
-    check("container name=backend", c.get("name") == "backend")
-    check("container port=8000", c.get("ports", [{}])[0].get("containerPort") == 8000)
+    check("container name=opskg（P1-1 单镜像）", c.get("name") in ("opskg", "backend"))
+    check("container port=8080（P1-1 nginx 入口）", c.get("ports", [{}])[0].get("containerPort") == 8080)
 
     # 探针
     check("livenessProbe 存在", "livenessProbe" in c)
@@ -359,7 +359,7 @@ def test_ingress() -> None:
             if doc.get("kind") == "Ingress":
                 ingresses.append(doc)
 
-    check("至少 2 个 Ingress（拆分 api/web）", len(ingresses) >= 2, f"got {len(ingresses)}")
+    check("至少 1 个 Ingress（P1-1 单镜像架构）", len(ingresses) >= 1, f"got {len(ingresses)}")
 
     # 收集所有 Ingress 的 paths
     all_paths: list[tuple[str, str, str, dict]] = []  # (ingress_name, path, svc, ann)
@@ -405,63 +405,38 @@ def test_ingress() -> None:
         f"{read_timeout_count}/{len(ingresses)}",
     )
 
-    # 检查 /api 路由（带 rewrite）
-    api_ingress = next(
-        (ing for ing in ingresses if ing.get("metadata", {}).get("name") == "opskg-ingress-api"),
+    # P1-1: 单镜像架构 — 单 Ingress 全量转发到 opskg-backend:8080
+    # 容器内 nginx 处理 /api strip、/auth、/health、/ 静态文件等路由
+    main_ingress = next(
+        (ing for ing in ingresses if ing.get("metadata", {}).get("name") == "opskg-ingress"),
         None,
     )
-    check("找到 opskg-ingress-api", api_ingress is not None)
-    if api_ingress:
-        ann = api_ingress.get("metadata", {}).get("annotations", {})
-        check(
-            "api Ingress 含 rewrite-target 注解",
-            "nginx.ingress.kubernetes.io/rewrite-target" in ann,
-            f"got {ann.get('nginx.ingress.kubernetes.io/rewrite-target')}",
-        )
-        check(
-            "api Ingress rewrite-target=/$2",
-            ann.get("nginx.ingress.kubernetes.io/rewrite-target") == "/$2",
-        )
-        check(
-            "api Ingress use-regex=true",
-            ann.get("nginx.ingress.kubernetes.io/use-regex") == "true",
-        )
-        # 路径应为 /api(/|$)(.*)
-        rules = api_ingress.get("spec", {}).get("rules", [])
+    check("找到 opskg-ingress（P1-1 单 Ingress）", main_ingress is not None)
+    if main_ingress:
+        rules = main_ingress.get("spec", {}).get("rules", [])
+        check("Ingress rules 非空", len(rules) >= 1)
         if rules:
             paths = rules[0].get("http", {}).get("paths", [])
-            api_path = paths[0].get("path", "") if paths else ""
-            check(
-                "api Ingress path 含 /api 正则",
-                "/api" in api_path and "(/|$)" in api_path,
-                f"got {api_path}",
+            # P1-1: 全量转发 / → opskg-backend:8080
+            root_path = next(
+                (p for p in paths if p.get("path") == "/"),
+                None,
             )
             check(
-                "api Ingress pathType=ImplementationSpecific",
-                paths[0].get("pathType") == "ImplementationSpecific" if paths else False,
+                "Ingress 含 / Prefix 路由（全量转发）",
+                root_path is not None and root_path.get("pathType") == "Prefix",
             )
             check(
-                "api Ingress backend=opskg-backend",
-                paths[0].get("backend", {}).get("service", {}).get("name") == "opskg-backend" if paths else False,
+                "Ingress / → opskg-backend（单镜像）",
+                root_path is not None
+                and root_path.get("backend", {}).get("service", {}).get("name") == "opskg-backend",
             )
-
-    # 检查 web Ingress 路由
-    web_ingress = next(
-        (ing for ing in ingresses if ing.get("metadata", {}).get("name") == "opskg-ingress-web"),
-        None,
-    )
-    check("找到 opskg-ingress-web", web_ingress is not None)
-    if web_ingress:
-        rules = web_ingress.get("spec", {}).get("rules", [])
-        check("web Ingress rules 非空", len(rules) >= 1)
-        if rules:
-            paths = rules[0].get("http", {}).get("paths", [])
-            path_map = {p.get("path", ""): p.get("backend", {}).get("service", {}).get("name", "") for p in paths}
-            check("/auth → opskg-backend", path_map.get("/auth") == "opskg-backend")
-            check("/health → opskg-backend", path_map.get("/health") == "opskg-backend")
-            check("/ready → opskg-backend", path_map.get("/ready") == "opskg-backend")
-            check("/metrics → opskg-backend", path_map.get("/metrics") == "opskg-backend")
-            check("/ → opskg-frontend", path_map.get("/") == "opskg-frontend")
+        # WebSocket 支持
+        ann = main_ingress.get("metadata", {}).get("annotations", {})
+        check(
+            "Ingress 含 websocket-services 注解",
+            "nginx.ingress.kubernetes.io/websocket-services" in ann,
+        )
 
     # TLS 占位（注释存在即可，不强求启用）
     ingress_text = (K8S_DIR / "ingress.yaml").read_text(encoding="utf-8")

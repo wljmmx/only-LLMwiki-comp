@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 import structlog
 
@@ -1107,7 +1108,6 @@ class WikiQAEngine:
         """
         # ── 规则校验 ──
         rule_passed: list[dict] = []
-        answer_lower = answer.lower()
         answer_tokens = set(_tokenize(answer))
 
         for fact in facts:
@@ -1136,7 +1136,8 @@ class WikiQAEngine:
             return []
 
         # ── LLM 自校验（可选） ──
-        if not self.settings.wiki_writeback_llm_validate:
+        # settings 可能为 None（verify 脚本绕过 __init__）→ 跳过 LLM 校验
+        if not self.settings or not self.settings.wiki_writeback_llm_validate:
             return rule_passed
 
         llm_passed = await self._llm_verify_facts(rule_passed, answer)

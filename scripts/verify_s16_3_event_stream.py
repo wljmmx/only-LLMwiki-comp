@@ -230,15 +230,18 @@ def main() -> int:
         "eventTypeColor" in cp_content,
         "eventTypeColor 颜色映射（按事件类型区分）",
     )
+    # P4-1: formatTime 重构为共享 formatClock（从 @/utils/format 导入）
     check(
-        "function formatTime" in cp_content,
-        "formatTime 函数（HH:MM:SS 格式化）",
+        "formatClock" in cp_content and "from '@/utils/format'" in cp_content,
+        "formatClock 函数（HH:MM:SS 格式化，P4-1 共享工具）",
     )
+    # 验证 utils/format.ts 中 formatClock 实现了 HH:mm:ss
+    format_ts = (FRONTEND_DIR / "src" / "utils" / "format.ts").read_text(encoding="utf-8")
     check(
-        'pad(d.getHours())' in cp_content
-        and 'pad(d.getMinutes())' in cp_content
-        and 'pad(d.getSeconds())' in cp_content,
-        "formatTime 输出 HH:MM:SS",
+        "getHours()" in format_ts
+        and "getMinutes()" in format_ts
+        and "getSeconds()" in format_ts,
+        "formatClock 输出 HH:MM:SS",
     )
     check(
         'default-expanded-names' in cp_content and "'events'" in cp_content,

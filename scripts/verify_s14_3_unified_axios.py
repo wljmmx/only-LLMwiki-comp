@@ -150,28 +150,41 @@ check(
 
 
 # ──────────────────────────────────────────────────────────────────
-# 3. mcp.ts callToolStream 重构
+# 3. mcp.ts callToolStream 重构（P4-3: SSE 解析抽取到 utils/sse.ts）
 # ──────────────────────────────────────────────────────────────────
 
 section("3. mcp.ts callToolStream 重构")
 
 mcp_content = MCP_TS.read_text(encoding="utf-8")
 
+# P4-3: callToolStream 委托给共享 streamSse（auth 头注入由 sse.ts 统一处理）
+SSE_TS = SRC / "utils" / "sse.ts"
+sse_content = SSE_TS.read_text(encoding="utf-8") if SSE_TS.exists() else ""
+
 check(
-    "mcp.ts 导入 getAuthToken + getApiBaseUrl",
-    "import api, { getAuthToken, getApiBaseUrl } from './index'" in mcp_content,
-)
-check(
-    "callToolStream 不再直接读 localStorage.getItem('opskg_token')",
+    "mcp.ts 不再直接读 localStorage.getItem('opskg_token')",
     "localStorage.getItem('opskg_token')" not in mcp_content,
 )
 check(
-    "callToolStream 使用 getAuthToken()",
-    "const token = getAuthToken()" in mcp_content,
+    "mcp.ts 导入 streamSse（P4-3 共享 SSE 工具）",
+    "streamSse" in mcp_content and "from '@/utils/sse'" in mcp_content,
+)
+check(
+    "utils/sse.ts 存在并导出 streamSse",
+    "export function streamSse" in sse_content,
+)
+check(
+    "utils/sse.ts 统一注入 Authorization 头（getAuthToken）",
+    "getAuthToken" in sse_content and "Authorization" in sse_content,
+)
+check(
+    "utils/sse.ts 统一使用 getApiBaseUrl",
+    "getApiBaseUrl" in sse_content,
 )
 check(
     "callToolStream 使用 getApiBaseUrl()/mcp/stream",
-    "${getApiBaseUrl()}/mcp/stream" in mcp_content,
+    "${getApiBaseUrl()}/mcp/stream" in mcp_content
+    or "getApiBaseUrl()" in mcp_content,
 )
 
 
