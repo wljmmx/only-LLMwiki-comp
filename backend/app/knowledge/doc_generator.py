@@ -215,8 +215,8 @@ class DocGenerationPipeline:
                 max_tokens=1024,
             )
             state["intent"] = resp.text
-            state["token_usage"] = state.get("token_usage", 0) + (resp.usage or {}).get(
-                "total_tokens", 0
+            state["token_usage"] = state.get("token_usage", 0) + (
+                resp.prompt_tokens + resp.completion_tokens
             )
         except Exception as e:
             state["error"] = f"intent_agent: {e}"
@@ -234,8 +234,8 @@ class DocGenerationPipeline:
             )
             state["outline"] = self._parse_json(resp.text)
             state["current_section"] = 0
-            state["token_usage"] = state.get("token_usage", 0) + (resp.usage or {}).get(
-                "total_tokens", 0
+            state["token_usage"] = state.get("token_usage", 0) + (
+                resp.prompt_tokens + resp.completion_tokens
             )
         except Exception as e:
             state["error"] = f"outline_agent: {e}"
@@ -272,8 +272,8 @@ class DocGenerationPipeline:
             )
             state["sections"] = sections
             state["current_section"] = idx + 1
-            state["token_usage"] = state.get("token_usage", 0) + (resp.usage or {}).get(
-                "total_tokens", 0
+            state["token_usage"] = state.get("token_usage", 0) + (
+                resp.prompt_tokens + resp.completion_tokens
             )
         except Exception as e:
             state["error"] = f"generate_agent: {e}"
@@ -305,8 +305,8 @@ class DocGenerationPipeline:
             state["review_decision"] = decision
             state["review_feedback"] = resp.text
             state["iteration"] = state.get("iteration", 0) + 1
-            state["token_usage"] = state.get("token_usage", 0) + (resp.usage or {}).get(
-                "total_tokens", 0
+            state["token_usage"] = state.get("token_usage", 0) + (
+                resp.prompt_tokens + resp.completion_tokens
             )
         except Exception as e:
             state["error"] = f"review_agent: {e}"
@@ -330,8 +330,8 @@ class DocGenerationPipeline:
             state["sections"] = [
                 {"title": "修改后内容", "level": 1, "content": resp.text}
             ]
-            state["token_usage"] = state.get("token_usage", 0) + (resp.usage or {}).get(
-                "total_tokens", 0
+            state["token_usage"] = state.get("token_usage", 0) + (
+                resp.prompt_tokens + resp.completion_tokens
             )
         except Exception as e:
             state["error"] = f"modify_agent: {e}"
@@ -350,8 +350,8 @@ class DocGenerationPipeline:
                 max_tokens=self.settings.llm_max_tokens,
             )
             state["final_document"] = resp.text
-            state["token_usage"] = state.get("token_usage", 0) + (resp.usage or {}).get(
-                "total_tokens", 0
+            state["token_usage"] = state.get("token_usage", 0) + (
+                resp.prompt_tokens + resp.completion_tokens
             )
         except Exception as e:
             state["error"] = f"proofread_agent: {e}"

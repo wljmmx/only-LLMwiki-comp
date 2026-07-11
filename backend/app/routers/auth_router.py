@@ -2,7 +2,8 @@
 
 端点：
 - POST /auth/login           用户名密码登录，返回 session token
-- POST /auth/logout          注销当前 session
+- POST /auth/logout          注销当前 session（P0-4: 服务端删除 session）
+- POST /auth/change-password 修改自己的密码（P0-9: 强制改密）
 - GET  /auth/me              获取当前用户信息
 - GET  /auth/users           列出用户（admin）
 - POST /auth/users           创建用户（admin）
@@ -13,11 +14,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.auth.models import ROLES, get_auth_store
-from app.auth.token_auth import get_current_user, require_role
+from app.auth.token_auth import get_current_user, require_role, verify_token_string
 
 router = APIRouter()
 
@@ -51,12 +52,22 @@ class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+class ChangePasswordRequest(BaseModel):
+    """P0-9: 修改自己的密码"""
+    old_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
 # ────────── 端点 ──────────
 
 
 @router.post("/auth/login", response_model=LoginResponse)
 async def login(req: LoginRequest) -> LoginResponse:
-    """用户名密码登录，返回 session token"""
+    """用户名密码登录，返回 session token
+
+    P0-5: 账户锁定后返回 423 Locked
+    P0-9: 返回 must_change_password 标志供前端引导改密
+    """
     store = get_auth_store()
     user = store.verify_password(req.username, req.password)
     if not user:
@@ -66,15 +77,62 @@ async def login(req: LoginRequest) -> LoginResponse:
 
 
 @router.post("/auth/logout")
-async def logout(user: dict | None = Depends(get_current_user)) -> dict:
-    """注销当前 session
+async def logout(
+    request: Request,
+    user: dict | None = Depends(get_current_user),
+) -> dict:
+    """注销当前 session（P0-4: 服务端删除 session 记录）
 
-    注意：前端需在调用后清除本地 token
+    从 Authorization header 提取 token，调用 revoke_session 注销。
     """
-    # get_current_user 已验证 session 有效性
-    # 由于无法从 Depends 拿到原始 token，这里仅返回成功
-    # 实际 token 清除由前端完成；服务端 session 会自然过期
-    return {"logged_out": True, "user": user.get("username") if user else None}
+    auth_header = request.headers.get("Authorization", "")
+    token = None
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:]
+
+    revoked = False
+    if token:
+        store = get_auth_store()
+        revoked = store.revoke_session(token)
+
+    return {
+        "logged_out": True,
+        "session_revoked": revoked,
+        "user": user.get("username") if user else None,
+    }
+
+
+@router.post("/auth/change-password")
+async def change_password(
+    req: ChangePasswordRequest,
+    user: dict | None = Depends(get_current_user),
+) -> dict:
+    """P0-9: 修改自己的密码
+
+    - 验证旧密码
+    - 新密码最少 8 位
+    - 清除 must_change_password 标志
+    - 重置失败计数与锁定状态
+    """
+    if user is None:
+        raise HTTPException(401, "需要登录后才能修改密码")
+
+    store = get_auth_store()
+    # 验证旧密码
+    verified = store.verify_password(user["username"], req.old_password)
+    if not verified:
+        raise HTTPException(401, "旧密码错误")
+
+    # 新密码不能与旧密码相同
+    if req.old_password == req.new_password:
+        raise HTTPException(400, "新密码不能与旧密码相同")
+
+    # 更新密码（update_user 会自动清除 must_change_password + 重置锁定）
+    store.update_user(user["id"], password=req.new_password)
+    logger_msg = "auth.password_changed"
+    import structlog
+    structlog.get_logger().info(logger_msg, user_id=user["id"], username=user["username"])
+    return {"changed": True, "must_change_password": False}
 
 
 @router.get("/auth/me")

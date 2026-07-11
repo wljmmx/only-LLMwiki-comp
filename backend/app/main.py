@@ -7,15 +7,19 @@
 from __future__ import annotations
 
 import os
+import traceback
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.routers.anomaly_router import router as anomaly_router
 from app.routers.auth_router import router as auth_router
+from app.routers.backup_router import router as backup_router
 from app.routers.changes_router import router as changes_router
 from app.routers.documents_router import router as documents_router
 from app.routers.events_router import router as events_router
@@ -97,6 +101,82 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="OpsKG Backend", version="0.1.0", lifespan=lifespan)
+
+# P0-7: CORS 中间件
+_settings = get_settings()
+_cors_origins_raw = _settings.cors_origins.strip()
+if _cors_origins_raw:
+    _cors_origins = [
+        o.strip() for o in _cors_origins_raw.split(",") if o.strip()
+    ]
+else:
+    # 默认允许前端地址
+    _cors_origins = [_settings.frontend_base_url]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Request-ID", "X-Trace-ID"],
+)
+
+# P0-8: 全局异常处理器 — 统一错误响应，避免泄露内部堆栈
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """捕获所有未处理异常，返回统一错误格式
+
+    - 4xx 异常（HTTPException）保留原 status code
+    - 5xx 异常返回 500，不泄露内部细节（生产模式）
+    - 所有异常记录结构化日志（含 traceback）
+    """
+    from fastapi import HTTPException as _HTTPException
+
+    request_id = getattr(request.state, "request_id", None)
+
+    if isinstance(exc, _HTTPException):
+        # FastAPI HTTPException — 保留原状态码与详情
+        logger.warning(
+            "api.http_exception",
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            status_code=exc.status_code,
+            detail=str(exc.detail),
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": str(exc.detail),
+                "type": "http_exception",
+                "status_code": exc.status_code,
+                "request_id": request_id,
+            },
+            headers=getattr(exc, "headers", None),
+        )
+
+    # 未知异常 — 500 Internal Server Error
+    logger.error(
+        "api.unhandled_exception",
+        request_id=request_id,
+        method=request.method,
+        path=request.url.path,
+        error_type=type(exc).__name__,
+        error=str(exc),
+        traceback=traceback.format_exc(),
+    )
+    env = get_settings().env
+    detail = str(exc) if env == "dev" else "内部服务器错误"
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": detail,
+            "type": "internal_error",
+            "status_code": 500,
+            "request_id": request_id,
+        },
+    )
+
 
 # 注册 Prometheus 指标中间件 + /metrics 端点
 from app.observability import setup_metrics_middleware  # noqa: E402
@@ -185,3 +265,4 @@ app.include_router(anomaly_router)
 app.include_router(realtime_router)
 app.include_router(setup_router)
 app.include_router(okf_router)
+app.include_router(backup_router)

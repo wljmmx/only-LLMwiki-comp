@@ -93,9 +93,9 @@ COPY deploy/docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY deploy/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# 创建非 root 用户运行（安全最佳实践）
-# nginx 需监听 80，但仍以 opskg 用户运行 supervisord；
-# nginx master 进程在 entrypoint 中以 root 启动绑定 80，worker 降权到 www-data
+# 创建非 root 用户运行（P1-2: 安全最佳实践）
+# nginx 监听 8080（非特权端口），supervisord + nginx + uvicorn 全部以 opskg 用户运行
+# 无需 root 绑定特权端口，容器全程非特权运行
 RUN groupadd -r opskg && useradd -r -g opskg -d /app -s /sbin/nologin opskg \
     && mkdir -p /app/data /var/log/nginx /var/log/supervisor \
                 /var/lib/nginx/body /var/lib/nginx/proxy /var/lib/nginx/fastcgi /run \
@@ -104,13 +104,12 @@ RUN groupadd -r opskg && useradd -r -g opskg -d /app -s /sbin/nologin opskg \
 # 数据目录（建议挂载 PVC）
 VOLUME ["/app/data"]
 
-# 暴露端口
-# - 80：nginx（外部访问入口）
-EXPOSE 80
+# P1-2: 非特权端口 8080（>1024），全程非 root 运行
+EXPOSE 8080
 
 # 健康检查（HTTP 200 = 进程存活）
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -fsS http://localhost/health || exit 1
+    CMD curl -fsS http://localhost:8080/health || exit 1
 
 # 环境变量默认值
 ENV ENV=production \
@@ -118,6 +117,9 @@ ENV ENV=production \
     PYTHONUNBUFFERED=1 \
     OPSKG_UVICORN_WORKERS=2 \
     OPSKG_VERSION=${OPSKG_VERSION}
+
+# P1-2: 全程以非 root 用户运行
+USER opskg
 
 # 入口：动态调整 worker 数 + 启动 supervisord
 ENTRYPOINT ["entrypoint.sh"]

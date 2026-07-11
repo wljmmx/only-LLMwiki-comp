@@ -28,7 +28,7 @@ import json
 from datetime import datetime, timezone
 
 import yaml
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -554,7 +554,7 @@ async def llm_wiki_recall(q: str, limit: int = 5) -> dict:
 
 
 @router.post("/llm-wiki/query/stream", dependencies=[Depends(verify_token)])
-async def llm_wiki_query_stream(payload: dict):
+async def llm_wiki_query_stream(request: Request, payload: dict):
     """流式 Wiki 问答（P1-4）
 
     SSE 事件序列：
@@ -567,6 +567,8 @@ async def llm_wiki_query_stream(payload: dict):
     让前端在 LLM 生成期间即时看到召回页面与逐字回答，降低等待焦虑。
 
     Body 支持 history（P2-13b 多轮会话历史），由前端维护并回传。
+
+    P2-2: 客户端断连时取消 LLM 生成（通过 request.is_disconnected()）。
     """
     question = (payload.get("question") or "").strip()
     if not question:
@@ -577,6 +579,9 @@ async def llm_wiki_query_stream(payload: dict):
 
     qa = get_wiki_qa_engine()
 
+    # P2-2: 客户端断连时取消 LLM 生成
+    cancel_token = request.is_disconnected
+
     async def event_gen():
         try:
             async for evt in qa.stream_answer(
@@ -584,6 +589,7 @@ async def llm_wiki_query_stream(payload: dict):
                 recall_limit=recall_limit,
                 expand_backlinks=expand_backlinks,
                 history=history,
+                cancel_token=cancel_token,
             ):
                 yield f"event: {evt['type']}\ndata: {json.dumps(evt, ensure_ascii=False)}\n\n"
         except Exception as e:  # noqa: BLE001

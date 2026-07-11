@@ -1,16 +1,16 @@
 # OpsKG Frontend Deployment + Service（S13-3 K8s 部署）
 #
+# ⚠️ P1-1 架构变更：此文件在单镜像架构下不再需要
+# 单镜像（ghcr.io/wljmmx/only-llmwiki-comp）已包含前端静态资源 + nginx，
+# 前端由 backend-deployment.yaml 中的单镜像 Pod 内 nginx 直接 serve。
+# Ingress 全量转发到 opskg-backend:8080，容器内 nginx 处理 / 静态文件路由。
+#
+# 仅在"分离镜像架构"（独立 frontend 镜像 + 独立 backend 镜像）时使用此文件。
+# 如需分离架构，需额外构建 opskg-frontend 镜像并更新 Ingress 分流规则。
+#
 # 前端为静态 SPA，使用 nginx serve dist/ 目录。
 # - 单镜像构建在 S13-4 完成（多阶段 Dockerfile：frontend build → nginx serve）
 # - 当前先创建 Deployment + Service 占位，待 S13-4 接入实际镜像
-#
-# nginx 配置要点（在 S13-4 的 Dockerfile 中固化）：
-#   - root /usr/share/nginx/html;
-#   - try_files $uri $uri/ /index.html;  # SPA history 模式
-#   - location /api/ proxy_pass http://opskg-backend.opskg.svc.cluster.local:8000;
-#   - location /auth/ proxy_pass http://opskg-backend.opskg.svc.cluster.local:8000;
-#   - location /health proxy_pass http://opskg-backend.opskg.svc.cluster.local:8000;
-#   - location /metrics proxy_pass http://opskg-backend.opskg.svc.cluster.local:8000;
 apiVersion: apps/v1
 kind: Deployment
 metadata:

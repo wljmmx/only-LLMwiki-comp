@@ -1,7 +1,7 @@
 # OpsKG CI — 质量门禁
 # 触发：push / PR 到任意分支
-# 作业：后端 lint + pytest + verify 脚本；前端 typecheck + vitest + build
-# 验证点：61 pytest + 470 verify + 86 vitest = 617 个自动化验证点
+# 作业：后端 lint + pytest + verify 脚本；前端 typecheck + vitest + verify 脚本 + build
+# P1-3: 全部 40 个 verify 脚本纳入 CI（11 原有 + 17 后端 Class A + 12 前端 Class B）
 
 name: CI
 
@@ -21,7 +21,7 @@ jobs:
   backend:
     name: Backend (lint + pytest + verify)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: .
@@ -39,6 +39,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pip-audit
+
+      # P1-4: 依赖安全扫描（pip-audit 检查已知 CVE）
+      # 如遇误报，用 --ignore-vuln GHSA-xxxx 忽略特定漏洞
+      - name: pip-audit (security scan)
+        run: pip-audit -r requirements.txt
 
       - name: Ruff lint
         run: ruff check backend/app/ scripts/
@@ -49,12 +55,10 @@ jobs:
           PYTHONPATH: .
         run: python -m pytest tests/ -q --no-header
 
-      - name: Verify scripts (470 验证点)
+      # P1-3: 原有 11 个 verify 脚本（auth/oidc/ha/webhook/observability/tracing/p2_4_*/p2_5_*）
+      - name: Verify scripts — 基础验证（11 脚本）
         env:
           PYTHONPATH: backend
-        # 11 个 verify 脚本，任一失败即 CI 失败
-        # 覆盖：auth(60) + oidc(80) + ha(32) + webhook(62) + observability(19) +
-        #       tracing(39) + p2_4_3(44) + p2_4_6(41) + p2_4_7(46) + p2_5_5(19) + p2_5_8(28) = 470
         run: |
           set -e
           for script in \
@@ -73,11 +77,81 @@ jobs:
             python scripts/${script}.py
           done
 
-  # ────────── 前端：typecheck + vitest + build ──────────
+      # P1-3: Class A — s12 知识系统验证（4 脚本，纯后端单元测试）
+      - name: Verify scripts — s12 知识系统（4 脚本）
+        env:
+          PYTHONPATH: backend
+        run: |
+          set -e
+          for script in \
+            verify_s12_1_writeback \
+            verify_s12_2_backlink \
+            verify_s12_3_semantic_lint \
+            verify_s12_4_sharding; do
+            echo "=== 运行 ${script}.py ==="
+            python scripts/${script}.py
+          done
+
+      # P1-3: Class A — s13 部署验证（5 脚本，saml/ldap mock，k8s/dockerfile 静态校验）
+      - name: Verify scripts — s13 部署（5 脚本）
+        env:
+          PYTHONPATH: backend
+        run: |
+          set -e
+          for script in \
+            verify_s13_1_saml \
+            verify_s13_2_ldap \
+            verify_s13_3_k8s \
+            verify_s13_4_dockerfile \
+            verify_s13_5_scale; do
+            echo "=== 运行 ${script}.py ==="
+            python scripts/${script}.py
+          done
+
+      # P1-3: Class A — s15 AIOps/可观测性验证（3 脚本）
+      # 注：s15_1/s15_3 内部调用全量 pytest tests/，可能较慢
+      - name: Verify scripts — s15 AIOps（3 脚本）
+        env:
+          PYTHONPATH: backend
+        run: |
+          set -e
+          for script in \
+            verify_s15_1_tracing_spans \
+            verify_s15_2_alert_router \
+            verify_s15_3_anomaly; do
+            echo "=== 运行 ${script}.py ==="
+            python scripts/${script}.py
+          done
+
+      # P1-3: Class A — s16 协作 Hub 验证（1 脚本，in-process WebSocket）
+      - name: Verify scripts — s16 协作 Hub（1 脚本）
+        env:
+          PYTHONPATH: backend
+        run: |
+          set -e
+          echo "=== 运行 verify_s16_4_multiroom.py ==="
+          python scripts/verify_s16_4_multiroom.py
+
+      # P1-3: Class A — s17 OKF 互操作验证（4 脚本）
+      - name: Verify scripts — s17 OKF（4 脚本）
+        env:
+          PYTHONPATH: backend
+        run: |
+          set -e
+          for script in \
+            verify_s17_1_okf_adapter \
+            verify_s17_2_wiki_log \
+            verify_s17_3_okf_validator \
+            verify_s17_4_wiki_query_permissive; do
+            echo "=== 运行 ${script}.py ==="
+            python scripts/${script}.py
+          done
+
+  # ────────── 前端：typecheck + vitest + verify 脚本 + build ──────────
   frontend:
-    name: Frontend (typecheck + vitest + build)
+    name: Frontend (typecheck + vitest + verify + build)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: frontend
@@ -99,6 +173,46 @@ jobs:
 
       - name: Vitest
         run: npm test
+
+      # P1-3: Class B — s14 前端工程验证（6 脚本，需 node_modules）
+      # s14_4 内部执行 npm run build，s14_6 无 chromium 时优雅跳过 e2e
+      - name: Verify scripts — s14 前端工程（6 脚本）
+        run: |
+          set -e
+          for script in \
+            verify_s14_1_router \
+            verify_s14_2_loading_bar \
+            verify_s14_3_unified_axios \
+            verify_s14_4_remove_deps \
+            verify_s14_5_test_coverage \
+            verify_s14_6_e2e; do
+            echo "=== 运行 ${script}.py ==="
+            python ../scripts/${script}.py
+          done
+
+      # P1-3: Class B — s15 前端权限/实时验证（2 脚本）
+      - name: Verify scripts — s15 前端（2 脚本）
+        run: |
+          set -e
+          for script in \
+            verify_s15_4_permission \
+            verify_s15_5_realtime; do
+            echo "=== 运行 ${script}.py ==="
+            python ../scripts/${script}.py
+          done
+
+      # P1-3: Class B — s16 协作前端验证（4 脚本）
+      - name: Verify scripts — s16 协作前端（4 脚本）
+        run: |
+          set -e
+          for script in \
+            verify_s16_2_wiki_edit \
+            verify_s16_3_event_stream \
+            verify_s16_5_conflict_recovery \
+            verify_s16_6_collab_history; do
+            echo "=== 运行 ${script}.py ==="
+            python ../scripts/${script}.py
+          done
 
       - name: Build
         run: npm run build

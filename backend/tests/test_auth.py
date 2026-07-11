@@ -41,24 +41,23 @@ def isolated_auth_db(tmp_path, monkeypatch):
 
 class TestPasswordHash:
     def test_hash_format(self):
+        """P0-1: bcrypt 哈希格式验证"""
         from app.auth.models import _hash_password
 
         h = _hash_password("secret")
-        assert "$" in h
-        salt, digest = h.split("$", 1)
-        assert len(salt) == 32  # token_hex(16) = 32 chars
-        assert len(digest) == 64  # sha256 hexdigest
+        # bcrypt 格式：$2b$<rounds>$<22-char salt><31-char hash>
+        assert h.startswith("$2b$12$")
+        assert len(h) == 60  # bcrypt hash 固定长度
 
-    def test_hash_with_known_salt(self):
-        import hashlib
-
+    def test_hash_is_bcrypt(self):
+        """P0-1: 确认使用 bcrypt（每次哈希不同，因 salt 随机）"""
         from app.auth.models import _hash_password
 
-        salt = "fixedsalt"
-        password = "password"
-        h = _hash_password(password, salt=salt)
-        expected_digest = hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
-        assert h == f"{salt}${expected_digest}"
+        h1 = _hash_password("samepassword")
+        h2 = _hash_password("samepassword")
+        assert h1 != h2  # bcrypt 每次生成不同 salt
+        assert h1.startswith("$2b$")
+        assert h2.startswith("$2b$")
 
     def test_verify_correct_password(self):
         from app.auth.models import _hash_password, _verify_password
@@ -79,6 +78,28 @@ class TestPasswordHash:
         assert _verify_password("x", "corrupt") is False
         # 空值
         assert _verify_password("x", "") is False
+
+    def test_verify_legacy_sha256_hash(self):
+        """P0-1: 向后兼容 — 旧 SHA256 哈希仍可验证"""
+        import hashlib
+
+        from app.auth.models import _verify_password
+
+        salt = "fixedsalt"
+        password = "password"
+        legacy_hash = f"{salt}${hashlib.sha256(f'{salt}{password}'.encode()).hexdigest()}"
+        assert _verify_password(password, legacy_hash) is True
+        assert _verify_password("wrong", legacy_hash) is False
+
+    def test_is_legacy_hash(self):
+        """P0-1: 旧哈希检测"""
+        from app.auth.models import _hash_password, _is_legacy_hash
+
+        bcrypt_hash = _hash_password("test")
+        assert _is_legacy_hash(bcrypt_hash) is False
+
+        legacy_hash = "salt$abc123def456"
+        assert _is_legacy_hash(legacy_hash) is True
 
 
 # ═══════════════ 角色层级 ═══════════════
@@ -303,7 +324,7 @@ class TestOIDCPKCE:
 
 
 class TestOIDCStateStore:
-    def test_save_and_pop_state(self):
+    def test_save_and_pop_state(self, isolated_auth_db):
         from app.auth.oidc import pop_state, save_state
 
         state = save_state("google", "verifier123", "/redirect")
@@ -313,7 +334,7 @@ class TestOIDCStateStore:
         assert data["code_verifier"] == "verifier123"
         assert data["redirect"] == "/redirect"
 
-    def test_pop_state_one_time(self):
+    def test_pop_state_one_time(self, isolated_auth_db):
         from app.auth.oidc import pop_state, save_state
 
         state = save_state("google", "v")
@@ -321,7 +342,7 @@ class TestOIDCStateStore:
         # 第二次取返回 None
         assert pop_state(state) is None
 
-    def test_pop_unknown_state(self):
+    def test_pop_unknown_state(self, isolated_auth_db):
         from app.auth.oidc import pop_state
 
         assert pop_state("unknown") is None

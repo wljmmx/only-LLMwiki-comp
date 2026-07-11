@@ -22,6 +22,19 @@ class Settings(BaseSettings):
     llm_timeout: int = 120
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.1
+    # P2-1: LLM 调用弹性
+    # 重试次数（0=不重试），指数退避 + 抖动
+    llm_max_retries: int = 3
+    # 重试基础延迟（秒），实际延迟 = base * 2^attempt + jitter
+    llm_retry_base_delay: float = 1.0
+    # 重试最大延迟（秒）
+    llm_retry_max_delay: float = 30.0
+    # 并发限流（同时进行的 LLM 请求数）
+    llm_concurrency_limit: int = 10
+    # 降级后端链（逗号分隔，如 "ollama,vllm"）
+    # 主后端失败后按顺序尝试 fallback 后端
+    # 留空则不启用降级
+    llm_fallback_backends: str = ""
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
@@ -65,6 +78,17 @@ class Settings(BaseSettings):
     # 认证（P0-2）— 留空则关闭认证（开发模式）
     api_token: str = ""
 
+    # Setup Wizard 一次性 token（P0-3: 防止 setup 端点被滥用）
+    # 设置后 /setup/test-* 和 /setup/generate-command 需携带此 token
+    # 留空则：bootstrap admin 已配置时要求 admin 登录，未配置时允许首次配置
+    setup_token: str = ""
+
+    # CORS 跨域（P0-7）
+    # 逗号分隔的允许 origin 列表，如 "http://localhost:5173,https://opskg.example.com"
+    # 留空则默认允许 frontend_base_url
+    # 设为 "*" 则允许所有（仅开发环境，生产环境不推荐）
+    cors_origins: str = ""
+
     # OIDC / OAuth2 SSO（P3-1 完整 SSO）
     # oidc_providers 是 JSON 字符串，格式：
     # [{"name":"google","display_name":"Google","client_id":"...","client_secret":"...",
@@ -103,6 +127,16 @@ class Settings(BaseSettings):
     # standalone: 单实例（默认）
     # replicated: 多实例 + 共享存储（需 NFS 或类似方案）
     deployment_mode: str = "standalone"
+
+    # 数据库后端（P1-6: 存储层迁移评估预留）
+    # sqlite: 当前默认，11 个独立 .db 文件（单机）
+    # postgresql: 未来迁移目标，支持多实例 HA
+    # 评估结论：迁移可行（~1080 行改动），推荐 PostgreSQL（ON CONFLICT/JSONB/tsvector 兼容性最佳）
+    # 迁移路径：6 阶段渐进式（低风险单 DB → 共享 auth.db → 共享 events.db → FTS5 重写 → 备份重写）
+    db_backend: Literal["sqlite", "postgresql"] = "sqlite"
+    # PostgreSQL 连接串（db_backend=postgresql 时使用）
+    # 格式：postgresql://user:password@host:5432/opskg
+    database_url: str = ""
 
     # 实时协作 Hub 上限（S16-4 多房间压测防护）
     # 单实例最大房间数；超过则新房间创建被拒绝

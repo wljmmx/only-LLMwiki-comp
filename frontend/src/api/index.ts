@@ -5,7 +5,10 @@ import {
   errorLoadingBar,
 } from './loadingBar'
 
-const API_BASE_URL = '/api'
+// P1-5: API 版本化 — 通过 VITE_API_BASE_URL 环境变量配置
+// 默认 /api（向后兼容），生产可切换到 /api/v1
+// nginx 已同时支持 /api/ 和 /api/v1/ 前缀（strip 后转发后端）
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
 
 export function getApiBaseUrl() {
   return API_BASE_URL

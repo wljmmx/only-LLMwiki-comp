@@ -122,6 +122,13 @@ business_metrics = {
         buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0),
         registry=REGISTRY,
     ),
+    # P2-3: LLM token 用量指标
+    "llm_tokens_total": Counter(
+        "opskg_llm_tokens_total",
+        "LLM token 用量（累计）",
+        ["backend", "type"],  # type: prompt | completion
+        registry=REGISTRY,
+    ),
     "search_queries_total": Counter(
         "opskg_search_queries_total",
         "搜索查询总数",

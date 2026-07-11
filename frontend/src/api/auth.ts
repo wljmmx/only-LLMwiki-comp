@@ -13,7 +13,7 @@
  * - IdP 完成认证后回调 /auth/oidc/{provider}/callback
  * - 后端签发 session 后 302 到 /login/callback?token=...&redirect=...
  */
-import api from './index'
+import api, { getApiBaseUrl } from './index'
 
 export interface User {
   id: number
@@ -122,7 +122,8 @@ export async function listOIDCProviders(): Promise<{ providers: OIDCProviderInfo
  * 直接修改 window.location 触发后端 302 重定向
  */
 export function redirectToOIDC(provider: string, redirect: string = '/dashboard'): void {
-  const url = `/api/auth/oidc/${provider}?redirect=${encodeURIComponent(redirect)}`
+  // P1-5: 使用 getApiBaseUrl() 支持版本化前缀
+  const url = `${getApiBaseUrl()}/auth/oidc/${provider}?redirect=${encodeURIComponent(redirect)}`
   window.location.href = url
 }
 

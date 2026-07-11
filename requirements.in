@@ -1,0 +1,44 @@
+# OpsKG 直接依赖声明（P1-4 依赖锁定）
+#
+# 此文件是 pip-compile 的输入，只声明直接依赖。
+# 锁定的完整依赖树（含传递依赖 + 精确版本 + hash）见 requirements.txt。
+#
+# 更新依赖：
+#   pip-compile --generate-hashes requirements.in
+# 或不带 hash（更快）：
+#   pip-compile requirements.in
+#
+# 安全扫描：
+#   pip-audit -r requirements.txt
+
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pydantic>=2.0
+pydantic-settings>=2.0
+structlog>=24.0
+httpx>=0.28
+neo4j>=5.0
+markitdown[docx,xlsx]>=0.0.2
+unstructured>=0.16
+langgraph>=1.0
+langgraph-checkpoint>=4.0
+pyyaml>=6.0
+sqlparse>=0.5
+python-multipart>=0.0.20
+openai>=1.40
+prometheus_client>=0.20
+numpy>=1.26
+opentelemetry-api>=1.40
+opentelemetry-sdk>=1.40
+opentelemetry-instrumentation-fastapi>=0.60
+opentelemetry-instrumentation-httpx>=0.60
+opentelemetry-exporter-otlp>=1.40
+python3-saml>=1.16
+ldap3>=2.9
+bcrypt>=4.0
+PyJWT>=2.8
+slowapi>=0.1.9
+
+# 开发依赖（CI / lint / test）
+pytest>=8.0
+ruff>=0.6

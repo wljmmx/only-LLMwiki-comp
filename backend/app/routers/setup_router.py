@@ -10,23 +10,155 @@
 - 只读检测当前环境配置状态，不写 .env 文件（避免敏感信息持久化风险）
 - test-* 端点接受请求体覆盖配置，用于 wizard 中"填了 key 但还没重启"的场景
 - generate-command 返回 docker run / docker compose 命令字符串，用户自行执行
-- 所有端点无需认证（setup wizard 在认证配置前需要可用）
+- P0-3 安全加固：
+  - /setup/status 始终开放（不暴露敏感信息）
+  - test-* / generate-command 需要 setup_token 或 admin 登录（系统已配置后）
+  - test-* 端点强制 SSRF 防护：禁止访问私有/内部 IP 段
 """
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import secrets
+import socket
 from typing import Literal
+from urllib.parse import urlparse
 
 import structlog
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.auth.token_auth import get_current_user, require_role
 from app.config import get_settings
 
 logger = structlog.get_logger()
 
 router = APIRouter()
+
+
+# ────────── P0-3: SSRF 防护 + 条件认证 ──────────
+
+
+# 禁止访问的 IP 段（私有/环回/链路本地/保留地址）
+_BLOCKED_IP_PREFIXES = (
+    "127.",  # IPv4 loopback
+    "10.",  # private A
+    "172.16.", "172.17.", "172.18.", "172.19.", "172.20.",
+    "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+    "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",  # private B
+    "192.168.",  # private C
+    "169.254.",  # link-local
+    "::1",  # IPv6 loopback
+    "fc", "fd",  # IPv6 ULA
+    "fe80",  # IPv6 link-local
+)
+
+
+def _is_blocked_ip(ip_str: str) -> bool:
+    """检查 IP 是否在禁止访问的私有/内部段"""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+        )
+    except ValueError:
+        # 非 IP 地址（如 hostname），做前缀检查兜底
+        return any(ip_str.startswith(p) for p in _BLOCKED_IP_PREFIXES)
+
+
+def validate_url_ssrf(url: str) -> str:
+    """验证 URL 安全性，防止 SSRF（服务端请求伪造）
+
+    检查项：
+    1. scheme 必须是 http 或 https
+    2. 解析 hostname，若为 IP 则检查是否在私有/内部段
+    3. 若为域名，做 DNS 解析后检查所有解析结果
+
+    通过验证返回原 URL，否则抛 400。
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(400, f"不允许的 URL scheme: {parsed.scheme}")
+
+    hostname = parsed.hostname or ""
+    if not hostname:
+        raise HTTPException(400, "URL 缺少 hostname")
+
+    # 直接检查 IP 字面量
+    if _is_blocked_ip(hostname):
+        raise HTTPException(400, f"禁止访问私有/内部地址: {hostname}")
+
+    # DNS 解析检查（防止域名指向内部 IP）
+    try:
+        addr_infos = socket.getaddrinfo(hostname, None)
+        for ai in addr_infos:
+            ip = ai[4][0]
+            if _is_blocked_ip(ip):
+                raise HTTPException(
+                    400, f"域名 {hostname} 解析到内部地址 {ip}，禁止访问"
+                )
+    except socket.gaierror:
+        pass  # DNS 解析失败，允许通过（连接时会自然失败）
+
+    return url
+
+
+async def _setup_auth_guard(
+    request: Request,
+    user: dict | None = Depends(get_current_user),
+) -> None:
+    """P0-3: setup 端点条件认证守卫
+
+    策略：
+    1. 若 OPSKG_SETUP_TOKEN 已配置 → 检查 Authorization: Bearer <setup_token>
+    2. 若 bootstrap admin 已配置（系统已初始化）→ 要求 admin 登录
+    3. 若系统未初始化（首次配置）→ 放行
+    """
+    settings = get_settings()
+
+    # 策略 1：setup token
+    if settings.setup_token:
+        auth_header = request.headers.get("Authorization", "")
+        token = None
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:]
+        if not token or not secrets.compare_digest(token, settings.setup_token):
+            raise HTTPException(401, "无效的 setup token")
+        return
+
+    # 策略 2：系统已配置 → 要求 admin
+    bootstrap_configured = bool(
+        os.getenv("OPSKG_BOOTSTRAP_ADMIN_USER", "admin")
+        and os.getenv("OPSKG_BOOTSTRAP_ADMIN_PASSWORD", "admin")
+    )
+    # 检查 auth store 是否有用户（系统已初始化的更可靠判断）
+    try:
+        from app.auth.models import get_auth_store
+
+        store = get_auth_store()
+        users = store.list_users()
+        system_initialized = len(users) > 0
+    except Exception:  # noqa: BLE001
+        system_initialized = bootstrap_configured
+
+    if system_initialized:
+        # 要求 admin 角色
+        if user is None or user.get("role") not in ("admin",):
+            # 尝试 legacy token 模式
+            auth_header = request.headers.get("Authorization", "")
+            if settings.api_token and auth_header.lower().startswith("bearer "):
+                token = auth_header[7:]
+                if secrets.compare_digest(token, settings.api_token):
+                    return  # legacy token 视为 admin
+            raise HTTPException(403, "系统已初始化，setup 操作需要 admin 权限")
+
+    # 策略 3：首次配置 → 放行
+    return
 
 
 # ────────── Schemas ──────────
@@ -106,7 +238,7 @@ class GenerateCommandRequest(BaseModel):
     api_token: str = ""
     bootstrap_admin_user: str = "admin"
     bootstrap_admin_password: str = "admin"
-    port: int = Field(default=80, ge=1, le=65535)
+    port: int = Field(default=8080, ge=1, le=65535)
     workers: int = Field(default=2, ge=1, le=32)
 
 
@@ -178,11 +310,15 @@ async def get_setup_status() -> SetupStatusResponse:
 
 
 @router.post("/setup/test-llm", response_model=TestLLMResponse)
-async def test_llm(req: TestLLMRequest) -> TestLLMResponse:
+async def test_llm(
+    req: TestLLMRequest,
+    _guard: None = Depends(_setup_auth_guard),
+) -> TestLLMResponse:
     """测试 LLM 连通性
 
     用请求体覆盖当前 settings（用于 wizard 中"填了 key 但还没重启"场景）。
     发送一个最小 chat 请求验证连通。
+    P0-3: SSRF 防护 + 条件认证。
     """
     import time
 
@@ -210,6 +346,9 @@ async def test_llm(req: TestLLMRequest) -> TestLLMResponse:
         return TestLLMResponse(
             ok=False, backend=backend, model="", error=f"未知 backend: {backend}"
         )
+
+    # P0-3: SSRF 防护 — 验证 base_url 不指向私有/内部地址
+    validate_url_ssrf(base_url)
 
     # 用 openai SDK 测试（openai_compat / vllm / ollama 均兼容 OpenAI 协议）
     try:
@@ -245,14 +384,29 @@ async def test_llm(req: TestLLMRequest) -> TestLLMResponse:
 
 
 @router.post("/setup/test-neo4j", response_model=TestNeo4jResponse)
-async def test_neo4j(req: TestNeo4jRequest) -> TestNeo4jResponse:
-    """测试 Neo4j 连通性"""
+async def test_neo4j(
+    req: TestNeo4jRequest,
+    _guard: None = Depends(_setup_auth_guard),
+) -> TestNeo4jResponse:
+    """测试 Neo4j 连通性
+
+    P0-3: SSRF 防护 + 条件认证。
+    """
     import time
 
     settings = get_settings()
     uri = req.uri or settings.neo4j_uri
     user = req.user or settings.neo4j_user
     password = req.password or settings.neo4j_password
+
+    # P0-3: SSRF 防护 — 从 bolt URI 提取 host 做检查
+    # bolt:// / bolt+s:// / neo4j:// 等 scheme 转 http 做验证
+    uri_host = uri
+    for prefix in ("bolt://", "bolt+s://", "neo4j://", "neo4j+s://"):
+        if uri_host.startswith(prefix):
+            uri_host = "http://" + uri_host[len(prefix):]
+            break
+    validate_url_ssrf(uri_host)
 
     try:
         from neo4j import GraphDatabase
@@ -295,10 +449,14 @@ async def test_neo4j(req: TestNeo4jRequest) -> TestNeo4jResponse:
 
 
 @router.post("/setup/generate-command", response_model=GenerateCommandResponse)
-async def generate_command(req: GenerateCommandRequest) -> GenerateCommandResponse:
+async def generate_command(
+    req: GenerateCommandRequest,
+    _guard: None = Depends(_setup_auth_guard),
+) -> GenerateCommandResponse:
     """生成可复制的 docker 启动命令 + .env 文件内容
 
     用户在 wizard 填完参数后，复制命令自行执行，避免后端写文件的安全风险。
+    P0-3: 条件认证（setup_token 或 admin）。
     """
     # 构建 .env 内容
     env_lines: list[str] = [
@@ -355,7 +513,7 @@ async def generate_command(req: GenerateCommandRequest) -> GenerateCommandRespon
             "# 3. 查看日志\n"
             "docker compose logs -f opskg\n\n"
             "# 4. 访问 http://localhost\n"
-            f"#    （如需改端口，修改 docker-compose.yml 的 ports: \"{req.port}:80\"）"
+            f"#    （如需改端口，修改 docker-compose.yml 的 ports: \"{req.port}:8080\"）"
         )
     else:
         # docker run（单容器，不含 Neo4j，需用户自行启动 Neo4j）
@@ -396,7 +554,7 @@ async def generate_command(req: GenerateCommandRequest) -> GenerateCommandRespon
             "#    --add-host 让容器内 host.docker.internal 解析到宿主（访问宿主 Ollama/vLLM）\n"
             "#    --link 让容器内 bolt://neo4j:7687 解析到 Neo4j 容器\n"
             f"docker run -d --name opskg \\\n"
-            f"  -p {req.port}:80 \\\n"
+            f"  -p {req.port}:8080 \\\n"
             f"  --add-host host.docker.internal:host-gateway \\\n"
             f"  {env_flags} \\\n"
             f"  -v opskg_data:/app/data \\\n"

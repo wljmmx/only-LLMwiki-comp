@@ -4,7 +4,7 @@
 #   1. curl -sSL https://raw.githubusercontent.com/wljmmx/only-LLMwiki-comp/main/.env.example -o .env
 #   2. 编辑 .env（至少配置 OPENAI_COMPAT_API_KEY；也可留空，启动后由 UI Setup Wizard 引导）
 #   3. docker compose up -d
-#   4. 访问 http://localhost:80（首次自动跳转 Setup Wizard）
+#   4. 访问 http://localhost:8080（首次自动跳转 Setup Wizard）
 #
 # 镜像说明:
 #   ghcr.io/wljmmx/only-llmwiki-comp:0.0.1 单镜像内含:
@@ -48,7 +48,7 @@ services:
     # build: .
     container_name: opskg
     ports:
-      - "${OPSKG_PORT:-80}:80"       # nginx（外部访问入口，前端 + /api 反代）
+      - "${OPSKG_PORT:-8080}:8080"   # nginx（非特权端口，前端 + /api 反代）
     environment:
       - ENV=${ENV:-production}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -98,7 +98,7 @@ services:
       neo4j:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 30s
       timeout: 5s
       retries: 3

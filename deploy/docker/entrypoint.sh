@@ -24,9 +24,10 @@ cat <<EOF
 ============================================================
 OpsKG 单镜像启动
   uvicorn workers : $WORKERS
-  nginx           : 监听 80
+  nginx           : 监听 8080（非特权端口）
   后端内部端口    : 8000（仅 nginx 访问）
   数据目录        : /app/data（建议挂载 PVC）
+  运行用户        : opskg（非 root）
   配置来源        : 环境变量（参考 .env.example / deploy/k8s/configmap.yaml）
 ============================================================
 EOF

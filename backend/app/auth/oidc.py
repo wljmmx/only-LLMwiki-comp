@@ -53,6 +53,7 @@ class OIDCProvider:
         self._token_endpoint: str | None = None
         self._userinfo_endpoint: str | None = None
         self._jwks_uri: str | None = None
+        self._issuer: str | None = None  # P0-2: id_token iss 校验
         self._discovered = False
 
     async def discover(self) -> None:
@@ -67,6 +68,7 @@ class OIDCProvider:
         self._token_endpoint = doc.get("token_endpoint")
         self._userinfo_endpoint = doc.get("userinfo_endpoint")
         self._jwks_uri = doc.get("jwks_uri")
+        self._issuer = doc.get("issuer")
         self._discovered = True
         logger.info(
             "oidc.discovered",
@@ -131,40 +133,72 @@ def generate_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-# ────────── OAuth2 state 存储 ──────────
+# ────────── OAuth2 state 存储（P0-6: 持久化到 DB） ──────────
 
-# 简单内存 state 存储（单实例足够；多实例需用 Redis/DB）
-# state → {provider, code_verifier, redirect, created_at}
-_state_store: dict[str, dict[str, Any]] = {}
+# state 存储从内存 dict 迁移到 SQLite DB（data/auth.db）
+# 支持多实例 HA 部署：任意实例都能读取/删除 state
 STATE_TTL = 600  # 10 分钟
 
 
 def save_state(
     provider: str, code_verifier: str, redirect: str = ""
 ) -> str:
-    """生成 state 并保存"""
+    """生成 state 并持久化到 DB"""
     state = secrets.token_urlsafe(32)
-    _state_store[state] = {
-        "provider": provider,
-        "code_verifier": code_verifier,
-        "redirect": redirect,
-        "created_at": time.time(),
-    }
-    # 清理过期
+    created_at = time.time()
+    conn = _get_mapping_db()
+    try:
+        conn.execute(
+            "INSERT INTO oidc_states (state, provider, code_verifier, redirect, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (state, provider, code_verifier, redirect, created_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    # 清理过期（best-effort，不阻塞主流程）
     _cleanup_states()
     return state
 
 
 def pop_state(state: str) -> dict[str, Any] | None:
-    """取出并删除 state（一次性）"""
-    return _state_store.pop(state, None)
+    """取出并删除 state（一次性，DB 原子操作）"""
+    conn = _get_mapping_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM oidc_states WHERE state = ?", (state,)
+        ).fetchone()
+        if not row:
+            return None
+        # 检查是否过期
+        if time.time() - row["created_at"] > STATE_TTL:
+            conn.execute("DELETE FROM oidc_states WHERE state = ?", (state,))
+            conn.commit()
+            return None
+        # 删除（一次性使用）
+        conn.execute("DELETE FROM oidc_states WHERE state = ?", (state,))
+        conn.commit()
+        return {
+            "provider": row["provider"],
+            "code_verifier": row["code_verifier"],
+            "redirect": row["redirect"],
+            "created_at": row["created_at"],
+        }
+    finally:
+        conn.close()
 
 
 def _cleanup_states() -> None:
-    now = time.time()
-    expired = [k for k, v in _state_store.items() if now - v["created_at"] > STATE_TTL]
-    for k in expired:
-        del _state_store[k]
+    """清理过期 state（DB 操作）"""
+    cutoff = time.time() - STATE_TTL
+    conn = _get_mapping_db()
+    try:
+        conn.execute("DELETE FROM oidc_states WHERE created_at < ?", (cutoff,))
+        conn.commit()
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        conn.close()
 
 
 # ────────── OIDC 用户映射 ──────────
@@ -191,6 +225,21 @@ def _get_mapping_db() -> sqlite3.Connection:
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
         """
+    )
+    # P0-6: state 持久化到 DB（替代内存 dict，支持多实例 HA）
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS oidc_states (
+            state TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            code_verifier TEXT NOT NULL,
+            redirect TEXT,
+            created_at REAL NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_oidc_states_created ON oidc_states(created_at)"
     )
     conn.commit()
     return conn
@@ -304,7 +353,20 @@ async def exchange_code(
         access_token = token_data.get("access_token", "")
         id_token = token_data.get("id_token", "")
 
-        # 获取用户信息（优先 userinfo 端点，其次解析 id_token）
+        # P0-2: 始终验证 id_token 签名（OIDC 最佳实践：id_token 是认证凭证）
+        id_token_claims: dict[str, Any] = {}
+        if id_token:
+            try:
+                id_token_claims = _decode_id_token_claims(id_token, provider)
+            except Exception as e:  # noqa: BLE001
+                logger.error(
+                    "oidc.id_token_verify_failed",
+                    provider=provider.name,
+                    error=str(e),
+                )
+                raise ValueError(f"id_token 验签失败，拒绝登录: {e}") from e
+
+        # 获取用户信息（优先 userinfo 端点，其次用已验证的 id_token claims）
         user_info: dict[str, Any] = {}
         if provider.userinfo_endpoint and access_token:
             try:
@@ -317,12 +379,9 @@ async def exchange_code(
             except Exception as e:  # noqa: BLE001
                 logger.warning("oidc.userinfo_failed", provider=provider.name, error=str(e))
 
-        # 如果 userinfo 没有返回 sub，从 id_token 中解析（不验证签名，仅提取 claims）
-        if not user_info.get("sub") and id_token:
-            try:
-                user_info = _decode_id_token_claims(id_token)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("oidc.id_token_parse_failed", provider=provider.name, error=str(e))
+        # 如果 userinfo 没有返回 sub，用已验证的 id_token claims 补充
+        if not user_info.get("sub") and id_token_claims:
+            user_info = id_token_claims
 
         return {
             "access_token": access_token,
@@ -333,12 +392,66 @@ async def exchange_code(
         }
 
 
-def _decode_id_token_claims(id_token: str) -> dict[str, Any]:
-    """从 JWT id_token 中提取 claims（不验证签名，仅 base64 解码 payload）
+# JWKS 客户端缓存（按 jwks_uri 复用，避免每次请求都重建连接）
+_jwks_clients: dict[str, Any] = {}
 
-    注意：生产环境应验证 JWT 签名。此处为简化实现，
-    在 userinfo 端点可用时优先用 userinfo，id_token 仅作 fallback。
+
+def _get_jwks_client(jwks_uri: str) -> Any:
+    """获取或创建 JWKS 客户端（缓存复用）"""
+    if jwks_uri not in _jwks_clients:
+        from jwt import PyJWKClient
+
+        _jwks_clients[jwks_uri] = PyJWKClient(jwks_uri, cache_keys=True, lifespan=3600)
+    return _jwks_clients[jwks_uri]
+
+
+def _decode_id_token_claims(
+    id_token: str, provider: OIDCProvider | None = None
+) -> dict[str, Any]:
+    """从 JWT id_token 中提取 claims（P0-2: 验证签名后提取）
+
+    安全策略：
+    - 若 provider 已 discover 且 jwks_uri 可用 → 必须验证签名（fail closed）
+    - 验签失败抛出异常，调用方决定是否降级
+    - 若 provider 未提供或 jwks_uri 不可用 → 降级为仅解码（记录警告，仅限开发模式）
+
+    验证项：签名、aud（client_id）、exp、iat、iss（若 discovery 返回 issuer）
     """
+    # P0-2: 优先验签
+    if provider is not None and provider._jwks_uri:
+        try:
+            import jwt
+        except ImportError as e:
+            raise RuntimeError("PyJWT 未安装，无法验证 id_token 签名") from e
+
+        jwks_client = _get_jwks_client(provider._jwks_uri)
+        signing_key = jwks_client.get_signing_key_from_jwt(id_token)
+
+        # 构建解码选项：验证 aud、exp、iat
+        decode_options: dict[str, Any] = {
+            "require": ["exp", "iat"],
+            "verify_signature": True,
+            "verify_exp": True,
+            "verify_aud": True,
+        }
+        # issuer 校验（从 discovery 文档获取 issuer 字段）
+        issuer = getattr(provider, "_issuer", None)
+
+        claims = jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
+            audience=provider.client_id,
+            issuer=issuer,
+            options=decode_options,
+        )
+        return claims
+
+    # 降级：无 provider/jwks_uri → 仅解码（开发模式，记录警告）
+    logger.warning(
+        "oidc.id_token_no_signature_verification",
+        reason="provider or jwks_uri unavailable — 降级为仅解码（不安全，仅限开发）",
+    )
     parts = id_token.split(".")
     if len(parts) != 3:
         raise ValueError("无效 JWT 格式")

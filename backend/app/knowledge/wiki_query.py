@@ -695,6 +695,7 @@ class WikiQAEngine:
         writeback: bool = True,
         permissive: bool = True,
         history: list[dict] | None = None,
+        cancel_token: Any = None,
     ):
         """流式问答：先返回 meta（recalled/cited），再流式 yield 回答片段
 
@@ -740,7 +741,9 @@ class WikiQAEngine:
 
         # 流式生成回答：迭代 LLM stream，逐 chunk yield delta 并收集全文
         collected: list[str] = []
-        async for chunk in self._stream_llm(question, contexts, history=clean_history):
+        async for chunk in self._stream_llm(
+            question, contexts, history=clean_history, cancel_token=cancel_token
+        ):
             collected.append(chunk)
             yield {"type": "delta", "text": chunk}
 
@@ -772,6 +775,7 @@ class WikiQAEngine:
         contexts: list[str],
         *,
         history: list[dict] | None = None,
+        cancel_token: Any = None,
     ):
         """底层：调用 LLM stream，逐 chunk yield delta 文本
 
@@ -801,6 +805,7 @@ class WikiQAEngine:
                 messages=messages,
                 temperature=0.2,
                 max_tokens=self.settings.llm_max_tokens,
+                cancel_token=cancel_token,
             ):
                 if chunk:
                     yield chunk

@@ -1,6 +1,17 @@
 import structlog
 
-from app.core.llm.base import ChatMessage, LLMClient, LLMResponse
+from app.core.llm.base import (
+    ChatMessage,
+    LLMAuthError,
+    LLMBadRequestError,
+    LLMClient,
+    LLMConnectionError,
+    LLMError,
+    LLMRateLimitError,
+    LLMResponse,
+    LLMServerError,
+    LLMTimeoutError,
+)
 from app.core.llm.router import get_llm_client
 
 logger = structlog.get_logger()
@@ -51,8 +62,15 @@ async def embed_query(text: str) -> list[float] | None:
 
 __all__ = [
     "ChatMessage",
+    "LLMAuthError",
+    "LLMBadRequestError",
     "LLMClient",
+    "LLMConnectionError",
+    "LLMError",
+    "LLMRateLimitError",
     "LLMResponse",
+    "LLMServerError",
+    "LLMTimeoutError",
     "get_llm_client",
     "embed_texts",
     "embed_query",
