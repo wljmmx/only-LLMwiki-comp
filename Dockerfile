@@ -98,8 +98,10 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # 无需 root 绑定特权端口，容器全程非特权运行
 RUN groupadd -r opskg && useradd -r -g opskg -d /app -s /sbin/nologin opskg \
     && mkdir -p /app/data /var/log/nginx /var/log/supervisor \
-                /var/lib/nginx/body /var/lib/nginx/proxy /var/lib/nginx/fastcgi /run \
-    && chown -R opskg:opskg /app /var/log/nginx /var/log/supervisor /run
+                /var/lib/nginx/body /var/lib/nginx/proxy /var/lib/nginx/fastcgi \
+                /var/cache/nginx /run \
+    && chown -R opskg:opskg /app /var/log/nginx /var/log/supervisor \
+                /var/lib/nginx /var/cache/nginx /run
 
 # 数据目录（建议挂载 PVC）
 VOLUME ["/app/data"]
