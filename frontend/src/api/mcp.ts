@@ -1,4 +1,5 @@
-import api, { getAuthToken, getApiBaseUrl } from './index'
+import api, { getApiBaseUrl } from './index'
+import { streamSse } from '@/utils/sse'
 
 // ────────── MCP（F13 MCP 工具浏览器） ──────────
 
@@ -52,7 +53,7 @@ export interface JsonRpcResponse {
  * GET /mcp/tools
  */
 export function listMcpTools() {
-  return api.get<any, { tools: McpTool[] }>('/mcp/tools')
+  return api.get<unknown, { tools: McpTool[] }>('/mcp/tools')
 }
 
 /**
@@ -60,7 +61,7 @@ export function listMcpTools() {
  * POST /mcp  body: JsonRpcRequest | JsonRpcRequest[]
  */
 export function mcpJsonRpc(req: JsonRpcRequest | JsonRpcRequest[]) {
-  return api.post<any, JsonRpcResponse | JsonRpcResponse[]>('/mcp', req)
+  return api.post<unknown, JsonRpcResponse | JsonRpcResponse[]>('/mcp', req)
 }
 
 /**
@@ -77,9 +78,9 @@ export async function listToolsViaJsonRpc(id: number | string = 1): Promise<Json
  */
 export async function callTool(
   name: string,
-  args: Record<string, any> = {},
+  args: Record<string, unknown> = {},
   id: number | string = 1,
-  progressToken?: any,
+  progressToken?: unknown,
 ): Promise<JsonRpcResponse> {
   const res = await mcpJsonRpc({
     jsonrpc: '2.0',
@@ -125,7 +126,7 @@ export async function listPrompts(id: number | string = 1): Promise<JsonRpcRespo
  */
 export async function getPrompt(
   name: string,
-  args: Record<string, any> = {},
+  args: Record<string, unknown> = {},
   id: number | string = 1,
 ): Promise<JsonRpcResponse> {
   const res = await mcpJsonRpc({
@@ -139,32 +140,34 @@ export async function getPrompt(
 
 // ────────── SSE 流式调用（用于长耗时工具如 generate_runbook） ──────────
 
+/**
+ * SSE 事件。
+ *
+ * P4-3：`type` 放宽为 string（与 utils/sse 的 SseEvent 对齐），`data` 保留 any
+ * 以便消费方（如 McpView.vue）直接访问 ev.data.result.content[0].text。
+ * 与 utils/sse 的 SseEvent（data: unknown）结构兼容。
+ */
 export interface SseEvent {
-  type: 'progress' | 'result' | 'error' | 'done'
+  type: string
   data: any
 }
 
 /**
  * SSE 流式调用工具（POST /mcp/stream）
- * 通过 fetch + ReadableStream 解析 SSE 事件
+ *
+ * SSE 帧解析由共享工具 streamSse 负责（P4-3 抽取）。
+ * streamSse 为回调式并返回 AbortController，本函数将其适配为 Promise<void>：
+ * 收到 done 事件（服务端发送或流末尾合成）时 resolve，出错时 reject。
  *
  * S14-3：token 与 baseURL 通过共享 helper 获取（不再硬编码 'opskg_token' / '/api'）。
- * fetch 不走 axios 拦截器，故仍需手动注入 Authorization 头与 loading bar。
  */
 export async function callToolStream(
   name: string,
-  args: Record<string, any>,
+  args: Record<string, unknown>,
   onEvent: (ev: SseEvent) => void,
-  progressToken?: any,
+  progressToken?: unknown,
   signal?: AbortSignal,
 ): Promise<void> {
-  const token = getAuthToken()
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'text/event-stream',
-  }
-  if (token) headers.Authorization = `Bearer ${token}`
-
   const body: JsonRpcRequest = {
     jsonrpc: '2.0',
     id: Date.now(),
@@ -173,54 +176,20 @@ export async function callToolStream(
     _meta: progressToken != null ? { progressToken } : undefined,
   }
 
-  const res = await fetch(`${getApiBaseUrl()}/mcp/stream`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal,
+  return new Promise<void>((resolve, reject) => {
+    streamSse(
+      {
+        url: `${getApiBaseUrl()}/mcp/stream`,
+        body,
+        signal,
+        // 流末尾合成 done 事件，确保 Promise 总能 resolve
+        emitSyntheticDone: true,
+      },
+      (ev) => {
+        onEvent(ev)
+        if (ev.type === 'done') resolve()
+      },
+      (message) => reject(new Error(message)),
+    )
   })
-
-  if (!res.ok || !res.body) {
-    throw new Error(`SSE 请求失败: ${res.status} ${res.statusText}`)
-  }
-
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let currentEvent = 'message'
-
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-
-    // SSE 帧以 \n\n 分隔
-    const frames = buffer.split('\n\n')
-    buffer = frames.pop() || ''
-
-    for (const frame of frames) {
-      const lines = frame.split('\n')
-      const dataLines: string[] = []
-      currentEvent = 'message'
-      for (const line of lines) {
-        if (line.startsWith('event:')) {
-          currentEvent = line.slice(6).trim()
-        } else if (line.startsWith('data:')) {
-          dataLines.push(line.slice(5).trim())
-        }
-      }
-      const dataStr = dataLines.join('\n')
-      let data: any = dataStr
-      try {
-        data = JSON.parse(dataStr)
-      } catch {
-        // 保留为字符串
-      }
-
-      onEvent({ type: currentEvent as SseEvent['type'], data })
-    }
-  }
-
-  onEvent({ type: 'done', data: null })
 }

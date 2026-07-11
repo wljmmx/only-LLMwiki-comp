@@ -26,11 +26,11 @@ export function generateRunbook(payload: {
   publish?: boolean
   wiki_slug?: string
 }) {
-  return api.post<any, RunbookGenerateResult>('/runbook/generate', payload)
+  return api.post<unknown, RunbookGenerateResult>('/runbook/generate', payload)
 }
 
 export function previewRunbook(symptom: string, service = '', host = '', maxDocs = 5) {
-  return api.get<any, RunbookGenerateResult>('/runbook/preview', {
+  return api.get<unknown, RunbookGenerateResult>('/runbook/preview', {
     params: { symptom, service, host, max_docs: maxDocs },
   })
 }
@@ -111,28 +111,28 @@ export interface IngestResult {
 }
 
 export function ingestEvents(events: AIOpsEvent[]) {
-  return api.post<any, IngestResult>('/events/ingest', { events })
+  return api.post<unknown, IngestResult>('/events/ingest', { events })
 }
 
 export function correlateEvents(sinceMinutes = 60, maxEvents = 500) {
-  return api.post<any, any>('/events/correlate', {
+  return api.post<unknown, any>('/events/correlate', {
     since_minutes: sinceMinutes,
     max_events: maxEvents,
   })
 }
 
 export function listIncidents(status: IncidentState | string = 'open', limit = 50) {
-  return api.get<any, { incidents: Incident[]; count: number }>('/events/incidents', {
+  return api.get<unknown, { incidents: Incident[]; count: number }>('/events/incidents', {
     params: { status, limit },
   })
 }
 
 export function getIncident(incidentId: string) {
-  return api.get<any, Incident>(`/events/incidents/${incidentId}`)
+  return api.get<unknown, Incident>(`/events/incidents/${incidentId}`)
 }
 
 export function getIncidentStates() {
-  return api.get<any, IncidentStateMachine>('/events/incidents/states')
+  return api.get<unknown, IncidentStateMachine>('/events/incidents/states')
 }
 
 /**
@@ -144,7 +144,7 @@ export function transitionIncident(
   targetState: IncidentState | string,
   options: { note?: string; by?: string; assignee?: string } = {},
 ) {
-  return api.post<any, TransitionResult>(`/events/incidents/${incidentId}/transition`, {
+  return api.post<unknown, TransitionResult>(`/events/incidents/${incidentId}/transition`, {
     target_state: targetState,
     note: options.note ?? '',
     by: options.by ?? '',
@@ -156,49 +156,49 @@ export function ackIncident(
   incidentId: string,
   options: { note?: string; by?: string; assignee?: string } = {},
 ) {
-  return api.post<any, TransitionResult>(`/events/incidents/${incidentId}/ack`, options)
+  return api.post<unknown, TransitionResult>(`/events/incidents/${incidentId}/ack`, options)
 }
 
 export function investigateIncident(
   incidentId: string,
   options: { note?: string; by?: string; assignee?: string } = {},
 ) {
-  return api.post<any, TransitionResult>(`/events/incidents/${incidentId}/investigate`, options)
+  return api.post<unknown, TransitionResult>(`/events/incidents/${incidentId}/investigate`, options)
 }
 
 export function mitigateIncident(
   incidentId: string,
   options: { note?: string; by?: string; assignee?: string } = {},
 ) {
-  return api.post<any, TransitionResult>(`/events/incidents/${incidentId}/mitigate`, options)
+  return api.post<unknown, TransitionResult>(`/events/incidents/${incidentId}/mitigate`, options)
 }
 
 export function resolveIncident(
   incidentId: string,
   options: { note?: string; by?: string; assignee?: string } = {},
 ) {
-  return api.post<any, TransitionResult>(`/events/incidents/${incidentId}/resolve`, options)
+  return api.post<unknown, TransitionResult>(`/events/incidents/${incidentId}/resolve`, options)
 }
 
 /** Legacy close 端点（等价于 resolve） */
 export function closeIncident(incidentId: string, note = '') {
-  return api.post<any, any>(`/events/incidents/${incidentId}/close`, null, { params: { note } })
+  return api.post<unknown, any>(`/events/incidents/${incidentId}/close`, null, { params: { note } })
 }
 
 export function incidentToRunbook(incidentId: string, publish = false) {
-  return api.post<any, RunbookGenerateResult>(`/events/incidents/${incidentId}/runbook`, null, {
+  return api.post<unknown, RunbookGenerateResult>(`/events/incidents/${incidentId}/runbook`, null, {
     params: { publish },
   })
 }
 
 export function getIncidentChanges(incidentId: string) {
-  return api.get<any, { incident_id: string; changes: any[]; count: number }>(
+  return api.get<unknown, { incident_id: string; changes: any[]; count: number }>(
     `/events/incidents/${incidentId}/changes`,
   )
 }
 
 export function getIncidentRollbackSuggestion(incidentId: string) {
-  return api.get<any, any>(`/events/incidents/${incidentId}/rollback-suggestion`)
+  return api.get<unknown, any>(`/events/incidents/${incidentId}/rollback-suggestion`)
 }
 
 // ────────── Changes ──────────
@@ -221,24 +221,24 @@ export interface Change {
 }
 
 export function ingestChanges(changes: Change[]) {
-  return api.post<any, IngestResult>('/changes/ingest', { changes })
+  return api.post<unknown, IngestResult>('/changes/ingest', { changes })
 }
 
 export function correlateChanges(sinceHours = 24, timeWindowMinutes?: number) {
-  return api.post<any, any>('/changes/correlate', {
+  return api.post<unknown, any>('/changes/correlate', {
     since_hours: sinceHours,
     time_window_minutes: timeWindowMinutes,
   })
 }
 
 export function listChanges(service = '', limit = 50) {
-  return api.get<any, { changes: Change[]; count: number }>('/changes', {
+  return api.get<unknown, { changes: Change[]; count: number }>('/changes', {
     params: { service, limit },
   })
 }
 
 export function getChange(changeId: string) {
-  return api.get<any, Change>(`/changes/${changeId}`)
+  return api.get<unknown, Change>(`/changes/${changeId}`)
 }
 
 // ────────── Topology ──────────
@@ -263,23 +263,23 @@ export interface TopologyData {
 }
 
 export function rebuildTopology(maxDocs = 100) {
-  return api.post<any, any>('/topology/rebuild', null, {
+  return api.post<unknown, any>('/topology/rebuild', null, {
     params: { max_docs: maxDocs },
   })
 }
 
 export function getTopology(nodeType?: string, relation?: string): Promise<TopologyData> {
-  return api.get<any, TopologyData>('/topology', {
+  return api.get<unknown, TopologyData>('/topology', {
     params: { node_type: nodeType, relation },
   })
 }
 
 export function getNodeNeighbors(nodeName: string, depth = 1) {
-  return api.get<any, any>(`/topology/nodes/${encodeURIComponent(nodeName)}`, {
+  return api.get<unknown, any>(`/topology/nodes/${encodeURIComponent(nodeName)}`, {
     params: { depth },
   })
 }
 
 export function getImpactAnalysis(nodeName: string) {
-  return api.get<any, any>(`/topology/impact/${encodeURIComponent(nodeName)}`)
+  return api.get<unknown, any>(`/topology/impact/${encodeURIComponent(nodeName)}`)
 }

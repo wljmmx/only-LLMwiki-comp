@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { formatDateTime } from '@/utils/format'
 
 const mockMessage = {
   success: vi.fn(),
@@ -237,9 +238,8 @@ describe('WikiHealthView.vue', () => {
   })
 
   it('formatDate：YYYY-MM-DD HH:mm 格式', () => {
-    const wrapper = mountView()
-    const vm = wrapper.vm as any
-    const result = vm.formatDate('2026-07-01T10:30:00Z')
+    mountView()
+    const result = formatDateTime('2026-07-01T10:30:00Z')
     expect(typeof result).toBe('string')
     expect(result).toContain('2026')
   })

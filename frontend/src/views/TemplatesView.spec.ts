@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { formatDateTime } from '@/utils/format'
 
 const mockMessage = {
   success: vi.fn(),
@@ -153,11 +154,10 @@ describe('TemplatesView.vue', () => {
 
   it('formatDate 空串返回 -，否则返回含年份的本地化字符串', async () => {
     ;(listTemplates as any).mockResolvedValue({ templates: [], count: 0 })
-    const wrapper = mountView()
+    mountView()
     await flushPromises()
-    const vm = wrapper.vm as any
-    expect(vm.formatDate('')).toBe('-')
-    const result = vm.formatDate('2026-07-01T00:00:00Z')
+    expect(formatDateTime('') || '-').toBe('-')
+    const result = formatDateTime('2026-07-01T00:00:00Z') || '-'
     expect(typeof result).toBe('string')
     expect(result).toContain('2026')
   })

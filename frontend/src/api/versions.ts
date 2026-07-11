@@ -48,7 +48,7 @@ export interface SaveVersionResult {
  * GET /versions/{doc_key}
  */
 export function listVersions(docKey: string) {
-  return api.get<any, VersionListResponse>(`/versions/${encodeURIComponent(docKey)}`)
+  return api.get<unknown, VersionListResponse>(`/versions/${encodeURIComponent(docKey)}`)
 }
 
 /**
@@ -56,7 +56,7 @@ export function listVersions(docKey: string) {
  * GET /versions/{doc_key}/{version}
  */
 export function getVersion(docKey: string, version: number) {
-  return api.get<any, VersionDetail>(`/versions/${encodeURIComponent(docKey)}/${version}`)
+  return api.get<unknown, VersionDetail>(`/versions/${encodeURIComponent(docKey)}/${version}`)
 }
 
 /**
@@ -65,7 +65,7 @@ export function getVersion(docKey: string, version: number) {
  * 注意：版本不存在时后端返回 200 + {error: "..."}，前端需检查 error 字段
  */
 export function diffVersions(docKey: string, v1: number, v2: number) {
-  return api.get<any, DiffResponse>(`/versions/${encodeURIComponent(docKey)}/diff/${v1}/${v2}`)
+  return api.get<unknown, DiffResponse>(`/versions/${encodeURIComponent(docKey)}/diff/${v1}/${v2}`)
 }
 
 /**
@@ -77,7 +77,7 @@ export function saveVersion(
   docKey: string,
   payload: { title: string; content: string; change_summary?: string; author?: string },
 ) {
-  return api.post<any, SaveVersionResult>(`/versions/${encodeURIComponent(docKey)}/save`, null, {
+  return api.post<unknown, SaveVersionResult>(`/versions/${encodeURIComponent(docKey)}/save`, null, {
     params: {
       title: payload.title,
       content: payload.content,
@@ -93,7 +93,7 @@ export function saveVersion(
  * 行为：以目标版本内容创建一个新版本，不删除历史
  */
 export function rollbackVersion(docKey: string, targetVersion: number) {
-  return api.post<any, SaveVersionResult>(
+  return api.post<unknown, SaveVersionResult>(
     `/versions/${encodeURIComponent(docKey)}/rollback/${targetVersion}`,
   )
 }
@@ -113,7 +113,7 @@ export interface WikiDocSummary {
  * 用于在 F11 中选择 doc_key
  */
 export function listWikiDocs(limit = 50, offset = 0) {
-  return api.get<any, { documents: WikiDocSummary[]; count: number }>('/wiki', {
+  return api.get<unknown, { documents: WikiDocSummary[]; count: number }>('/wiki', {
     params: { limit, offset },
   })
 }

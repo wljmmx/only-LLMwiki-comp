@@ -36,6 +36,7 @@ import {
 } from 'naive-ui'
 import * as authApi from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
+import { formatDateTime } from '@/utils/format'
 import type { User } from '@/api/auth'
 
 const message = useMessage()
@@ -111,7 +112,7 @@ const columns = computed<DataTableColumns<User>>(() => [
     title: '创建时间',
     key: 'created_at',
     width: 180,
-    render: (row) => (row.created_at ? new Date(row.created_at).toLocaleString() : '-'),
+    render: (row) => (row.created_at ? formatDateTime(row.created_at) : '-'),
   },
   {
     title: '操作',

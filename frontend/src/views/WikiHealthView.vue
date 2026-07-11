@@ -28,6 +28,7 @@ import {
   type LintIssue,
   type LintReport,
 } from '@/api/wiki'
+import { formatDateTime } from '@/utils/format'
 import type { WikiPage } from '@/types/api'
 
 const message = useMessage()
@@ -220,7 +221,7 @@ const staleColumns = [
     key: 'updated_at',
     width: 180,
     render(row: WikiPage) {
-      return formatDate(row.updated_at)
+      return formatDateTime(row.updated_at)
     },
   },
   {
@@ -330,7 +331,7 @@ const orphanColumns = [
     key: 'updated_at',
     width: 180,
     render(row: WikiPage) {
-      return formatDate(row.updated_at)
+      return formatDateTime(row.updated_at)
     },
   },
 ]
@@ -349,17 +350,6 @@ async function fetchOrphans() {
 }
 
 // ============ 通用工具 ============
-function formatDate(dateStr: string) {
-  const date = new Date(dateStr)
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
 watch(activeTab, (val) => {
   if (val === 'drift' && stalePages.value.length === 0) {
     fetchStale()

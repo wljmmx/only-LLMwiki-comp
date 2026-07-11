@@ -30,6 +30,7 @@ import {
   type WikiDocSummary,
 } from '@/api/versions'
 import { getAuthToken } from '@/api/index'
+import { formatDateTime } from '@/utils/format'
 
 const message = useMessage()
 
@@ -199,18 +200,6 @@ async function handleRollback(targetVersion: number) {
   }
 }
 
-function formatDate(dateStr: string) {
-  if (!dateStr) return '-'
-  const date = new Date(dateStr)
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
 onMounted(() => {
   loadWikiDocs()
 })
@@ -295,7 +284,7 @@ onMounted(() => {
                 {{ v.change_summary }}
               </div>
               <div class="ver-meta">
-                <span>{{ formatDate(v.created_at) }}</span>
+                <span>{{ formatDateTime(v.created_at) || '-' }}</span>
                 <span class="ver-checksum">
                   checksum:
                   <code>{{ v.checksum }}</code>
@@ -361,7 +350,7 @@ onMounted(() => {
               <code>{{ selectedVersion.checksum }}</code>
             </n-descriptions-item>
             <n-descriptions-item label="创建时间">
-              {{ formatDate(selectedVersion.created_at) }}
+              {{ formatDateTime(selectedVersion.created_at) || '-' }}
             </n-descriptions-item>
           </n-descriptions>
 

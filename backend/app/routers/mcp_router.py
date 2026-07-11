@@ -27,7 +27,7 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from app.auth import verify_token
+from app.auth import get_current_user, verify_token
 from app.mcp import handle_request as mcp_handle_request
 from app.mcp.progress import (
     reset_progress_context,
@@ -35,6 +35,24 @@ from app.mcp.progress import (
 )
 
 router = APIRouter()
+
+
+async def _extract_user(request: Request) -> dict | None:
+    """P2-5: 从请求头提取用户信息（用于 MCP 工具权限检查）
+
+    返回 None 表示未登录或 legacy token 模式（宽松放行）。
+    """
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+    token = auth_header[7:]  # strip "Bearer "
+    try:
+        from app.auth.models import get_auth_store
+
+        store = get_auth_store()
+        return store.verify_session(token)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 @router.post("/mcp", dependencies=[Depends(verify_token)])
@@ -48,6 +66,8 @@ async def mcp_endpoint(request: Request) -> dict | list:
 
     认证：Authorization: Bearer <OPSKG_API_TOKEN>
 
+    P2-5: tools/call 调用前检查用户角色权限。
+
     可用工具：
     - search_knowledge: 搜索知识库
     - generate_runbook: 生成 Runbook
@@ -57,16 +77,18 @@ async def mcp_endpoint(request: Request) -> dict | list:
     - list_documents: 文档列表
     """
     body = await request.json()
+    # P2-5: 获取当前用户用于工具权限检查
+    user = await _extract_user(request)
     if isinstance(body, list):
         # 批量请求（P2-5.6）
         responses = []
         for req in body:
-            resp = mcp_handle_request(req)
+            resp = mcp_handle_request(req, user=user)
             if resp is not None:
                 responses.append(resp)
         return responses
     else:
-        response = mcp_handle_request(body)
+        response = mcp_handle_request(body, user=user)
         return response if response is not None else {}
 
 
@@ -102,6 +124,9 @@ async def mcp_stream_endpoint(request: Request) -> StreamingResponse:
     # 提取 progressToken（来自 _meta.progressToken）
     progress_token = (body.get("_meta") or {}).get("progressToken")
 
+    # P2-5: 获取当前用户用于工具权限检查
+    user = await _extract_user(request)
+
     async def event_generator() -> AsyncGenerator[bytes, None]:
         # 进度事件队列：工具线程 → SSE 主循环
         ev_queue: queue.Queue = queue.Queue()
@@ -125,7 +150,7 @@ async def mcp_stream_endpoint(request: Request) -> StreamingResponse:
             """在工作线程中执行工具，结果/异常入队"""
             set_progress_callback(progress_cb, token=progress_token)
             try:
-                result = mcp_handle_request(body)
+                result = mcp_handle_request(body, user=user)
                 ev_queue.put(("result", result))
             except Exception as e:
                 ev_queue.put(("error", {"error": str(e)}))

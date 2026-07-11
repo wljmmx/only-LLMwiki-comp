@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { formatFileSize, formatDateTime } from '@/utils/format'
 
 // mock 各 API 模块
 vi.mock('@/api/documents', () => ({
@@ -168,18 +169,16 @@ describe('DashboardView.vue', () => {
 
   it('formatFileSize：B/KB/MB 转换', () => {
     setupMocks()
-    const wrapper = mountView()
-    const vm = wrapper.vm as any
-    expect(vm.formatFileSize(500)).toBe('500 B')
-    expect(vm.formatFileSize(1024)).toBe('1.0 KB')
-    expect(vm.formatFileSize(1048576)).toBe('1.0 MB')
+    mountView()
+    expect(formatFileSize(500)).toBe('500 B')
+    expect(formatFileSize(1024)).toBe('1 KB')
+    expect(formatFileSize(1048576)).toBe('1 MB')
   })
 
   it('formatDate：ISO 字符串转本地化', () => {
     setupMocks()
-    const wrapper = mountView()
-    const vm = wrapper.vm as any
-    const result = vm.formatDate('2026-07-01T00:00:00Z')
+    mountView()
+    const result = formatDateTime('2026-07-01T00:00:00Z')
     // 不校验具体时区输出，只确认是字符串且含 2026
     expect(typeof result).toBe('string')
     expect(result).toContain('2026')

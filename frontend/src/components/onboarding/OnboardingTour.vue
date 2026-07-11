@@ -9,6 +9,8 @@ const router = useRouter()
 
 const targetEl = ref<HTMLElement | null>(null)
 const popupStyle = ref<Record<string, string>>({})
+const popupRef = ref<HTMLElement | null>(null)
+const previouslyFocused = ref<HTMLElement | null>(null)
 
 /** 根据当前步骤定位浮层 */
 async function locateTarget() {
@@ -111,7 +113,7 @@ function updateHighlight() {
   }
 }
 
-// 步骤变化时重新定位
+// 步骤变化时重新定位 + 聚焦浮层
 watch(
   () => store.activeStepIndex,
   async () => {
@@ -119,6 +121,27 @@ watch(
       await locateTarget()
       await nextTick()
       updateHighlight()
+      // 聚焦浮层卡片（键盘可达性）
+      await nextTick()
+      popupRef.value?.focus()
+    }
+  },
+)
+
+// 引导激活/关闭时管理焦点
+watch(
+  () => store.isActive,
+  async (active) => {
+    if (active) {
+      // 捕获当前焦点元素，关闭后恢复
+      previouslyFocused.value = document.activeElement as HTMLElement | null
+      await nextTick()
+      popupRef.value?.focus()
+    } else {
+      // 恢复焦点到触发元素
+      await nextTick()
+      previouslyFocused.value?.focus?.()
+      previouslyFocused.value = null
     }
   },
 )
@@ -130,11 +153,45 @@ function handleResize() {
   }
 }
 
-// Esc 键跳过引导（键盘可达性）
+/** 获取浮层内所有可聚焦元素 */
+function getFocusableElements(): HTMLElement[] {
+  if (!popupRef.value) return []
+  return Array.from(
+    popupRef.value.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null)
+}
+
+/** Esc 键跳过引导 + Tab 焦点陷阱（键盘可达性 P4-4） */
 function handleKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && store.isActive) {
+  if (!store.isActive) return
+  if (e.key === 'Escape') {
     e.preventDefault()
     handleSkip()
+    return
+  }
+  // 焦点陷阱：Tab/Shift+Tab 循环在浮层内
+  if (e.key === 'Tab') {
+    const focusables = getFocusableElements()
+    if (focusables.length === 0) {
+      e.preventDefault()
+      popupRef.value?.focus()
+      return
+    }
+    const first = focusables[0]
+    const last = focusables[focusables.length - 1]
+    if (e.shiftKey) {
+      if (document.activeElement === first || document.activeElement === popupRef.value) {
+        e.preventDefault()
+        last.focus()
+      }
+    } else {
+      if (document.activeElement === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
   }
 }
 
@@ -172,6 +229,7 @@ function handleFinish() {
     <div
       class="tour-overlay"
       :class="{ 'tour-overlay--spotlight': targetEl }"
+      aria-hidden="true"
       @click.self="handleSkip"
     />
     <!-- spotlight 视觉层（定位步骤，pointer-events: none 让点击穿透到 overlay） -->
@@ -179,19 +237,29 @@ function handleFinish() {
       v-if="targetEl"
       class="tour-spotlight"
       :style="highlightStyle"
+      aria-hidden="true"
     />
 
-    <!-- 浮层卡片 -->
-    <div class="tour-popup" :style="popupStyle">
+    <!-- 浮层卡片（P4-4: 对话框语义 + 焦点管理） -->
+    <div
+      ref="popupRef"
+      class="tour-popup"
+      :style="popupStyle"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="tour-title"
+      aria-describedby="tour-desc"
+      tabindex="-1"
+    >
       <div class="tour-header">
-        <span class="tour-step-badge">
+        <span class="tour-step-badge" aria-hidden="true">
           {{ store.activeStepIndex + 1 }} / {{ store.totalSteps }}
         </span>
-        <h3 class="tour-title">{{ store.currentStep.title }}</h3>
+        <h3 id="tour-title" class="tour-title">{{ store.currentStep.title }}</h3>
       </div>
 
       <div class="tour-body">
-        <p class="tour-desc">{{ store.currentStep.description }}</p>
+        <p id="tour-desc" class="tour-desc">{{ store.currentStep.description }}</p>
       </div>
 
       <NProgress
@@ -199,6 +267,7 @@ function handleFinish() {
         :height="3"
         :show-indicator="false"
         class="tour-progress"
+        aria-hidden="true"
       />
 
       <div class="tour-footer">
@@ -268,6 +337,11 @@ function handleFinish() {
   z-index: 9999;
   padding: 20px;
   transition: all 0.3s ease;
+  outline: none;
+}
+
+.tour-popup:focus-visible {
+  box-shadow: 0 0 0 3px var(--n-primary-color, #18a058), 0 8px 32px rgba(0, 0, 0, 0.16);
 }
 
 .tour-header {

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { formatDateTime } from '@/utils/format'
 
 const mockMessage = {
   success: vi.fn(),
@@ -344,11 +345,10 @@ describe('VersionsView.vue', () => {
 
   it('formatDate：空字符串返回 -，有效日期含 2026', async () => {
     ;(listWikiDocs as any).mockResolvedValue({ documents: [], count: 0 })
-    const wrapper = mountView()
+    mountView()
     await flushPromises()
-    const vm = wrapper.vm as any
-    expect(vm.formatDate('')).toBe('-')
-    const result = vm.formatDate('2026-07-01T10:30:00Z')
+    expect(formatDateTime('') || '-').toBe('-')
+    const result = formatDateTime('2026-07-01T10:30:00Z') || '-'
     expect(typeof result).toBe('string')
     expect(result).toContain('2026')
   })

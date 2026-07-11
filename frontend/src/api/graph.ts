@@ -57,7 +57,7 @@ export interface GraphEntityDetail {
  * 注意：Neo4j 未连接时返回 {nodes:[], links:[], error, hint}
  */
 export function getGraphVisualize(entityType?: string, limit = 200) {
-  return api.get<any, GraphData>('/graph/visualize', {
+  return api.get<unknown, GraphData>('/graph/visualize', {
     params: { entity_type: entityType || undefined, limit },
   })
 }
@@ -67,7 +67,7 @@ export function getGraphVisualize(entityType?: string, limit = 200) {
  * GET /graph/stats
  */
 export function getGraphStats() {
-  return api.get<any, GraphStats>('/graph/stats')
+  return api.get<unknown, GraphStats>('/graph/stats')
 }
 
 /**
@@ -75,7 +75,7 @@ export function getGraphStats() {
  * GET /graph/search?q=&limit=
  */
 export function searchGraph(q: string, limit = 20) {
-  return api.get<any, { query: string; results: GraphSearchResult[]; count: number }>(
+  return api.get<unknown, { query: string; results: GraphSearchResult[]; count: number }>(
     '/graph/search',
     { params: { q, limit } },
   )
@@ -86,7 +86,7 @@ export function searchGraph(q: string, limit = 20) {
  * GET /graph/entity/{name}
  */
 export function getGraphEntity(name: string) {
-  return api.get<any, GraphEntityDetail>(`/graph/entity/${encodeURIComponent(name)}`)
+  return api.get<unknown, GraphEntityDetail>(`/graph/entity/${encodeURIComponent(name)}`)
 }
 
 /**
@@ -94,7 +94,7 @@ export function getGraphEntity(name: string) {
  * GET /graph/by-type/{entity_type}?limit=
  */
 export function getGraphByType(entityType: string, limit = 50) {
-  return api.get<any, { entity_type: string; results: GraphSearchResult[]; count: number }>(
+  return api.get<unknown, { entity_type: string; results: GraphSearchResult[]; count: number }>(
     `/graph/by-type/${encodeURIComponent(entityType)}`,
     { params: { limit } },
   )

@@ -28,6 +28,7 @@ import {
   type Incident,
 } from '@/api/aiops'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
+import { formatDateTime } from '@/utils/format'
 import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -104,7 +105,7 @@ const columns = computed<DataTableColumns<Incident>>(() => [
     title: '最近告警',
     key: 'last_seen',
     width: 180,
-    render: (row) => (row.last_seen ? formatTime(row.last_seen) : '-'),
+    render: (row) => (row.last_seen ? formatDateTime(row.last_seen) : '-'),
   },
   {
     title: '操作',
@@ -118,16 +119,6 @@ const columns = computed<DataTableColumns<Incident>>(() => [
       ),
   },
 ])
-
-function formatTime(t?: string): string {
-  if (!t) return '-'
-  try {
-    const d = new Date(t)
-    return d.toLocaleString('zh-CN', { hour12: false })
-  } catch {
-    return t
-  }
-}
 
 async function loadIncidents() {
   loading.value = true
@@ -274,10 +265,10 @@ onMounted(() => {
                   {{ currentIncident.alert_count || 0 }}
                 </n-descriptions-item>
                 <n-descriptions-item label="首次告警">
-                  {{ formatTime(currentIncident.first_seen) }}
+                  {{ formatDateTime(currentIncident.first_seen || '') || '-' }}
                 </n-descriptions-item>
                 <n-descriptions-item label="最近告警">
-                  {{ formatTime(currentIncident.last_seen) }}
+                  {{ formatDateTime(currentIncident.last_seen || '') || '-' }}
                 </n-descriptions-item>
                 <n-descriptions-item label="受影响主机" :span="2">
                   <n-space v-if="currentIncident.hosts?.length" :size="4">
@@ -334,7 +325,7 @@ onMounted(() => {
                     </span>
                   </n-space>
                   <div style="font-size: 12px; color: #888; margin-top: 4px">
-                    {{ ch.author || '-' }} · {{ formatTime(ch.timestamp) }}
+                    {{ ch.author || '-' }} · {{ formatDateTime(ch.timestamp || '') || '-' }}
                     <span v-if="ch.service">· {{ ch.service }}</span>
                   </div>
                 </n-card>
@@ -388,7 +379,7 @@ onMounted(() => {
                     <span style="font-size: 13px">{{ ev.message }}</span>
                   </n-space>
                   <div style="font-size: 12px; color: #888; margin-top: 4px">
-                    {{ formatTime(ev.timestamp) }}
+                    {{ formatDateTime(ev.timestamp || '') || '-' }}
                     <span v-if="ev.host">· {{ ev.host }}</span>
                     <span v-if="ev.service">· {{ ev.service }}</span>
                   </div>

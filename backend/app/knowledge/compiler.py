@@ -236,19 +236,34 @@ class KnowledgeCompiler:
     def compile_and_store(
         self, entities: list[GraphEntity], relations: list[GraphRelation]
     ) -> CompileResult:
-        """编译后写入图谱"""
-        result = self.compile(entities, relations)
+        """编译后写入图谱（P3-4: 修复冗余 — 不再二次执行 pipeline）"""
+        result = CompileResult(input_entities=len(entities))
 
-        # 重新获取去重合并后的实体列表
+        # 1. 去重
         dedup_result = self.deduplicate(entities)
+        result.duplicates_found = dedup_result.duplicates_found
         final_entities = self._flatten_merged(dedup_result)
-        final_entities = self.merge_entities(final_entities)
-        final_entities = self.score_authority(final_entities)
 
+        # 2. 合并
+        final_entities = self.merge_entities(final_entities)
+        result.merged = dedup_result.merged_count
+
+        # 3. 权威评分
+        final_entities = self.score_authority(final_entities)
+        result.scored = len(final_entities)
+
+        result.after_dedup = len(final_entities)
+
+        # 4. 写入图谱
         store = get_graph_store()
         store.batch_upsert(final_entities, relations)
 
-        result.after_dedup = len(final_entities)
+        logger.info(
+            "compile_and_store_done",
+            input=result.input_entities,
+            after_dedup=result.after_dedup,
+            merged=result.merged,
+        )
         return result
 
 

@@ -18,6 +18,7 @@ import { onMounted, watch, computed, toRef } from 'vue'
 import { NButton, NSpin, NText, NEmpty } from 'naive-ui'
 import { useCollabHistory } from '@/composables/useCollabHistory'
 import type { CollabEvent } from '@/api/realtime'
+import { formatClockWithDate } from '@/utils/format'
 
 const props = defineProps<{
   slug: string
@@ -46,13 +47,6 @@ const eventTypeColor: Record<CollabEvent['type'], string> = {
   lock_acquired: '#f59e0b',    // 橙：获锁
   lock_released: '#10b981',    // 绿：释锁
   lock_denied: '#ef4444',      // 红：拒锁
-}
-
-/** 把毫秒时间戳格式化为 MM-DD HH:MM:SS（历史事件需显示日期） */
-function formatTime(ms: number): string {
-  const d = new Date(ms)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
 onMounted(() => {
@@ -101,7 +95,7 @@ watch(
           class="history-dot"
           :style="{ background: eventTypeColor[ev.type] }"
         ></span>
-        <span class="history-time">{{ formatTime(ev.timestamp) }}</span>
+        <span class="history-time">{{ formatClockWithDate(ev.timestamp) }}</span>
         <span class="history-msg">{{ ev.message }}</span>
       </div>
 

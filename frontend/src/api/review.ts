@@ -2,13 +2,13 @@ import api from './index'
 import type { ReviewQueueResponse, ReviewStats } from '@/types/api'
 
 export function getReviewQueue(status?: string, limit = 50, offset = 0) {
-  return api.get<any, ReviewQueueResponse>('/review/queue', {
+  return api.get<unknown, ReviewQueueResponse>('/review/queue', {
     params: { status, limit, offset },
   })
 }
 
 export function getReviewStats() {
-  return api.get<any, ReviewStats>('/review/stats')
+  return api.get<unknown, ReviewStats>('/review/stats')
 }
 
 export function approveReview(itemId: string) {

@@ -1,4 +1,5 @@
-import api, { getApiBaseUrl, getAuthToken } from './index'
+import api, { getApiBaseUrl } from './index'
+import { streamSse } from '@/utils/sse'
 import type {
   WikiPage,
   WikiIndex,
@@ -8,32 +9,32 @@ import type {
 } from '@/types/api'
 
 export function getWikiIndex() {
-  return api.get<any, WikiIndex>('/llm-wiki/index')
+  return api.get<unknown, WikiIndex>('/llm-wiki/index')
 }
 
 export function listWikiPages() {
-  return api.get<any, { pages: WikiPage[]; total: number }>('/llm-wiki/pages')
+  return api.get<unknown, { pages: WikiPage[]; total: number }>('/llm-wiki/pages')
 }
 
 export function getWikiPage(slug: string) {
-  return api.get<any, WikiPage>(`/llm-wiki/page/${slug}`)
+  return api.get<unknown, WikiPage>(`/llm-wiki/page/${slug}`)
 }
 
 // S16-2：用户直接编辑 wiki page
 export function updateWikiPage(slug: string, payload: WikiPageUpdatePayload) {
-  return api.put<any, WikiPageUpdateResult>(`/llm-wiki/page/${slug}`, payload)
+  return api.put<unknown, WikiPageUpdateResult>(`/llm-wiki/page/${slug}`, payload)
 }
 
 export function getWikiBacklinks(slug: string) {
-  return api.get<any, BacklinkItem[]>(`/llm-wiki/backlinks/${slug}`)
+  return api.get<unknown, BacklinkItem[]>(`/llm-wiki/backlinks/${slug}`)
 }
 
 export function getWikiOrphans() {
-  return api.get<any, { pages: WikiPage[] }>('/llm-wiki/orphans')
+  return api.get<unknown, { pages: WikiPage[] }>('/llm-wiki/orphans')
 }
 
 export function getWikiStale() {
-  return api.get<any, { pages: WikiPage[] }>('/llm-wiki/stale')
+  return api.get<unknown, { pages: WikiPage[] }>('/llm-wiki/stale')
 }
 
 // S7-6: Wiki Q&A
@@ -52,7 +53,7 @@ export function queryWiki(
   expandBacklinks = true,
   history?: { role: 'user' | 'assistant'; content: string }[],
 ) {
-  return api.post<any, WikiQueryResult>('/llm-wiki/query', {
+  return api.post<unknown, WikiQueryResult>('/llm-wiki/query', {
     question,
     recall_limit: recallLimit,
     expand_backlinks: expandBacklinks,
@@ -87,7 +88,7 @@ export interface ChatHistoryEntry {
  * P1-4: 流式 Wiki 问答
  *
  * 用 fetch + ReadableStream 消费 SSE（EventSource 不支持 POST）。
- * 手动解析 `event: <type>\ndata: <json>\n\n` 格式。
+ * SSE 帧解析由共享工具 streamSse 负责（P4-3 抽取）。
  *
  * P2-13b：options.history 传入多轮会话历史，后端注入 LLM messages 实现追问/指代。
  *
@@ -102,85 +103,38 @@ export function queryWikiStream(
     history?: ChatHistoryEntry[]
   } = {},
 ): AbortController {
-  const controller = new AbortController()
   const { recallLimit = 5, expandBacklinks = true, history } = options
 
-  const url = `${getApiBaseUrl()}/llm-wiki/query/stream`
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'text/event-stream',
-  }
-  const token = getAuthToken()
-  if (token) headers.Authorization = `Bearer ${token}`
-
-  fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      question,
-      recall_limit: recallLimit,
-      expand_backlinks: expandBacklinks,
-      history,
-    }),
-    signal: controller.signal,
-  })
-    .then(async (resp) => {
-      if (!resp.ok || !resp.body) {
-        throw new Error(`HTTP ${resp.status}`)
+  // wiki 依赖服务端显式 done 事件，不发送合成 done
+  return streamSse(
+    {
+      url: `${getApiBaseUrl()}/llm-wiki/query/stream`,
+      body: {
+        question,
+        recall_limit: recallLimit,
+        expand_backlinks: expandBacklinks,
+        history,
+      },
+      emitSyntheticDone: false,
+    },
+    (ev) => {
+      switch (ev.type) {
+        case 'meta':
+          callbacks.onMeta(ev.data as any)
+          break
+        case 'delta':
+          callbacks.onDelta((ev.data as any)?.text || '')
+          break
+        case 'done':
+          callbacks.onDone(ev.data as any)
+          break
+        case 'error':
+          callbacks.onError?.((ev.data as any)?.message || '流式查询出错')
+          break
       }
-      const reader = resp.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      const dispatch = (eventType: string, dataStr: string) => {
-        if (!eventType || !dataStr) return
-        try {
-          const data = JSON.parse(dataStr)
-          switch (eventType) {
-            case 'meta':
-              callbacks.onMeta(data)
-              break
-            case 'delta':
-              callbacks.onDelta(data.text || '')
-              break
-            case 'done':
-              callbacks.onDone(data)
-              break
-            case 'error':
-              callbacks.onError?.(data.message || '流式查询出错')
-              break
-          }
-        } catch {
-          /* 忽略解析错误 */
-        }
-      }
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-
-        // 按空行分割事件块
-        let sepIdx: number
-        while ((sepIdx = buffer.indexOf('\n\n')) >= 0) {
-          const block = buffer.slice(0, sepIdx)
-          buffer = buffer.slice(sepIdx + 2)
-          let eventType = ''
-          let dataLines: string[] = []
-          for (const line of block.split('\n')) {
-            if (line.startsWith('event: ')) eventType = line.slice(7).trim()
-            else if (line.startsWith('data: ')) dataLines.push(line.slice(6))
-          }
-          dispatch(eventType, dataLines.join('\n'))
-        }
-      }
-    })
-    .catch((err) => {
-      if (controller.signal.aborted) return
-      callbacks.onError?.(err?.message || '流式查询失败')
-    })
-
-  return controller
+    },
+    callbacks.onError,
+  )
 }
 
 // S7-7: Lint 健康检查
@@ -216,13 +170,13 @@ export interface LintIgnoreEntry {
 }
 
 export function runWikiLint(includeStale = true) {
-  return api.post<any, LintReport>('/llm-wiki/lint', null, {
+  return api.post<unknown, LintReport>('/llm-wiki/lint', null, {
     params: { include_stale: includeStale },
   })
 }
 
 export function getLintSuggestions(limit = 20) {
-  return api.get<any, { count: number; suggestions: any[] }>('/llm-wiki/lint/suggestions', {
+  return api.get<unknown, { count: number; suggestions: any[] }>('/llm-wiki/lint/suggestions', {
     params: { limit },
   })
 }
@@ -232,42 +186,42 @@ export function ignoreLintIssue(
   issue_key: string,
   payload: { type: string; slug: string; message: string; reason?: string },
 ) {
-  return api.post<any, { issue_key: string; ignored: boolean }>(
+  return api.post<unknown, { issue_key: string; ignored: boolean }>(
     '/llm-wiki/lint/ignore',
     { issue_key, ...payload },
   )
 }
 
 export function unignoreLintIssue(issue_key: string) {
-  return api.delete<any, { issue_key: string; unignored: boolean }>(
+  return api.delete<unknown, { issue_key: string; unignored: boolean }>(
     `/llm-wiki/lint/ignore/${issue_key}`,
   )
 }
 
 export function listIgnoredLintIssues() {
-  return api.get<any, { count: number; items: LintIgnoreEntry[] }>(
+  return api.get<unknown, { count: number; items: LintIgnoreEntry[] }>(
     '/llm-wiki/lint/ignored',
   )
 }
 
 // S7-8: 漂移监控
 export function recompileStale(pushReview = true) {
-  return api.post<any, any>('/llm-wiki/recompile-stale', null, {
+  return api.post<unknown, any>('/llm-wiki/recompile-stale', null, {
     params: { push_review: pushReview },
   })
 }
 
 // 单文档编译为 Wiki（全流水线：解析 → 抽取 → LLM 编译 wiki 页面）
 export function recompileDocument(docId: string, force = true) {
-  return api.post<any, any>(`/llm-wiki/recompile/${docId}`, null, {
+  return api.post<unknown, any>(`/llm-wiki/recompile/${docId}`, null, {
     params: { force },
   })
 }
 
 export function checkDrift(docId: string) {
-  return api.post<any, any>(`/llm-wiki/drift/check/${docId}`)
+  return api.post<unknown, any>(`/llm-wiki/drift/check/${docId}`)
 }
 
 export function rebuildIndex() {
-  return api.post<any, any>('/llm-wiki/index/rebuild')
+  return api.post<unknown, any>('/llm-wiki/index/rebuild')
 }

@@ -19,6 +19,7 @@ import { NAvatar, NButton, NTag, NSpace, NTooltip, NText, NCollapse, NCollapseIt
 import { useCollab } from '@/composables/useCollab'
 import type { ConnectionState } from '@/composables/useCollab'
 import type { CollabEvent } from '@/api/realtime'
+import { formatClock } from '@/utils/format'
 import CollabHistoryPanel from './CollabHistoryPanel.vue'
 
 const props = defineProps<{
@@ -106,13 +107,6 @@ const eventTypeColor: Record<CollabEvent['type'], string> = {
   lock_acquired: '#f59e0b',    // 橙：获锁
   lock_released: '#10b981',    // 绿：释锁
   lock_denied: '#ef4444',      // 红：拒锁
-}
-
-/** 把毫秒时间戳格式化为 HH:MM:SS */
-function formatTime(ms: number): string {
-  const d = new Date(ms)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
 onMounted(() => {
@@ -215,7 +209,7 @@ onUnmounted(() => {
                 class="event-dot"
                 :style="{ background: eventTypeColor[ev.type] }"
               ></span>
-              <span class="event-time">{{ formatTime(ev.timestamp) }}</span>
+              <span class="event-time">{{ formatClock(ev.timestamp) }}</span>
               <span class="event-msg">{{ ev.message }}</span>
             </div>
           </div>

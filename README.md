@@ -57,7 +57,7 @@ docker run -d --name opskg \
 | 存储 | SQLite（WAL）+ Neo4j 5（知识图谱）|
 | LLM | DeepSeek / Ollama / vLLM（OpenAI 兼容协议）|
 | 可观测性 | Prometheus + OpenTelemetry（OTLP）|
-| 测试 | pytest（61 用例）+ Vitest（129 用例）+ 11 个 verify 脚本（470 验证点）|
+| 测试 | pytest（61 用例）+ Vitest（742 用例 / 49 文件）+ 40 个 verify 脚本（470 验证点）|
 
 ## 快速开始
 
@@ -149,7 +149,7 @@ curl http://localhost/health          # OpsKG 健康检查
 │   │   └── components/            # 布局 + 错误边界 + 引导
 │   └── package.json
 ├── scripts/
-│   ├── verify_*.py                # 11 个验证脚本（470 验证点）
+│   ├── verify_*.py                # 40 个验证脚本（470 验证点）
 │   ├── backup.sh / restore.sh     # 备份恢复
 │   └── smoke_*.py                 # 端到端冒烟测试
 ├── docs/                          # 审计报告 + 演进路线 + 设计文档
@@ -217,7 +217,7 @@ cd backend && python -m pytest tests/                    # 61 用例
 cd .. && python scripts/verify_*.py                       # 470 验证点
 
 # 前端
-cd frontend && npm test                                    # 129 用例
+cd frontend && npm test                                    # 742 用例
 cd frontend && npm run typecheck                           # vue-tsc 0 错误
 cd frontend && npm run build                               # 生产构建
 

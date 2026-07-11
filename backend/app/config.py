@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     authority_source_weight: float = 0.5
     authority_recency_weight: float = 0.3
     authority_consensus_weight: float = 0.2
+    # P3-2: 知识复利回写校验
+    # True 时回写前用 LLM 自校验事实是否由回答支持（避免幻觉污染）
+    # 规则校验（非空/支撑/去重）始终运行，此开关仅控制 LLM 校验层
+    wiki_writeback_llm_validate: bool = True
 
     # 文档生成
     doc_gen_max_iter: int = 3
@@ -137,6 +141,17 @@ class Settings(BaseSettings):
     # PostgreSQL 连接串（db_backend=postgresql 时使用）
     # 格式：postgresql://user:password@host:5432/opskg
     database_url: str = ""
+
+    # MCP 工具权限控制（P2-5）
+    # JSON 字符串，格式：{"tool_name": "min_role", ...}
+    # 角色层级：viewer < operator < admin
+    # 留空则使用工具默认权限（见 TOOL_REQUIRED_ROLES）
+    # 示例：{"transition_incident": "admin", "merge_topology_aliases": "admin"}
+    mcp_tool_permissions: str = ""
+    # MCP 工具权限检查是否严格模式
+    # True: 未登录用户（dev 模式）拒绝所有需权限的工具
+    # False: 未登录用户（dev 模式）放行所有工具（向后兼容）
+    mcp_permission_strict: bool = False
 
     # 实时协作 Hub 上限（S16-4 多房间压测防护）
     # 单实例最大房间数；超过则新房间创建被拒绝

@@ -5,6 +5,7 @@ import { getDocumentStats, listDocuments } from '@/api/documents'
 import { getReviewStats, getReviewQueue } from '@/api/review'
 import { getSearchStats } from '@/api/search'
 import api from '@/api/index'
+import { formatFileSize, formatDateTime } from '@/utils/format'
 import type { DocumentMeta, ReviewItem, GraphStats, DocumentStats, ReviewStats, SearchStats } from '@/types/api'
 
 const loading = ref(true)
@@ -54,7 +55,7 @@ const documentColumns = [
     title: '时间',
     key: 'created_at',
     width: 180,
-    render: (row: DocumentMeta) => formatDate(row.created_at),
+    render: (row: DocumentMeta) => formatDateTime(row.created_at),
   },
 ]
 
@@ -87,27 +88,9 @@ const reviewColumns = [
     title: '时间',
     key: 'created_at',
     width: 180,
-    render: (row: ReviewItem) => formatDate(row.created_at),
+    render: (row: ReviewItem) => formatDateTime(row.created_at),
   },
 ]
-
-function formatFileSize(bytes: number): string {
-  if (!bytes || bytes <= 0 || isNaN(bytes)) return '0 B'
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
-}
-
-function formatDate(dateStr: string): string {
-  const date = new Date(dateStr)
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
 
 async function fetchData() {
   loading.value = true
@@ -115,7 +98,7 @@ async function fetchData() {
     const [docStatsRes, graphStatsRes, reviewStatsRes, searchStatsRes, docListRes, reviewQueueRes] =
       await Promise.all([
         getDocumentStats(),
-        api.get<any, GraphStats>('/graph/stats'),
+        api.get<unknown, GraphStats>('/graph/stats'),
         getReviewStats(),
         getSearchStats(),
         listDocuments({ limit: 5 }),

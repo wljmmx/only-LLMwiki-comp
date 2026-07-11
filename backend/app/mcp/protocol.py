@@ -38,7 +38,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 import traceback
 from typing import Any
 
@@ -64,7 +66,124 @@ SERVER_NAME = "opskg-mcp-server"
 SERVER_VERSION = "0.2.0"  # P2-5.1：升级，新增 resources/prompts 支持
 
 
+# ────────── P2-4: 线程级持久事件循环 ──────────
+# 解决 MCP handle_request（同步）调用 async 函数（如 recall_pages）的桥接问题
+# 用 threading.local 为每个工作线程绑定一个持久 loop，避免反复创建/销毁
+
+_worker_loop_local = threading.local()
+_worker_loop_lock = threading.Lock()
+
+
+def _get_worker_loop() -> asyncio.AbstractEventLoop:
+    """获取当前工作线程的持久事件循环（不存在则创建）"""
+    loop = getattr(_worker_loop_local, "loop", None)
+    if loop is not None and not loop.is_closed():
+        return loop
+
+    with _worker_loop_lock:
+        # 双重检查
+        loop = getattr(_worker_loop_local, "loop", None)
+        if loop is not None and not loop.is_closed():
+            return loop
+        # 创建新的持久 loop（不在主线程中创建，避免干扰 FastAPI 主循环）
+        loop = asyncio.new_event_loop()
+        _worker_loop_local.loop = loop
+        logger.info("mcp.worker_loop_created", thread_id=threading.get_ident())
+    return loop
+
+
+def _run_async_in_worker_thread(coro: Any) -> Any:
+    """在工作线程的持久 loop 中同步执行 async 协程
+
+    替代原来的临时事件循环 hack（new_event_loop + close）。
+    适用于 MCP handle_request 同步上下文调用 async 函数的场景。
+
+    注意：此函数必须在非主事件循环线程中调用（即 mcp_router 的 run_in_executor 线程）。
+    在主线程（FastAPI 主循环）中调用会抛 RuntimeError。
+    """
+    loop = _get_worker_loop()
+
+    # 检查是否在主线程的 running loop 中（不应发生）
+    try:
+        main_loop = asyncio.get_running_loop()
+        if main_loop is loop:
+            raise RuntimeError(
+                "_run_async_in_worker_thread 不能在 running loop 中调用，"
+                "应在 run_in_executor 的工作线程中使用"
+            )
+    except RuntimeError:
+        pass  # 无 running loop，正常情况（工作线程）
+
+    # 在持久 loop 中同步执行协程
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result()  # 阻塞等待结果
+
+
 # ────────── 工具定义 ──────────
+
+# P2-5: MCP 工具默认权限（角色层级 viewer < operator < admin）
+# 写操作需 operator，状态变更/拓扑合并需 admin，查询类默认 viewer
+TOOL_REQUIRED_ROLES: dict[str, str] = {
+    # 查询类 — viewer 可用
+    "search_knowledge": "viewer",
+    "list_documents": "viewer",
+    "list_incidents": "viewer",
+    "get_incident": "viewer",
+    "get_topology": "viewer",
+    "impact_analysis": "viewer",
+    "suggest_rollback": "viewer",
+    "wiki_qa": "viewer",
+    # 生成类 — operator
+    "generate_runbook": "operator",
+    # 写操作 — operator
+    "infer_topology": "operator",
+    # 高危操作 — admin
+    "transition_incident": "admin",
+    "merge_topology_aliases": "admin",
+    "review_change_impact": "operator",
+}
+
+# 角色优先级
+_ROLE_LEVELS = {"viewer": 1, "operator": 2, "admin": 3}
+
+
+def _check_tool_permission(tool_name: str, user: dict | None) -> bool:
+    """P2-5: 检查用户是否有权限调用指定工具
+
+    Args:
+        tool_name: 工具名
+        user: 当前用户 dict（含 role 字段），None 表示未登录
+
+    Returns:
+        True 允许调用，False 拒绝
+    """
+    from app.config import get_settings
+
+    settings = get_settings()
+
+    # 合并默认权限 + 用户自定义权限
+    required_role = TOOL_REQUIRED_ROLES.get(tool_name, "viewer")
+    custom_perms_raw = settings.mcp_tool_permissions.strip()
+    if custom_perms_raw:
+        try:
+            custom = json.loads(custom_perms_raw)
+            if tool_name in custom:
+                required_role = custom[tool_name]
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 未登录用户处理
+    if user is None:
+        if settings.mcp_permission_strict:
+            return False  # 严格模式：未登录拒绝
+        return True  # 宽松模式：未登录放行（向后兼容）
+
+    # 检查角色
+    user_role = user.get("role", "viewer")
+    user_level = _ROLE_LEVELS.get(user_role, 0)
+    required_level = _ROLE_LEVELS.get(required_role, 1)
+    return user_level >= required_level
+
 
 TOOLS: list[dict] = [
     {
@@ -974,33 +1093,19 @@ def _get_prompt(name: str, arguments: dict) -> dict:
         }
 
     if name == "wiki_qa":
-        import asyncio
-
         question = args.get("question", "")
         if not question:
             raise ValueError("question 不能为空")
-        # recall_pages 是 async，MCP handler 是 sync，用临时事件循环驱动
+        # P2-4: 用线程级持久 loop 替代临时事件循环，避免反复创建/销毁
+        # 解决原 hack 的三个问题：
+        #   1. get_event_loop() 在工作线程中行为依赖 Python 版本（脆弱）
+        #   2. loop.is_running() 时静默降级为空召回（用户无感知）
+        #   3. new_event_loop()/close() 每次调用都新建，无法复用连接池
         hits: list = []
         try:
             from app.knowledge.wiki_query import recall_pages
 
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # 已在事件循环中（罕见），降级为空召回
-                    hits = []
-                else:
-                    hits = loop.run_until_complete(
-                        recall_pages(question, limit=5)
-                    )
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                try:
-                    hits = loop.run_until_complete(
-                        recall_pages(question, limit=5)
-                    )
-                finally:
-                    loop.close()
+            hits = _run_async_in_worker_thread(recall_pages(question, limit=5))
         except Exception as e:
             logger.warning("mcp_wiki_qa_recall_failed", error=str(e))
             hits = []
@@ -1122,8 +1227,12 @@ def _get_tool_schema(tool_name: str) -> dict | None:
     return None
 
 
-def handle_request(request: dict) -> dict | None:
+def handle_request(request: dict, user: dict | None = None) -> dict | None:
     """处理单个 JSON-RPC 请求
+
+    Args:
+        request: JSON-RPC 2.0 请求
+        user: P2-5 当前用户 dict（含 role），None 表示未登录
 
     Returns:
         响应 dict（成功或错误），如果是 notification 则返回 None
@@ -1163,6 +1272,19 @@ def handle_request(request: dict) -> dict | None:
                     -32601,
                     f"未知工具: {tool_name}",
                 )
+            # P2-5: 工具权限检查
+            if not _check_tool_permission(tool_name, user):
+                logger.warning(
+                    "mcp.permission_denied",
+                    tool=tool_name,
+                    user_role=user.get("role") if user else None,
+                )
+                return _error_response(
+                    req_id,
+                    -32603,
+                    f"权限不足：调用 {tool_name} 需要 "
+                    f"{TOOL_REQUIRED_ROLES.get(tool_name, 'viewer')} 角色",
+                )
             # P2-5.8 入参 JSON Schema 运行时校验
             tool_schema = _get_tool_schema(tool_name)
             if tool_schema:
@@ -1176,11 +1298,46 @@ def handle_request(request: dict) -> dict | None:
                 # 填充 default 字段
                 tool_args = fill_defaults(tool_args, tool_schema)
             handler = TOOL_HANDLERS[tool_name]
-            text_result = handler(tool_args)
-            result = {
-                "content": [{"type": "text", "text": text_result}],
-                "isError": False,
-            }
+            # P2-6: 工具调用审计日志（入参 + 耗时 + 出参摘要）
+            import time as _time
+
+            _audit_start = _time.monotonic()
+            _audit_user = user.get("username", "anonymous") if user else "anonymous"
+            _audit_user_role = user.get("role", "unknown") if user else "unknown"
+            try:
+                text_result = handler(tool_args)
+                _audit_duration = _time.monotonic() - _audit_start
+                _audit_result_preview = (
+                    text_result[:200] if isinstance(text_result, str) else str(text_result)[:200]
+                )
+                logger.info(
+                    "mcp.tool_called",
+                    tool=tool_name,
+                    user=_audit_user,
+                    user_role=_audit_user_role,
+                    duration_ms=round(_audit_duration * 1000, 2),
+                    args_keys=list(tool_args.keys()),
+                    result_len=len(text_result) if isinstance(text_result, str) else 0,
+                    result_preview=_audit_result_preview,
+                    success=True,
+                )
+                result = {
+                    "content": [{"type": "text", "text": text_result}],
+                    "isError": False,
+                }
+            except Exception as e:
+                _audit_duration = _time.monotonic() - _audit_start
+                logger.warning(
+                    "mcp.tool_called",
+                    tool=tool_name,
+                    user=_audit_user,
+                    user_role=_audit_user_role,
+                    duration_ms=round(_audit_duration * 1000, 2),
+                    args_keys=list(tool_args.keys()),
+                    error=str(e),
+                    success=False,
+                )
+                raise
         elif method == "ping":
             result = {}
         elif method == "resources/list":

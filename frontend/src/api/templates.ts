@@ -30,7 +30,7 @@ export interface RenderResult {
  * GET /templates?category=xxx
  */
 export function listTemplates(category?: string) {
-  return api.get<any, TemplateListResponse>('/templates', {
+  return api.get<unknown, TemplateListResponse>('/templates', {
     params: category ? { category } : {},
   })
 }
@@ -40,7 +40,7 @@ export function listTemplates(category?: string) {
  * GET /templates/{slug}
  */
 export function getTemplate(slug: string) {
-  return api.get<any, Template>(`/templates/${encodeURIComponent(slug)}`)
+  return api.get<unknown, Template>(`/templates/${encodeURIComponent(slug)}`)
 }
 
 /**
@@ -54,7 +54,7 @@ export function createTemplate(payload: {
   category?: string
   description?: string
 }) {
-  return api.post<any, Template>('/templates', null, {
+  return api.post<unknown, Template>('/templates', null, {
     params: {
       slug: payload.slug,
       name: payload.name,
@@ -78,7 +78,7 @@ export function updateTemplate(
     description?: string
   },
 ) {
-  return api.put<any, Template>(`/templates/${encodeURIComponent(slug)}`, null, { params: payload })
+  return api.put<unknown, Template>(`/templates/${encodeURIComponent(slug)}`, null, { params: payload })
 }
 
 /**
@@ -86,7 +86,7 @@ export function updateTemplate(
  * DELETE /templates/{slug}
  */
 export function deleteTemplate(slug: string) {
-  return api.delete<any, { deleted: boolean; slug: string }>(
+  return api.delete<unknown, { deleted: boolean; slug: string }>(
     `/templates/${encodeURIComponent(slug)}`,
   )
 }
@@ -95,6 +95,6 @@ export function deleteTemplate(slug: string) {
  * 渲染模板
  * POST /templates/{slug}/render  body: { variables: {...} }
  */
-export function renderTemplate(slug: string, variables: Record<string, any>) {
-  return api.post<any, RenderResult>(`/templates/${encodeURIComponent(slug)}/render`, variables)
+export function renderTemplate(slug: string, variables: Record<string, unknown>) {
+  return api.post<unknown, RenderResult>(`/templates/${encodeURIComponent(slug)}/render`, variables)
 }

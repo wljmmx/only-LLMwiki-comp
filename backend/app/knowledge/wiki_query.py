@@ -182,6 +182,86 @@ def _tokenize(text: str) -> list[str]:
 # ────────── 召回引擎 ──────────
 
 
+def _graph_recall(
+    tokens: list[str],
+    pages: list[dict],
+) -> dict[str, WikiPageHit]:
+    """P3-1: 图谱召回路径 — 通过知识图谱邻居扩展召回
+
+    策略：
+    1. 用问题关键词在图谱中 search_entities 找到匹配实体
+    2. 对每个匹配实体，query_related 获取一跳邻居
+    3. 将实体名和邻居名映射为 wiki slug（复用 wiki_compiler.make_slug）
+    4. 只保留 wiki 中实际存在的 slug
+
+    GraphStore 不可用时（Neo4j 未配置）返回空 dict，不影响召回流程。
+
+    Returns:
+        slug → WikiPageHit（score 为图谱派生分数：直接匹配 2.0，邻居 1.0）
+    """
+    try:
+        from app.knowledge.graph_store import get_graph_store
+        from app.knowledge.wiki_compiler import make_slug
+
+        store = get_graph_store()
+    except Exception:  # noqa: BLE001
+        return {}
+
+    wiki_slugs = {p["slug"] for p in pages if p["slug"] != "index"}
+    slug_to_page = {p["slug"]: p for p in pages if p["slug"] != "index"}
+
+    hits: dict[str, WikiPageHit] = {}
+
+    # 限制 token 数量避免过多图谱查询（最多 10 个）
+    for tok in tokens[:10]:
+        try:
+            entities = store.search_entities(tok, limit=5)
+        except Exception:  # noqa: BLE001
+            continue
+
+        for ent in entities:
+            ent_name = ent.get("name", "")
+            ent_type = ent.get("type", "")
+            if not ent_name:
+                continue
+
+            # 匹配实体本身 → 映射为 slug（直接匹配，分数较高）
+            slug = make_slug(ent_type, ent_name)
+            if slug in wiki_slugs and slug not in hits:
+                p = slug_to_page[slug]
+                hits[slug] = WikiPageHit(
+                    slug=slug,
+                    title=p.get("title") or slug,
+                    type=p["type"],
+                    score=2.0,
+                    snippet="",
+                )
+
+            # 一跳邻居 → 映射为 slug（邻居降权）
+            try:
+                relations = store.query_related(ent_name, depth=1)
+            except Exception:  # noqa: BLE001
+                continue
+
+            for rel in relations[:10]:  # 每个实体最多取 10 个邻居
+                target_name = rel.get("target", "")
+                target_type = rel.get("target_type", "")
+                if not target_name:
+                    continue
+                neighbor_slug = make_slug(target_type, target_name)
+                if neighbor_slug in wiki_slugs and neighbor_slug not in hits:
+                    p = slug_to_page[neighbor_slug]
+                    hits[neighbor_slug] = WikiPageHit(
+                        slug=neighbor_slug,
+                        title=p.get("title") or neighbor_slug,
+                        type=p["type"],
+                        score=1.0,
+                        snippet="",
+                    )
+
+    return hits
+
+
 async def recall_pages(
     question: str,
     limit: int = 5,
@@ -192,9 +272,10 @@ async def recall_pages(
 ) -> list[WikiPageHit]:
     """从 wiki 召回与问题相关的页面
 
-    双路召回 + RRF 融合（P2-1.1）：
+    三路召回 + RRF 融合（P2-1.1 + P3-1）：
     - 关键词路径：title +5 / tags +3 / body +1
     - 向量路径：余弦相似度（依赖 LLM embedding，未配置时自动降级）
+    - 图谱路径（P3-1）：GraphStore 邻居扩展（Neo4j 未配置时自动降级）
     - 融合：Reciprocal Rank Fusion，score(d) = Σ 1/(k + rank_i(d))
 
     Args:
@@ -292,41 +373,56 @@ async def recall_pages(
         except Exception as e:
             logger.warning("wiki_vector_recall_failed", error=str(e))
 
+    # ── 图谱召回路径（P3-1） ──
+    graph_hits: dict[str, WikiPageHit] = {}
+    graph_used = False
+    try:
+        graph_hits = _graph_recall(tokens, pages)
+        graph_used = bool(graph_hits)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("wiki_graph_recall_failed", error=str(e))
+
     # ── 融合 ──
-    if not vector_used:
-        # 向量不可用 → 仅返回关键词结果（兼容旧行为）
-        merged = list(keyword_hits.values())
+    # 收集所有可用路径（P3-1: 新增图谱路径作为第三路）
+    paths: list[tuple[str, dict[str, WikiPageHit]]] = []
+    if keyword_hits:
+        paths.append(("kw", keyword_hits))
+    if vector_used:
+        paths.append(("vec", vector_hits))
+    if graph_used:
+        paths.append(("graph", graph_hits))
+
+    if not paths:
+        return []
+
+    # 单路 → 直接按分数排序返回
+    if len(paths) == 1:
+        merged = list(paths[0][1].values())
         merged.sort(key=lambda h: h.score, reverse=True)
         return merged[:limit]
 
-    if not keyword_hits:
-        # 仅向量召回（例如问题为纯中文且分词后无 token 匹配）
-        merged = list(vector_hits.values())
-        merged.sort(key=lambda h: h.score, reverse=True)
-        return merged[:limit]
+    # 多路 → RRF 融合
+    ranks: dict[str, dict[str, int]] = {}
+    for path_name, hits in paths:
+        ranked = sorted(hits.items(), key=lambda kv: kv[1].score, reverse=True)
+        ranks[path_name] = {slug: i + 1 for i, (slug, _) in enumerate(ranked)}
 
-    # RRF 融合
-    kw_ranked = sorted(
-        keyword_hits.items(), key=lambda kv: kv[1].score, reverse=True
-    )
-    vec_ranked = sorted(
-        vector_hits.items(), key=lambda kv: kv[1].score, reverse=True
-    )
-    kw_rank = {slug: i + 1 for i, (slug, _) in enumerate(kw_ranked)}
-    vec_rank = {slug: i + 1 for i, (slug, _) in enumerate(vec_ranked)}
+    all_slugs: set[str] = set()
+    for _, hits in paths:
+        all_slugs.update(hits.keys())
 
-    all_slugs = set(kw_rank.keys()) | set(vec_rank.keys())
     merged_hits: list[WikiPageHit] = []
     for slug in all_slugs:
-        kw_hit = keyword_hits.get(slug)
-        vec_hit = vector_hits.get(slug)
         rrf_score = 0.0
-        if slug in kw_rank:
-            rrf_score += 1.0 / (rrf_k + kw_rank[slug])
-        if slug in vec_rank:
-            rrf_score += 1.0 / (rrf_k + vec_rank[slug])
-        # 取较丰富的元信息（关键词路径通常带 snippet）
-        meta_hit = kw_hit or vec_hit
+        meta_hit: WikiPageHit | None = None
+        for path_name, hits in paths:
+            rank_map = ranks[path_name]
+            if slug in rank_map:
+                rrf_score += 1.0 / (rrf_k + rank_map[slug])
+                if meta_hit is None:
+                    meta_hit = hits[slug]
+        if meta_hit is None:
+            continue
         merged_hits.append(
             WikiPageHit(
                 slug=slug,
@@ -895,16 +991,21 @@ class WikiQAEngine:
             logger.info("wiki_writeback_no_new_facts", question=question[:50])
             return []
 
+        # P3-2: 校验新事实，过滤幻觉
+        validated = await self._validate_facts(new_facts, answer, cited_slugs)
+        if not validated:
+            logger.info("wiki_writeback_all_facts_rejected", question=question[:50])
+            return []
+
         # 2. 逐条回写到归属页面
         writebacks: list[dict] = []
-        for fact in new_facts:
-            slug = fact.get("slug", "")
-            text = fact.get("fact", "").strip()
-            if not slug or not text or slug not in cited_slugs:
-                continue
+        for fact in validated:
+            slug = fact["slug"]
+            text = fact["fact"]
             try:
                 record = self._append_fact_to_page(slug, text, question)
                 if record:
+                    record["validation"] = fact.get("validation", "")
                     writebacks.append(record)
             except Exception as e:
                 logger.warning(
@@ -980,6 +1081,161 @@ class WikiQAEngine:
         except Exception as e:
             logger.warning("wiki_extract_facts_failed", error=str(e))
             return []
+
+    # ────────── P3-2: 知识复利回写校验 ──────────
+
+    async def _validate_facts(
+        self,
+        facts: list[dict],
+        answer: str,
+        cited_slugs: list[str],
+    ) -> list[dict]:
+        """P3-2: 校验新事实，过滤幻觉，避免污染知识库
+
+        两层校验：
+        1. 规则校验（必跑，无 LLM 开销）：
+           - 非空且非琐碎（len >= 10）
+           - slug 在 cited_slugs 中
+           - 事实关键 token 须在 answer 中有支撑（重叠率 >= 30%）
+           - 目标 wiki 页面中无近似重复（token Jaccard >= 0.8 视为重复）
+        2. LLM 自校验（可选，settings.wiki_writeback_llm_validate=True 时）：
+           - 让 LLM 判断事实是否由 answer 直接支持
+           - 批量校验，减少 LLM 调用次数
+
+        Returns:
+            通过校验的事实列表 [{slug, fact, validation}]
+        """
+        # ── 规则校验 ──
+        rule_passed: list[dict] = []
+        answer_lower = answer.lower()
+        answer_tokens = set(_tokenize(answer))
+
+        for fact in facts:
+            slug = fact.get("slug", "")
+            text = fact.get("fact", "").strip()
+            if not slug or slug not in cited_slugs:
+                continue
+            if len(text) < 10:
+                continue
+
+            # 事实 token 与 answer token 重叠率（避免 LLM 编造 answer 中没有的内容）
+            fact_tokens = set(_tokenize(text))
+            if not fact_tokens:
+                continue
+            overlap = len(fact_tokens & answer_tokens) / len(fact_tokens)
+            if overlap < 0.3:
+                continue
+
+            # 去重：检查目标页面是否已有近似事实
+            if self._is_duplicate_fact(slug, text):
+                continue
+
+            rule_passed.append({"slug": slug, "fact": text, "validation": "rule_passed"})
+
+        if not rule_passed:
+            return []
+
+        # ── LLM 自校验（可选） ──
+        if not self.settings.wiki_writeback_llm_validate:
+            return rule_passed
+
+        llm_passed = await self._llm_verify_facts(rule_passed, answer)
+        if not llm_passed:
+            logger.info(
+                "wiki_writeback_llm_rejected_all",
+                rule_passed=len(rule_passed),
+            )
+        return llm_passed if llm_passed else []
+
+    def _is_duplicate_fact(self, slug: str, fact: str, threshold: float = 0.8) -> bool:
+        """检查目标 wiki 页面是否已包含近似事实（基于 token Jaccard 相似度）
+
+        Args:
+            slug: wiki 页面 slug
+            fact: 待检查的事实文本
+            threshold: Jaccard 相似度阈值，>= threshold 视为重复
+        """
+        try:
+            latest = self.vc.get_latest(_key_from_slug(slug))
+            if not latest:
+                return False
+            existing = _strip_frontmatter(latest["content"]).lower()
+            fact_tokens = set(_tokenize(fact))
+            if not fact_tokens:
+                return False
+            # 滑动窗口检查：对 existing 的每个段落计算与 fact 的 Jaccard
+            for para in existing.split("\n\n"):
+                para_tokens = set(_tokenize(para))
+                if not para_tokens:
+                    continue
+                jaccard = len(fact_tokens & para_tokens) / len(
+                    fact_tokens | para_tokens
+                )
+                if jaccard >= threshold:
+                    return True
+            return False
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def _llm_verify_facts(
+        self,
+        facts: list[dict],
+        answer: str,
+    ) -> list[dict]:
+        """P3-2: LLM 批量校验事实是否由 answer 直接支持
+
+        Returns:
+            通过校验的事实列表（LLM 判定 supported=True 的）
+        """
+        system = (
+            "你是 OpsKG Wiki 审查员。判断每条「事实」是否由「回答」直接支持"
+            "（即回答中有明确文字依据，而非推断或编造）。"
+            "只返回 JSON 数组，每个元素包含 index 和 supported 字段。"
+        )
+        facts_desc = "\n".join(
+            f"{i}. {f['fact']}" for i, f in enumerate(facts)
+        )
+        prompt = (
+            f"# 回答\n{answer}\n\n"
+            f"# 待校验事实\n{facts_desc}\n\n"
+            f"# 输出要求\n"
+            f'返回 JSON 数组：[{{"index": 0, "supported": true/false}}]\n'
+            "只返回 JSON，不要其他文字。"
+        )
+        try:
+            messages = [
+                ChatMessage(role="system", content=system),
+                ChatMessage(role="user", content=prompt),
+            ]
+            resp = await self.llm.chat(
+                messages=messages,
+                temperature=0.0,
+                max_tokens=512,
+            )
+            raw = (resp.text or "").strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            import json
+
+            results = json.loads(raw)
+            if not isinstance(results, list):
+                return facts  # 解析失败 → 放行（不因 LLM 异常阻断回写）
+
+            supported_indices = {
+                r["index"]
+                for r in results
+                if isinstance(r, dict) and r.get("supported") is True and "index" in r
+            }
+            passed = [
+                {**f, "validation": "rule+llm_passed"}
+                for i, f in enumerate(facts)
+                if i in supported_indices
+            ]
+            return passed
+        except Exception as e:
+            logger.warning("wiki_fact_llm_verify_failed", error=str(e))
+            # LLM 校验失败 → 降级为仅规则校验通过的结果（不阻断回写）
+            return [{**f, "validation": "rule_passed(llm_failed)"} for f in facts]
 
     def _append_fact_to_page(
         self,

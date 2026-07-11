@@ -6,6 +6,7 @@ import type { TreeOption } from 'naive-ui'
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
 import { renderWikiMarkdown, parseSlugFromHash } from '@/utils/wikiRender'
 import { parseFrontmatter } from '@/utils/frontmatter'
+import { formatDate } from '@/utils/format'
 import type { WikiPage, BacklinkItem } from '@/types/api'
 // S16-1：协作面板（实时在线用户 + 编辑锁状态）
 import CollabPanel from '@/components/collab/CollabPanel.vue'
@@ -143,17 +144,6 @@ const pageMeta = computed(() => {
   }
 })
 
-/** P1-6: 格式化日期为 YYYY-MM-DD */
-function formatDate(iso: string): string {
-  if (!iso) return ''
-  try {
-    const d = new Date(iso)
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  } catch {
-    return iso
-  }
-}
-
 async function loadPages() {
   treeLoading.value = true
   try {
@@ -258,30 +248,30 @@ onMounted(() => {
             </div>
             <!-- P1-6：页面元信息条（更新时间 · 版本 · 审查状态 · 来源数） -->
             <div v-if="pageMeta" class="page-meta-bar">
-              <NTooltip trigger="hover">
+              <NTooltip :trigger="['hover', 'focus']">
                 <template #trigger>
-                  <span class="meta-item">更新于 {{ formatDate(pageMeta.updatedAt) }}</span>
+                  <span class="meta-item" tabindex="0">更新于 {{ formatDate(pageMeta.updatedAt) }}</span>
                 </template>
                 页面最后更新时间
               </NTooltip>
-              <span class="meta-sep">·</span>
-              <NTooltip trigger="hover">
+              <span class="meta-sep" aria-hidden="true">·</span>
+              <NTooltip :trigger="['hover', 'focus']">
                 <template #trigger>
-                  <span class="meta-item">v{{ pageMeta.version ?? 1 }}</span>
+                  <span class="meta-item" tabindex="0">v{{ pageMeta.version ?? 1 }}</span>
                 </template>
                 页面版本号
               </NTooltip>
-              <span class="meta-sep">·</span>
-              <NTooltip trigger="hover">
+              <span class="meta-sep" aria-hidden="true">·</span>
+              <NTooltip :trigger="['hover', 'focus']">
                 <template #trigger>
-                  <span class="meta-item">{{ pageMeta.reviewStatusLabel }}</span>
+                  <span class="meta-item" tabindex="0">{{ pageMeta.reviewStatusLabel }}</span>
                 </template>
                 审查状态
               </NTooltip>
-              <span class="meta-sep">·</span>
-              <NTooltip trigger="hover">
+              <span class="meta-sep" aria-hidden="true">·</span>
+              <NTooltip :trigger="['hover', 'focus']">
                 <template #trigger>
-                  <span class="meta-item">来源 {{ pageMeta.sourcesCount }}</span>
+                  <span class="meta-item" tabindex="0">来源 {{ pageMeta.sourcesCount }}</span>
                 </template>
                 引用的原始文档数量
               </NTooltip>
@@ -342,7 +332,12 @@ onMounted(() => {
                       class="backlink-item"
                       :title="bl.title"
                       :description="bl.context"
+                      role="button"
+                      tabindex="0"
+                      :aria-label="`跳转到反向链接: ${bl.title}`"
                       @click="handleBacklinkClick(bl.slug)"
+                      @keydown.enter="handleBacklinkClick(bl.slug)"
+                      @keydown.space.prevent="handleBacklinkClick(bl.slug)"
                     />
                   </div>
                 </div>

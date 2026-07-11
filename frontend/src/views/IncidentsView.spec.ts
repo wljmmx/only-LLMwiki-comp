@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { formatDateTime } from '@/utils/format'
 
 const mockMessage = {
   success: vi.fn(),
@@ -178,11 +179,10 @@ describe('IncidentsView.vue', () => {
 
   it('formatTime：undefined/无效/有效', () => {
     ;(listIncidents as any).mockResolvedValue({ incidents: [], total: 0 })
-    const wrapper = mountView()
-    const vm = wrapper.vm as any
-    expect(vm.formatTime(undefined)).toBe('-')
-    expect(vm.formatTime('')).toBe('-')
-    const result = vm.formatTime('2026-07-01T10:30:00Z')
+    mountView()
+    expect(formatDateTime((undefined as any) || '') || '-').toBe('-')
+    expect(formatDateTime('' || '') || '-').toBe('-')
+    const result = formatDateTime('2026-07-01T10:30:00Z' || '') || '-'
     expect(typeof result).toBe('string')
     expect(result).toContain('2026')
   })

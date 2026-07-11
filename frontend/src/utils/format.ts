@@ -38,3 +38,31 @@ export function formatFileSize(bytes: number): string {
   const formatted = size % 1 === 0 ? size.toFixed(0) : size.toFixed(1)
   return `${formatted} ${units[unitIndex]}`
 }
+
+/** 格式化 epoch 毫秒为 HH:mm:ss（用于协作面板等实时时间戳） */
+export function formatClock(ms: number): string {
+  if (!ms || isNaN(ms)) return ''
+  const d = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+/** 格式化 epoch 毫秒为 MM-DD HH:mm:ss（用于协作历史等带日期的时间戳） */
+export function formatClockWithDate(ms: number): string {
+  if (!ms || isNaN(ms)) return ''
+  const d = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${formatClock(ms)}`
+}
+
+/** 格式化相对时间（"刚刚" / "X 分钟前" / "X 小时前" / 月日时分） */
+export function formatRelativeTime(ts: number): string {
+  if (!ts || isNaN(ts)) return ''
+  const diff = Date.now() - ts
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  const d = new Date(ts)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getMonth() + 1}-${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}

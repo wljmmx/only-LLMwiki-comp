@@ -27,6 +27,7 @@ import {
   buildFrontmatter,
   WIKI_PAGE_TYPES,
 } from '@/utils/frontmatter'
+import { formatRelativeTime } from '@/utils/format'
 import { useEditDraft, type EditDraft } from '@/composables/useEditDraft'
 import type { WikiPageUpdateResult } from '@/types/api'
 
@@ -185,15 +186,6 @@ function handleDiscardDraft() {
   draftConflict.value = false
 }
 
-function formatDraftTime(ts: number): string {
-  const diff = Date.now() - ts
-  if (diff < 60_000) return '刚刚'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
-  const d = new Date(ts)
-  return `${d.getMonth() + 1}-${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
 // ────────── P1-5: [[wikilink]] 自动补全 ──────────
 
 /** 可用 wiki 页面列表（懒加载 + 缓存） */
@@ -221,6 +213,7 @@ onMounted(() => {
 const wikilinkActive = ref(false)
 const wikilinkQuery = ref('')
 const wikilinkStart = ref(-1) // [[ 的起始位置
+const wikilinkActiveIndex = ref(-1) // P4-4: 键盘导航高亮索引
 const textareaRef = ref<InstanceType<typeof NInput> | null>(null)
 
 /** 过滤后的候选列表 */
@@ -230,13 +223,19 @@ const wikilinkOptions = computed(() => {
     label: p.title,
     value: p.slug,
   }))
-  if (!q) return all.slice(0, 20)
-  return all
-    .filter(
-      (opt) =>
-        opt.value.toLowerCase().includes(q) || opt.label.toLowerCase().includes(q),
-    )
-    .slice(0, 20)
+  const result = !q
+    ? all.slice(0, 20)
+    : all
+        .filter(
+          (opt) =>
+            opt.value.toLowerCase().includes(q) || opt.label.toLowerCase().includes(q),
+        )
+        .slice(0, 20)
+  // P4-4: 列表变化时重置键盘导航索引
+  if (wikilinkActiveIndex.value >= result.length) {
+    wikilinkActiveIndex.value = result.length > 0 ? 0 : -1
+  }
+  return result
 })
 
 /**
@@ -269,6 +268,7 @@ function detectWikilink() {
   wikilinkActive.value = true
   wikilinkQuery.value = afterBracket
   wikilinkStart.value = bracketIdx
+  wikilinkActiveIndex.value = 0 // P4-4: 默认高亮首项
 }
 
 /** 选中某个 slug 后插入到 textarea */
@@ -298,6 +298,7 @@ function closeWikilink() {
   wikilinkActive.value = false
   wikilinkQuery.value = ''
   wikilinkStart.value = -1
+  wikilinkActiveIndex.value = -1
 }
 
 /** 处理 body textarea 的 input 事件 */
@@ -306,17 +307,41 @@ function handleBodyInput(value: string) {
   detectWikilink()
 }
 
-/** 处理 body textarea 的 keydown（Escape 关闭补全） */
+/** 处理 body textarea 的 keydown（P4-4: Escape 关闭 + 方向键导航 + Enter 选择） */
 function handleBodyKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && wikilinkActive.value) {
-    e.preventDefault()
-    closeWikilink()
+  if (wikilinkActive.value && wikilinkOptions.value.length > 0) {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      closeWikilink()
+      return
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      wikilinkActiveIndex.value =
+        (wikilinkActiveIndex.value + 1) % wikilinkOptions.value.length
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      const len = wikilinkOptions.value.length
+      wikilinkActiveIndex.value =
+        (wikilinkActiveIndex.value - 1 + len) % len
+      return
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      const opt = wikilinkOptions.value[wikilinkActiveIndex.value]
+      if (opt) {
+        insertWikilink(opt.value)
+      }
+      return
+    }
   }
   // P1-5: Ctrl+S
   handleKeydown(e)
 }
 
-/** 处理补全列表的键盘导航（ArrowDown/ArrowUp/Enter） */
+/** 处理补全列表选择（鼠标点击或键盘 Enter） */
 function handleWikilinkSelect(value: string) {
   insertWikilink(value)
 }
@@ -358,7 +383,7 @@ function handleWikilinkSelect(value: string) {
             检测到未保存草稿（基于版本 {{ draftRecovery.version }}），但当前页面已是版本 {{ version }}，草稿可能与服务器版本冲突。
           </template>
           <template v-else>
-            检测到未保存草稿（{{ formatDraftTime(draftRecovery.savedAt) }}），是否恢复？
+            检测到未保存草稿（{{ formatRelativeTime(draftRecovery.savedAt) }}），是否恢复？
           </template>
         </div>
         <NSpace :size="8" class="draft-actions">
@@ -431,20 +456,41 @@ function handleWikilinkSelect(value: string) {
             :disabled="saving"
             class="editor-textarea"
             placeholder="# 标题\n\n正文内容，使用 [[slug]] 链接到其他页面..."
+            :input-props="{
+              'aria-expanded': wikilinkActive && wikilinkOptions.length > 0,
+              'aria-autocomplete': 'list',
+              'aria-controls': 'wikilink-listbox',
+              'aria-activedescendant':
+                wikilinkActive && wikilinkActiveIndex >= 0
+                  ? `wikilink-option-${wikilinkActiveIndex}`
+                  : undefined,
+              'aria-label': 'Wiki 正文编辑',
+            }"
             @update:value="handleBodyInput"
             @keydown="handleBodyKeydown"
             @blur="closeWikilink"
           />
-          <!-- P1-5: wikilink 补全浮层 -->
-          <div v-if="wikilinkActive && wikilinkOptions.length > 0" class="wikilink-popover">
-            <div class="wikilink-popover-header">页面链接补全</div>
+          <!-- P1-5: wikilink 补全浮层（P4-4: ARIA listbox + 键盘导航） -->
+          <div
+            v-if="wikilinkActive && wikilinkOptions.length > 0"
+            class="wikilink-popover"
+            role="listbox"
+            id="wikilink-listbox"
+            aria-label="页面链接补全"
+          >
+            <div class="wikilink-popover-header" aria-hidden="true">页面链接补全</div>
             <div class="wikilink-popover-list">
               <button
-                v-for="opt in wikilinkOptions"
+                v-for="(opt, idx) in wikilinkOptions"
                 :key="opt.value"
+                :id="`wikilink-option-${idx}`"
                 type="button"
                 class="wikilink-option"
+                :class="{ 'wikilink-option--active': idx === wikilinkActiveIndex }"
+                role="option"
+                :aria-selected="idx === wikilinkActiveIndex"
                 @mousedown.prevent="handleWikilinkSelect(opt.value)"
+                @click="handleWikilinkSelect(opt.value)"
               >
                 <span class="wikilink-option-title">{{ opt.label }}</span>
                 <span class="wikilink-option-slug">{{ opt.value }}</span>
@@ -660,6 +706,12 @@ function handleWikilinkSelect(value: string) {
 
 .wikilink-option:hover {
   background: var(--n-color-hover, rgba(0, 0, 0, 0.04));
+}
+
+/* P4-4: 键盘导航高亮 */
+.wikilink-option--active,
+.wikilink-option--active:hover {
+  background: var(--n-primary-color-hover, rgba(24, 160, 88, 0.12));
 }
 
 .wikilink-option-title {

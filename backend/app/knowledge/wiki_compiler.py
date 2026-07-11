@@ -30,7 +30,7 @@ import yaml
 from app.config import get_settings
 from app.core.llm import ChatMessage, get_llm_client
 from app.extraction import KnowledgeExtractor
-from app.extraction.types import EntityType, ExtractedEntity
+from app.extraction.types import EntityType, ExtractionResult, ExtractedEntity
 from app.knowledge.wiki_drift import clear_stale, record_compiled_checksum
 from app.knowledge.wiki_index import _key_from_slug, list_wiki_pages, rebuild_index
 from app.knowledge.wikilink import WIKILINK_RE, update_backlinks
@@ -89,6 +89,8 @@ class WikiCompileResult:
     stale_marked: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     index_rebuilt: bool = False
+    # P3-4: 统一编译 — 标记是否同时写入了知识图谱
+    graph_compiled: bool = False
 
 
 # ────────── 命名约定（AGENTS.md §五）──────────
@@ -182,6 +184,7 @@ class WikiCompiler:
         *,
         force: bool = False,
         rebuild_index_after: bool = True,
+        also_compile_graph: bool = False,
     ) -> WikiCompileResult:
         """把一份 raw 文档编译为 wiki 页面
 
@@ -197,6 +200,7 @@ class WikiCompiler:
             doc_id: DocumentStore 中的文档 ID
             force: 强制重编译（即使内容未变）
             rebuild_index_after: 编译后是否重建 index.md
+            also_compile_graph: P3-4 统一编译 — 同时写入知识图谱（Neo4j）
         """
         result = WikiCompileResult(doc_id=doc_id)
 
@@ -248,6 +252,14 @@ class WikiCompiler:
                 # 无实体也更新状态
                 self.store.update_status(doc_id, "compiled")
                 return result
+
+            # P3-4: 统一编译 — 复用已有 extraction 写入知识图谱（避免重复 parse+extract）
+            if also_compile_graph:
+                try:
+                    self._compile_to_graph(doc_id, extraction)
+                    result.graph_compiled = True
+                except Exception as e:
+                    result.errors.append(f"图谱编译失败: {e}")
 
             # 3. 逐个编译
             source_entry = {
@@ -318,6 +330,79 @@ class WikiCompiler:
             )
             return result
 
+    # ── P3-4: 统一编译 ──
+
+    async def compile_raw_to_all(
+        self,
+        doc_id: str,
+        *,
+        force: bool = False,
+        rebuild_index_after: bool = True,
+    ) -> WikiCompileResult:
+        """P3-4: 统一编译 — 一次调用同时编译 wiki 页面 + 知识图谱
+
+        对齐审计报告 P3-4: 合并 compiler.py 与 wiki_compiler.py 编排，
+        消除 /graph/upload 与 /llm-wiki/ingest 的重复 parse+extract。
+
+        流程：
+            1. parse + extract（只做一次）
+            2. 写入知识图谱（KnowledgeCompiler.compile_and_store → Neo4j）
+            3. 生成 wiki 页面（LLM 编译 → VersionControl）
+            4. 返回统一结果（graph_compiled 标记图谱写入状态）
+
+        GraphStore 不可用时优雅降级（graph_compiled=False，errors 记录原因）。
+        """
+        return await self.compile_raw_to_wiki(
+            doc_id,
+            force=force,
+            rebuild_index_after=rebuild_index_after,
+            also_compile_graph=True,
+        )
+
+    @staticmethod
+    def _compile_to_graph(doc_id: str, extraction: ExtractionResult) -> None:
+        """P3-4: 把抽取结果写入知识图谱（复用已有 extraction，避免重复 parse+extract）
+
+        将 ExtractedEntity/ExtractedRelation 转换为 GraphEntity/GraphRelation，
+        调用 KnowledgeCompiler.compile_and_store 写入 Neo4j。
+
+        GraphStore 不可用时抛异常（由调用方捕获降级）。
+        """
+        from app.knowledge.compiler import get_compiler
+        from app.knowledge.graph_store import GraphEntity, GraphRelation
+
+        all_entities = list(extraction.auto_accepted_entities) + list(
+            extraction.review_entities
+        )
+        all_relations = list(extraction.auto_accepted_relations) + list(
+            extraction.review_relations
+        )
+
+        graph_entities = [
+            GraphEntity(
+                entity_type=e.entity_type,
+                name=e.name,
+                properties=e.properties,
+                source_doc_id=doc_id,
+                confidence=e.confidence,
+            )
+            for e in all_entities
+        ]
+        graph_relations = [
+            GraphRelation(
+                relation_type=r.relation_type,
+                from_entity=r.from_entity,
+                to_entity=r.to_entity,
+                properties=r.properties,
+                source_doc_id=doc_id,
+                confidence=r.confidence,
+            )
+            for r in all_relations
+        ]
+
+        compiler = get_compiler()
+        compiler.compile_and_store(graph_entities, graph_relations)
+
     # ── 单实体编译 ──
 
     async def _compile_entity_page(
@@ -381,7 +466,7 @@ class WikiCompiler:
         return text.strip()
 
     def _build_writing_prompt(self, entity: ExtractedEntity, page_type: str) -> str:
-        """构造写作 prompt"""
+        """构造写作 prompt（P3-1: 融合图谱关系作为编译上下文）"""
         props_str = (
             "\n".join(f"- {k}: {v}" for k, v in entity.properties.items() if v)
             or "（无）"
@@ -396,6 +481,9 @@ class WikiCompiler:
             "concept": "概念页（必含：概述/原理/应用场景/来源）",
         }.get(page_type, "概念页（必含：概述/原理/应用场景/来源）")
 
+        # P3-1: 查询图谱关系，作为编译上下文注入 prompt
+        relations_str = self._fetch_graph_relations(entity.name)
+
         return f"""请把以下运维知识编译为一个 wiki 页面。
 
 # 编译目标
@@ -407,6 +495,9 @@ class WikiCompiler:
 # 已知属性
 {props_str}
 
+# 知识图谱中的已知关系
+{relations_str}
+
 # 原文证据片段
 {evidence}
 
@@ -416,7 +507,35 @@ class WikiCompiler:
 3. 不要编造未在证据中出现的具体数值
 4. 「## 来源」章节引用本页来源即可
 5. 标题用 `# {entity.name}` 起首
+6. P3-1: 如果"已知关系"中有相关实体，在"关系/依赖"章节中引用并用 [[slug]] 建链
 """
+
+    @staticmethod
+    def _fetch_graph_relations(entity_name: str) -> str:
+        """P3-1: 查询图谱中该实体的一跳邻居关系，用于编译上下文增强
+
+        GraphStore 不可用时优雅降级（返回"无"），不影响编译流程。
+        """
+        try:
+            from app.knowledge.graph_store import get_graph_store
+
+            store = get_graph_store()
+            relations = store.query_related(entity_name, depth=1)
+            if not relations:
+                return "（无图谱关系）"
+            lines: list[str] = []
+            for rel in relations[:20]:  # 最多 20 条，避免 prompt 过长
+                target = rel.get("target", "")
+                relation = rel.get("relation", "")
+                target_type = rel.get("target_type", "")
+                confidence = rel.get("confidence", 0)
+                lines.append(
+                    f"- [{relation}] → {target}（类型: {target_type}, 置信度: {confidence:.2f}）"
+                )
+            return "\n".join(lines)
+        except Exception:  # noqa: BLE001
+            # GraphStore 不可用（Neo4j 未配置）→ 优雅降级
+            return "（图谱不可用）"
 
     @staticmethod
     def _strip_codefence(text: str) -> str:
@@ -550,12 +669,13 @@ class WikiCompiler:
     def _merge_existing(
         self, existing_md: str, new_page: WikiPage
     ) -> tuple[str, list[str]]:
-        """把新事实合并到已有页面
+        """把新事实合并到已有页面（P3-3: 智能整合，避免碎片化）
 
-        策略（保守合并，避免覆盖人工编辑）：
-        - 保留已有 frontmatter，仅追加 source、刷新 updated_at、review_status
-        - 在正文末尾追加一个 "## 增量补充（{doc_id}）" 章节，附新来源证据
-        - 标注 stale：若新页面有但旧页面没有的属性 → 标 stale（提示用户人工校验）
+        策略升级（从"仅追加"到"智能整合"）：
+        - 保留已有 frontmatter，合并 sources（去重 by doc_id）
+        - P3-3: 按章节智能合并正文（同名章节→段落去重追加，新章节→直接追加）
+        - 仅当新内容无章节结构时，使用"## 增量补充"兜底
+        - 标注 stale：若新页面有但旧页面没有的属性 → 标 stale
 
         Returns:
             (merged_md, stale_items)
@@ -581,13 +701,137 @@ class WikiCompiler:
             if key and key not in body:
                 stale_items.append(line)
 
-        # 拼接正文：旧正文 + 增量补充章节
-        append_section = self._render_increment_section(new_page)
-        if append_section:
-            body = body.rstrip() + "\n\n" + append_section + "\n"
+        # P3-3: 智能整合 — 按章节合并正文，避免"增量补充"章节堆积
+        body = self._merge_body_sections(body, new_page.body_md, new_page.source_doc_id)
 
         merged_md = self._assemble_md(new_meta, body)
         return merged_md, stale_items
+
+    # ────────── P3-3: 智能合并 ──────────
+
+    @staticmethod
+    def _parse_sections(body: str) -> list[tuple[str, str]]:
+        """解析正文为 [(section_header, section_content)] 列表
+
+        - section_header 不含 ## 前缀（如 "概述", "成因分析"）
+        - 第一个 section 的 header 为 "" 表示 ## 之前的内容（preamble）
+        - 三级标题（###）归入所属二级标题的 content
+        """
+        sections: list[tuple[str, str]] = []
+        current_header = ""
+        current_lines: list[str] = []
+
+        for line in body.splitlines():
+            if line.startswith("## "):
+                # 保存上一个 section
+                sections.append((current_header, "\n".join(current_lines)))
+                current_header = line[3:].strip()
+                current_lines = []
+            else:
+                current_lines.append(line)
+        # 保存最后一个 section
+        sections.append((current_header, "\n".join(current_lines)))
+        return sections
+
+    def _merge_body_sections(
+        self,
+        existing_body: str,
+        new_body: str,
+        source_doc_id: str,
+    ) -> str:
+        """P3-3: 按章节智能合并正文，避免碎片化
+
+        策略：
+        1. 解析已有正文和新正文为章节列表
+        2. 对新正文的每个 ## 章节：
+           a. 已有同名章节 → 追加新段落（去重，token Jaccard >= 0.7 跳过）
+           b. 无同名章节 → 追加为新章节
+        3. 新正文无 ## 章节结构 → 使用"## 增量补充"兜底（向后兼容）
+        """
+        new_body = new_body.strip()
+        if not new_body:
+            return existing_body
+
+        existing_sections = self._parse_sections(existing_body)
+        new_sections = self._parse_sections(new_body)
+
+        # 新内容无 ## 章节 → 兜底追加（向后兼容旧行为）
+        has_section_header = any(h for h, _ in new_sections)
+        if not has_section_header:
+            append = (
+                f"## 增量补充（来自 `{source_doc_id}`）\n\n"
+                f"> 此章节由 wiki_compiler 增量合并，可能需要人工整合到上文。\n\n"
+                f"{new_body}\n"
+            )
+            return existing_body.rstrip() + "\n\n" + append
+
+        # 构建 existing header → index 映射（小写匹配）
+        existing_map: dict[str, int] = {}
+        for i, (h, _) in enumerate(existing_sections):
+            if h:
+                existing_map[h.lower()] = i
+
+        # 合并：对每个新章节，找匹配的已有章节
+        merged_sections = [(h, c) for h, c in existing_sections]  # 浅拷贝
+        for new_header, new_content in new_sections:
+            if not new_header:
+                continue  # 跳过 preamble（已有正文的 preamble 保留）
+
+            idx = existing_map.get(new_header.lower())
+            if idx is not None:
+                # 同名章节 → 追加新段落（去重）
+                old_header, old_content = merged_sections[idx]
+                merged_content = self._merge_section_content(old_content, new_content)
+                merged_sections[idx] = (old_header, merged_content)
+            else:
+                # 无同名章节 → 追加为新章节
+                merged_sections.append((new_header, new_content.strip()))
+
+        # 重建正文
+        return self._render_sections(merged_sections)
+
+    @staticmethod
+    def _merge_section_content(old_content: str, new_content: str) -> str:
+        """合并同名章节的段落，去重（token Jaccard >= 0.7 视为重复）
+
+        - 按 \\n\\n 分段
+        - 新段落与已有段落 token Jaccard >= 0.7 → 跳过
+        - 否则追加到已有段落末尾
+        """
+        old_paras = [p.strip() for p in old_content.split("\n\n") if p.strip()]
+        new_paras = [p.strip() for p in new_content.split("\n\n") if p.strip()]
+
+        for new_para in new_paras:
+            new_tokens = set(re.findall(r"[\w]+", new_para.lower()))
+            if not new_tokens:
+                continue
+            is_dup = False
+            for old_para in old_paras:
+                old_tokens = set(re.findall(r"[\w]+", old_para.lower()))
+                if not old_tokens:
+                    continue
+                jaccard = len(new_tokens & old_tokens) / len(new_tokens | old_tokens)
+                if jaccard >= 0.7:
+                    is_dup = True
+                    break
+            if not is_dup:
+                old_paras.append(new_para)
+
+        return "\n\n".join(old_paras)
+
+    @staticmethod
+    def _render_sections(sections: list[tuple[str, str]]) -> str:
+        """把 [(header, content)] 列表重建为完整正文"""
+        parts: list[str] = []
+        for header, content in sections:
+            content = content.strip()
+            if not header:
+                # preamble（## 之前的内容）
+                if content:
+                    parts.append(content)
+            else:
+                parts.append(f"## {header}\n\n{content}" if content else f"## {header}")
+        return "\n\n".join(parts) + "\n"
 
     @staticmethod
     def _content_equal(a: str, b: str) -> bool:
@@ -622,18 +866,6 @@ class WikiCompiler:
             if in_section and s.startswith("- "):
                 out.append(s[2:])
         return out
-
-    def _render_increment_section(self, page: WikiPage) -> str:
-        """构造增量补充章节"""
-        # 抽出正文里除 frontmatter/标题/来源之外的核心段落
-        body = page.body_md.strip()
-        if not body:
-            return ""
-        return (
-            f"## 增量补充（来自 `{page.source_doc_id}`）\n\n"
-            f"> 此章节由 wiki_compiler 增量合并，可能需要人工整合到上文。\n\n"
-            f"{body}\n"
-        )
 
     # ── Markdown 渲染 ──
 

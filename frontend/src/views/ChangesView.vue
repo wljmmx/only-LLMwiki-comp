@@ -21,6 +21,7 @@ import {
   type DataTableColumns,
 } from 'naive-ui'
 import { listChanges, getChange, correlateChanges, ingestChanges, type Change } from '@/api/aiops'
+import { formatDateTime } from '@/utils/format'
 
 const message = useMessage()
 
@@ -83,15 +84,6 @@ const changeTypeColor: Record<
   other: 'default',
 }
 
-function formatTime(t?: string): string {
-  if (!t) return '-'
-  try {
-    return new Date(t).toLocaleString('zh-CN', { hour12: false })
-  } catch {
-    return t
-  }
-}
-
 const columns = computed<DataTableColumns<Change>>(() => [
   {
     title: '变更类型',
@@ -151,7 +143,7 @@ const columns = computed<DataTableColumns<Change>>(() => [
     title: '时间',
     key: 'timestamp',
     width: 180,
-    render: (row) => formatTime(row.timestamp),
+    render: (row) => formatDateTime(row.timestamp || '') || '-',
   },
   {
     title: '操作',
@@ -327,7 +319,7 @@ onMounted(() => {
               {{ currentChange.ticket_id || '-' }}
             </n-descriptions-item>
             <n-descriptions-item label="时间">
-              {{ formatTime(currentChange.timestamp) }}
+              {{ formatDateTime(currentChange.timestamp || '') || '-' }}
             </n-descriptions-item>
             <n-descriptions-item v-if="currentChange.rollback_of" label="回滚目标">
               <code>{{ currentChange.rollback_of }}</code>

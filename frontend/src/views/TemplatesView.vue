@@ -31,6 +31,7 @@ import {
   type Template,
 } from '@/api/templates'
 import { getAuthToken } from '@/api/index'
+import { formatDateTime } from '@/utils/format'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -94,18 +95,6 @@ const categoryColor: Record<string, string> = {
 
 function isBuiltin(t: Template): boolean {
   return !!t.is_builtin || Number(t.is_builtin) === 1
-}
-
-function formatDate(dateStr: string) {
-  if (!dateStr) return '-'
-  const date = new Date(dateStr)
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }
 
 async function loadTemplates() {
@@ -386,10 +375,10 @@ onMounted(() => {
               {{ selectedTemplate.description || '—' }}
             </n-descriptions-item>
             <n-descriptions-item label="创建时间">
-              {{ formatDate(selectedTemplate.created_at || '') }}
+              {{ formatDateTime(selectedTemplate.created_at || '') || '-' }}
             </n-descriptions-item>
             <n-descriptions-item label="更新时间">
-              {{ formatDate(selectedTemplate.updated_at || '') }}
+              {{ formatDateTime(selectedTemplate.updated_at || '') || '-' }}
             </n-descriptions-item>
           </n-descriptions>
 

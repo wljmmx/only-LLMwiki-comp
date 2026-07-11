@@ -4,6 +4,7 @@
 
 端点：
 - POST /llm-wiki/ingest
+- POST /llm-wiki/ingest-all          # P3-4: 统一编译（wiki + graph）
 - POST /llm-wiki/recompile/{doc_id}
 - GET  /llm-wiki/pages
 - GET  /llm-wiki/page/{slug}
@@ -171,6 +172,58 @@ async def llm_wiki_recompile(doc_id: str, force: bool = True) -> dict:
         "stale_marked": result.stale_marked,
         "errors": result.errors,
         "index_rebuilt": result.index_rebuilt,
+    }
+
+
+@router.post("/llm-wiki/ingest-all", dependencies=[Depends(verify_token)])
+async def llm_wiki_ingest_all(
+    file: UploadFile = File(...),
+) -> dict:
+    """P3-4: 统一编译 — 一次 ingest 同时编译 wiki 页面 + 知识图谱
+
+    对齐审计报告 P3-4: 合并 compiler.py 与 wiki_compiler.py 编排，
+    消除 /graph/upload 与 /llm-wiki/ingest 的重复 parse+extract。
+
+    流程：parse → extract → 写入 Neo4j → 生成 wiki 页面 → 返回统一结果
+    GraphStore 不可用时优雅降级（graph_compiled=False）。
+    """
+    fmt = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if fmt not in supported_formats():
+        raise HTTPException(400, f"不支持的格式: {fmt}")
+    content = await file.read()
+    store = get_document_store()
+    meta = store.save(file.filename or "unknown", content, fmt)
+
+    # 漂移检测
+    drift = detect_drift(meta["doc_id"])
+    if drift.changed:
+        mark_pages_stale(drift.affected_slugs, drift.doc_id)
+
+    # P3-4: 统一编译（wiki + graph）
+    compiler = get_wiki_compiler()
+    result = await compiler.compile_raw_to_all(
+        meta["doc_id"], force=drift.changed
+    )
+    return {
+        "doc_id": meta["doc_id"],
+        "filename": file.filename,
+        "drift": {
+            "changed": drift.changed,
+            "affected_slugs": drift.affected_slugs,
+            "old_checksum": drift.old_checksum[:12],
+            "new_checksum": drift.new_checksum[:12],
+        },
+        "compile": {
+            "pages_created": result.pages_created,
+            "pages_updated": result.pages_updated,
+            "pages_unchanged": result.pages_unchanged,
+            "slugs": result.slugs,
+            "review_needed": result.review_needed,
+            "stale_marked": result.stale_marked,
+            "index_rebuilt": result.index_rebuilt,
+            "graph_compiled": result.graph_compiled,
+            "errors": result.errors,
+        },
     }
 
 

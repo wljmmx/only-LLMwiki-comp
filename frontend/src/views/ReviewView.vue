@@ -23,6 +23,7 @@ import {
   rejectReview,
   batchApprove,
 } from '@/api/review'
+import { formatDateTime } from '@/utils/format'
 import type { ReviewItem, ReviewStats } from '@/types/api'
 
 const message = useMessage()
@@ -111,7 +112,7 @@ const columns = [
     key: 'created_at',
     width: 180,
     render(row: ReviewItem) {
-      return formatDate(row.created_at)
+      return formatDateTime(row.created_at)
     },
   },
   {
@@ -141,17 +142,6 @@ const columns = [
     },
   },
 ]
-
-function formatDate(dateStr: string) {
-  const date = new Date(dateStr)
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
 
 async function fetchStats() {
   statsLoading.value = true
