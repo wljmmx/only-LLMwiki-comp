@@ -90,12 +90,13 @@ lb_content = LOADING_BAR.read_text(encoding="utf-8")
 
 # 单例管理
 check(
-    "导入 LoadingBarInst 类型",
-    "import type { LoadingBarInst }" in lb_content,
+    "导入 LoadingBarApi 类型",
+    "import type { LoadingBarApi }" in lb_content or "import type { LoadingBarInst }" in lb_content,
 )
 check(
     "模块级 loadingBar 单例变量",
-    "let loadingBar: LoadingBarInst | null = null" in lb_content,
+    "let loadingBar: LoadingBarApi | null = null" in lb_content
+    or "let loadingBar: LoadingBarInst | null = null" in lb_content,
 )
 check(
     "模块级 activeCount 计数器",
@@ -103,7 +104,8 @@ check(
 )
 check(
     "导出 setLoadingBar",
-    "export function setLoadingBar(bar: LoadingBarInst): void" in lb_content,
+    "export function setLoadingBar(bar: LoadingBarApi): void" in lb_content
+    or "export function setLoadingBar(bar: LoadingBarInst): void" in lb_content,
 )
 check(
     "导出 clearLoadingBar（重置单例 + 计数）",
@@ -225,10 +227,10 @@ check(
     and "from './loadingBar'" in api_content,
 )
 
-# 请求拦截器
+# 请求拦截器（P4-1: 可能通过 applyRequestInterceptor 函数共享）
 check(
     "request 拦截器调用 startLoadingBar()",
-    "api.interceptors.request.use" in api_content
+    "interceptors.request.use" in api_content
     and "startLoadingBar()" in api_content,
 )
 check(
@@ -239,7 +241,7 @@ check(
 # 响应拦截器
 check(
     "response 成功调用 finishLoadingBar()",
-    "api.interceptors.response.use" in api_content
+    "interceptors.response.use" in api_content
     and "finishLoadingBar()" in api_content,
 )
 check(
