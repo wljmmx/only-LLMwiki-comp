@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -66,7 +67,6 @@ def run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str]:
     )
     output = result.stdout + result.stderr
     # 剥离 ANSI 颜色代码（vitest 输出带颜色）
-    import re
 
     output = re.sub(r"\x1b\[[0-9;]*m", "", output)
     return result.returncode, output
@@ -382,7 +382,6 @@ check(
 
 # 检查测试用例数（19 个）
 if "Tests" in output:
-    import re
 
     m = re.search(r"Tests\s+(\d+)\s+passed", output)
     if m:

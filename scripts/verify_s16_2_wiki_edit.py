@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -172,7 +173,6 @@ def main() -> int:
             print("\n--- pytest 错误（最后 20 行）---")
             print("\n".join(output.splitlines()[-20:]))
             print("--- end ---")
-        import re
 
         m = re.search(r"(\d+) passed", output)
         if m:
