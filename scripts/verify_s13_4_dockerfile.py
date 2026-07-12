@@ -160,8 +160,8 @@ def test_runtime_stage() -> None:
     # 权限
     check("chmod +x entrypoint.sh", "chmod +x" in content and "entrypoint.sh" in content)
 
-    # EXPOSE 80
-    check("EXPOSE 80（nginx）", "EXPOSE 80" in content)
+    # P1-2: EXPOSE 8080（非特权端口，全程非 root 运行）
+    check("EXPOSE 8080（nginx 非特权端口）", "EXPOSE 8080" in content)
 
     # 数据目录
     check("mkdir /app/data", "/app/data" in content)
@@ -178,8 +178,8 @@ def test_nginx_conf() -> None:
 
     content = NGINX_CONF.read_text(encoding="utf-8")
 
-    # 监听 80
-    check("listen 80", "listen 80" in content)
+    # P1-2: 监听 8080（非特权端口）
+    check("listen 8080（非特权端口）", "listen 8080" in content)
 
     # 前端静态文件
     check("root /usr/share/nginx/html", "/usr/share/nginx/html" in content)
@@ -512,7 +512,7 @@ def test_docker_run_readiness() -> None:
     )
 
     # EXPOSE
-    check("EXPOSE 80", "EXPOSE 80" in content)
+    check("EXPOSE 8080", "EXPOSE 8080" in content)
 
     # WORKDIR /app
     check("WORKDIR /app", "WORKDIR /app" in content)

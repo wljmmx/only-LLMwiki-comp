@@ -194,7 +194,7 @@ jobs:
           docker pull "$IMAGE"
 
           echo "启动容器..."
-          CID=$(docker run -d -p 8080:80 \
+          CID=$(docker run -d -p 8080:8080 \
             -e OPSKG_API_TOKEN="" \
             -e OPSKG_BOOTSTRAP_ADMIN_USER=admin \
             -e OPSKG_BOOTSTRAP_ADMIN_PASSWORD=admin123 \

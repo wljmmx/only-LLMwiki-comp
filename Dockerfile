@@ -1,7 +1,7 @@
 # OpsKG 多阶段 Dockerfile（单镜像含前后端 + nginx + supervisord）
 #
 # 构建产物：单镜像，包含前端 dist/ + 后端 FastAPI + nginx + supervisord
-# 启动：docker run -p 80:80 -e OPENAI_COMPAT_API_KEY=... ghcr.io/wljmmx/only-llmwiki-comp:0.0.1
+# 启动：docker run -p 8080:8080 -e OPENAI_COMPAT_API_KEY=... ghcr.io/wljmmx/only-llmwiki-comp:0.0.1
 #
 # 镜像层级：
 #   Stage 1: frontend-builder  构建 Vue 前端 → /build/dist
