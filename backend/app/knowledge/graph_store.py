@@ -11,10 +11,44 @@ from typing import Any
 import structlog
 from neo4j import Driver, GraphDatabase
 from neo4j.exceptions import Neo4jError
+from neo4j.time import Date, DateTime, Duration, Time
 
 from app.config import get_settings
 
 logger = structlog.get_logger()
+
+
+def _to_jsonable(obj: Any) -> Any:
+    """递归将 Neo4j 返回值转换为 JSON 可序列化的 Python 原生类型。
+
+    问题背景：Neo4j Cypher 的 `datetime()` / `date()` / `time()` 函数写入的
+    temporal 属性，被 Python 驱动读回时返回 `neo4j.time.DateTime` 等自定义类型，
+    这些类型既不可被 `json.dumps` 序列化（抛 TypeError），也不被 FastAPI 的
+    `jsonable_encoder` 正确处理（DateTime 抛 ValueError，Date/Time 返回乱码 dict
+    如 `{'_Date__ordinal': ...}`）。
+
+    本函数将：
+    - `neo4j.time.DateTime` / `Date` / `Time` → ISO 8601 字符串
+    - `neo4j.time.Duration` → ISO 8601 duration 字符串（如 "P1DT1H"）
+    - dict / list / tuple → 递归转换
+
+    Args:
+        obj: Neo4j 查询返回的任意值（含 properties() 提取的 dict）
+
+    Returns:
+        JSON 可序列化的 Python 原生类型
+    """
+    if isinstance(obj, (DateTime, Date, Time)):
+        return obj.isoformat()
+    if isinstance(obj, Duration):
+        # Duration 无 isoformat()，str() 返回 ISO 8601 duration（如 "P1DT1H"）
+        # 不用默认 json.dumps，否则会变成乱码数组 [years, months, days, seconds]
+        return str(obj)
+    if isinstance(obj, dict):
+        return {k: _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_jsonable(v) for v in obj]
+    return obj
 
 
 @dataclass
@@ -98,7 +132,7 @@ class GraphStore:
                 confidence=entity.confidence,
             )
             record = result.single()
-            return dict(record) if record else {}
+            return _to_jsonable(dict(record)) if record else {}
 
     def upsert_relation(self, rel: GraphRelation) -> dict:
         """创建或更新关系"""
@@ -122,7 +156,7 @@ class GraphStore:
                 confidence=rel.confidence,
             )
             record = result.single()
-            return dict(record) if record else {}
+            return _to_jsonable(dict(record)) if record else {}
 
     def batch_upsert(
         self,
@@ -170,7 +204,9 @@ class GraphStore:
                 name=name,
             )
             record = result.single()
-            return dict(record["props"]) if record else None
+            # properties(n) 含 updated_at（Cypher datetime() 写入的 neo4j.time.DateTime）
+            # 必须经 _to_jsonable 转换，否则 FastAPI 响应序列化失败
+            return _to_jsonable(dict(record["props"])) if record else None
 
     def query_related(self, name: str, depth: int = 1) -> list[dict]:
         """查询实体的一跳邻居"""
@@ -184,7 +220,7 @@ class GraphStore:
                 """,
                 name=name,
             )
-            return [dict(record) for record in result]
+            return [_to_jsonable(dict(record)) for record in result]
 
     def query_by_type(self, entity_type: str, limit: int = 50) -> list[dict]:
         """按类型查询实体"""
@@ -199,7 +235,7 @@ class GraphStore:
                 type=entity_type,
                 limit=limit,
             )
-            return [dict(record) for record in result]
+            return [_to_jsonable(dict(record)) for record in result]
 
     def search_entities(self, keyword: str, limit: int = 20) -> list[dict]:
         """模糊搜索实体"""
@@ -214,7 +250,7 @@ class GraphStore:
                 keyword=keyword,
                 limit=limit,
             )
-            return [dict(record) for record in result]
+            return [_to_jsonable(dict(record)) for record in result]
 
     def get_stats(self) -> dict:
         """获取图谱统计"""
@@ -233,7 +269,7 @@ class GraphStore:
             return {
                 "total_entities": entities["total"] if entities else 0,
                 "total_relations": relations["total"] if relations else 0,
-                "by_type": [dict(record) for record in by_type],
+                "by_type": [_to_jsonable(dict(record)) for record in by_type],
             }
 
 

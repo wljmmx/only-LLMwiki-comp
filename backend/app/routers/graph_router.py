@@ -22,6 +22,7 @@ from app.knowledge import (
     get_graph_store,
     get_review_queue,
 )
+from app.knowledge.graph_store import _to_jsonable
 from app.parsers import get_parser, supported_formats
 from app.routers.parsers_router import EXT_FMT_MAP
 
@@ -215,7 +216,7 @@ async def graph_visualize(entity_type: str | None = None, limit: int = 100) -> d
                     limit=limit,
                 )
 
-            records = [dict(r) for r in result]
+            records = [_to_jsonable(dict(r)) for r in result]
 
             # 构建 D3.js 格式：{nodes: [...], links: [...]}
             node_map = {}
