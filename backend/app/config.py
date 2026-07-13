@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,10 +56,24 @@ class Settings(BaseSettings):
     embedding_dim: int = 1024
     embedding_batch_size: int = 16
 
+    # 搜索分词器（P2-1.5 中文分词优化）
+    # - "jieba"：jieba.cut_for_search 搜索引擎模式（默认，中文优先，需 jieba 依赖）
+    # - "whitespace"：纯空格切分（向后兼容，无 jieba 依赖）
+    # jieba 不可用时自动回退到 whitespace
+    search_tokenizer: Literal["whitespace", "jieba"] = "jieba"
+
     # Neo4j
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "password"
+
+    # GraphStore 查询缓存 TTL（秒）
+    # 减少重复 Neo4j 只读查询的开销；写操作会全量失效缓存（一致性优先）
+    # 环境变量 OPSKG_GRAPH_CACHE_TTL，默认 30 秒
+    graph_cache_ttl: float = Field(
+        default=30.0,
+        validation_alias=AliasChoices("OPSKG_GRAPH_CACHE_TTL", "graph_cache_ttl"),
+    )
 
     # 抽取门控
     confidence_auto: float = 0.85
@@ -86,6 +101,12 @@ class Settings(BaseSettings):
     # 设置后 /setup/test-* 和 /setup/generate-command 需携带此 token
     # 留空则：bootstrap admin 已配置时要求 admin 登录，未配置时允许首次配置
     setup_token: str = ""
+
+    # Alertmanager webhook 入站 token（P2-2.5）
+    # 专用于 POST /events/ingest/alertmanager 端点，支持 Bearer header 或 ?token= query param
+    # 留空则回退到 api_token；二者皆空则开发模式放行
+    # 用途：Alertmanager 难以发送 Bearer header，通常通过 webhook URL 携带 ?token=xxx
+    alertmanager_ingest_token: str = ""
 
     # CORS 跨域（P0-7）
     # 逗号分隔的允许 origin 列表，如 "http://localhost:5173,https://opskg.example.com"
@@ -158,6 +179,95 @@ class Settings(BaseSettings):
     collab_max_rooms: int = 1000
     # 单房间最大连接数；超过则新连接被拒绝（房间满）
     collab_max_connections_per_room: int = 50
+
+    # API 限流（slowapi）— 默认启用，可通过 OPSKG_RATE_LIMIT_ENABLED=0 关闭
+    # 全局默认 60 req/min/IP；登录端点 10/min；MCP 工具调用 30/min
+    rate_limit_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "OPSKG_RATE_LIMIT_ENABLED", "rate_limit_enabled"
+        ),
+    )
+    rate_limit_default: str = Field(
+        default="60/minute",
+        validation_alias=AliasChoices(
+            "OPSKG_RATE_LIMIT_DEFAULT", "rate_limit_default"
+        ),
+    )
+    rate_limit_login: str = Field(
+        default="10/minute",
+        validation_alias=AliasChoices(
+            "OPSKG_RATE_LIMIT_LOGIN", "rate_limit_login"
+        ),
+    )
+    rate_limit_mcp: str = Field(
+        default="30/minute",
+        validation_alias=AliasChoices(
+            "OPSKG_RATE_LIMIT_MCP", "rate_limit_mcp"
+        ),
+    )
+
+    # 审计日志 — 默认启用，可通过 OPSKG_AUDIT_LOG_ENABLED=0 关闭
+    # 仅记录写操作（POST/PUT/PATCH/DELETE），GET/OPTIONS/HEAD 跳过
+    # audit_log_paths：额外跳过的路径（逗号分隔），如 "/api/health,/api/ping"
+    audit_log_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "OPSKG_AUDIT_LOG_ENABLED", "audit_log_enabled"
+        ),
+    )
+    audit_log_paths: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "OPSKG_AUDIT_LOG_PATHS", "audit_log_paths"
+        ),
+    )
+
+    # P2-3.7 回滚执行链路（ArgoCD / Jenkins）
+    # 默认 dry_run（安全默认），仅返回预览不触发实际回滚
+    # 环境变量：OPSKG_ROLLBACK_DEFAULT_TARGET
+    rollback_default_target: str = Field(
+        default="dry_run",
+        validation_alias=AliasChoices(
+            "OPSKG_ROLLBACK_DEFAULT_TARGET", "rollback_default_target"
+        ),
+    )
+
+    # ArgoCD 后端配置（留空则禁用 ArgoCD 后端）
+    # 环境变量：OPSKG_ARGOCD_URL / OPSKG_ARGOCD_TOKEN / OPSKG_ARGOCD_APP_NAME
+    argocd_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPSKG_ARGOCD_URL", "argocd_url"),
+    )
+    argocd_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPSKG_ARGOCD_TOKEN", "argocd_token"),
+    )
+    argocd_app_name: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPSKG_ARGOCD_APP_NAME", "argocd_app_name"),
+    )
+
+    # Jenkins 后端配置（留空则禁用 Jenkins 后端）
+    # 环境变量：OPSKG_JENKINS_URL / OPSKG_JENKINS_USER / OPSKG_JENKINS_TOKEN / OPSKG_JENKINS_ROLLBACK_JOB
+    jenkins_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPSKG_JENKINS_URL", "jenkins_url"),
+    )
+    jenkins_user: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPSKG_JENKINS_USER", "jenkins_user"),
+    )
+    jenkins_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPSKG_JENKINS_TOKEN", "jenkins_token"),
+    )
+    jenkins_rollback_job: str = Field(
+        default="rollback",
+        validation_alias=AliasChoices(
+            "OPSKG_JENKINS_ROLLBACK_JOB", "jenkins_rollback_job"
+        ),
+    )
 
 
 @lru_cache

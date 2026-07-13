@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, TypedDict
+from typing import Any, Callable, TypedDict
 
 import structlog
 from langgraph.graph import END, StateGraph
@@ -19,6 +19,9 @@ from app.config import get_settings
 from app.core.llm import ChatMessage, get_llm_client
 
 logger = structlog.get_logger()
+
+# P2-5.5: 进度回调类型 (stage, data_dict) -> None
+ProgressCallback = Callable[[str, dict[str, Any]], None]
 
 
 # ── 状态定义 ──
@@ -157,6 +160,17 @@ class DocGenerationPipeline:
         self.llm = get_llm_client()
         self.settings = get_settings()
         self.graph = self._build_graph()
+        # P2-5.5: 进度回调，generate() 入口设置，节点出口触发
+        self._on_progress: ProgressCallback | None = None
+
+    def _emit_progress(self, stage: str, data: dict[str, Any] | None = None) -> None:
+        """P2-5.5: 触发进度回调，失败不影响主流程"""
+        if self._on_progress is None:
+            return
+        try:
+            self._on_progress(stage, data or {})
+        except Exception:  # noqa: BLE001
+            pass  # 回调异常不应中断文档生成
 
     def _build_graph(self) -> StateGraph:
         """构建 LangGraph 状态图"""
@@ -204,6 +218,11 @@ class DocGenerationPipeline:
 
     async def _intent_agent(self, state: DocGenState) -> DocGenState:
         """意图理解"""
+        self._emit_progress("stage_start", {
+            "stage": PipelineStage.INTENT.value,
+            "message": "分析需求意图...",
+            "iteration": state.get("iteration", 0),
+        })
         prompt = INTENT_PROMPT.format(
             request=state.get("user_request", ""),
             context=state.get("context", ""),
@@ -221,10 +240,20 @@ class DocGenerationPipeline:
         except Exception as e:
             state["error"] = f"intent_agent: {e}"
             state["intent"] = '{"doc_type": "runbook", "topic": "未知"}'
+        self._emit_progress("stage_done", {
+            "stage": PipelineStage.INTENT.value,
+            "token_usage": state.get("token_usage", 0),
+            "error": state.get("error"),
+        })
         return state
 
     async def _outline_agent(self, state: DocGenState) -> DocGenState:
         """大纲生成"""
+        self._emit_progress("stage_start", {
+            "stage": PipelineStage.OUTLINE.value,
+            "message": "生成文档大纲...",
+            "iteration": state.get("iteration", 0),
+        })
         prompt = OUTLINE_PROMPT.format(intent=state.get("intent", ""))
         try:
             resp = await self.llm.chat(
@@ -240,6 +269,12 @@ class DocGenerationPipeline:
         except Exception as e:
             state["error"] = f"outline_agent: {e}"
             state["outline"] = []
+        self._emit_progress("stage_done", {
+            "stage": PipelineStage.OUTLINE.value,
+            "sections_total": len(state.get("outline", [])),
+            "token_usage": state.get("token_usage", 0),
+            "error": state.get("error"),
+        })
         return state
 
     async def _generate_agent(self, state: DocGenState) -> DocGenState:
@@ -248,10 +283,26 @@ class DocGenerationPipeline:
         sections = state.get("sections", [])
         idx = state.get("current_section", 0)
 
+        # P2-5.5: 首次进入 generate 节点时发 stage_start
+        if idx == 0:
+            self._emit_progress("stage_start", {
+                "stage": PipelineStage.GENERATE.value,
+                "message": "生成文档内容...",
+                "sections_total": len(outline),
+                "iteration": state.get("iteration", 0),
+            })
+
         if idx >= len(outline):
             return state
 
         section = outline[idx]
+        # P2-5.5: 逐章节进度
+        self._emit_progress("section_start", {
+            "stage": PipelineStage.GENERATE.value,
+            "section_index": idx,
+            "section_total": len(outline),
+            "section_title": section.get("title", ""),
+        })
         prompt = GENERATE_PROMPT.format(
             outline=outline,
             section_title=section.get("title", ""),
@@ -278,13 +329,31 @@ class DocGenerationPipeline:
         except Exception as e:
             state["error"] = f"generate_agent: {e}"
 
+        # P2-5.5: 单章节完成进度
+        self._emit_progress("section_done", {
+            "stage": PipelineStage.GENERATE.value,
+            "section_index": idx + 1,
+            "section_total": len(outline),
+            "token_usage": state.get("token_usage", 0),
+        })
+
         # 如果还有章节未生成，继续生成
         if state["current_section"] < len(outline):
             return await self._generate_agent(state)
+        self._emit_progress("stage_done", {
+            "stage": PipelineStage.GENERATE.value,
+            "sections_completed": len(state.get("sections", [])),
+            "token_usage": state.get("token_usage", 0),
+        })
         return state
 
     async def _review_agent(self, state: DocGenState) -> DocGenState:
         """质量审查"""
+        self._emit_progress("stage_start", {
+            "stage": PipelineStage.REVIEW.value,
+            "message": f"质量审查（第 {state.get('iteration', 0) + 1} 轮）...",
+            "iteration": state.get("iteration", 0) + 1,
+        })
         outline = state.get("outline", [])
         sections = state.get("sections", [])
         content = self._format_document(sections)
@@ -311,10 +380,22 @@ class DocGenerationPipeline:
         except Exception as e:
             state["error"] = f"review_agent: {e}"
             state["review_decision"] = "accept"
+        self._emit_progress("stage_done", {
+            "stage": PipelineStage.REVIEW.value,
+            "decision": state.get("review_decision", "accept"),
+            "iteration": state.get("iteration", 0),
+            "token_usage": state.get("token_usage", 0),
+            "error": state.get("error"),
+        })
         return state
 
     async def _modify_agent(self, state: DocGenState) -> DocGenState:
         """修改执行"""
+        self._emit_progress("stage_start", {
+            "stage": PipelineStage.MODIFY.value,
+            "message": f"根据审查反馈修改（第 {state.get('iteration', 0)} 轮）...",
+            "iteration": state.get("iteration", 0),
+        })
         sections = state.get("sections", [])
         content = self._format_document(sections)
         feedback = state.get("review_feedback", "")
@@ -335,10 +416,21 @@ class DocGenerationPipeline:
             )
         except Exception as e:
             state["error"] = f"modify_agent: {e}"
+        self._emit_progress("stage_done", {
+            "stage": PipelineStage.MODIFY.value,
+            "iteration": state.get("iteration", 0),
+            "token_usage": state.get("token_usage", 0),
+            "error": state.get("error"),
+        })
         return state
 
     async def _proofread_agent(self, state: DocGenState) -> DocGenState:
         """校对润色"""
+        self._emit_progress("stage_start", {
+            "stage": PipelineStage.PROOFREAD.value,
+            "message": "校对润色最终文档...",
+            "iteration": state.get("iteration", 0),
+        })
         sections = state.get("sections", [])
         content = self._format_document(sections)
 
@@ -356,6 +448,11 @@ class DocGenerationPipeline:
         except Exception as e:
             state["error"] = f"proofread_agent: {e}"
             state["final_document"] = content
+        self._emit_progress("stage_done", {
+            "stage": PipelineStage.PROOFREAD.value,
+            "token_usage": state.get("token_usage", 0),
+            "error": state.get("error"),
+        })
         return state
 
     # ── 工具方法 ──
@@ -404,8 +501,21 @@ class DocGenerationPipeline:
         request: str,
         context: str = "",
         max_iterations: int | None = None,
+        *,
+        on_progress: ProgressCallback | None = None,
     ) -> DocGenState:
-        """执行文档生成流水线"""
+        """执行文档生成流水线
+
+        Args:
+            request: 用户需求
+            context: 图谱检索上下文
+            max_iterations: review→modify 最大迭代次数
+            on_progress: P2-5.5 进度回调，签名 (stage, data) -> None
+                stage 取值见 PipelineStage 枚举 + "stage_start"/"stage_done" 前缀
+                data 含 iteration/token_usage/sections 等运行时信息
+        """
+        # P2-5.5: 设置进度回调，供 6 个节点出口触发
+        self._on_progress = on_progress
         initial_state: DocGenState = {
             "user_request": request,
             "context": context,
@@ -415,7 +525,11 @@ class DocGenerationPipeline:
             "sections": [],
             "current_section": 0,
         }
-        result = await self.graph.ainvoke(initial_state)
+        try:
+            result = await self.graph.ainvoke(initial_state)
+        finally:
+            # 清理回调，避免单例泄漏到下次调用
+            self._on_progress = None
         logger.info(
             "doc_gen_done",
             sections=len(result.get("sections", [])),

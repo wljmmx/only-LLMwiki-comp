@@ -2,6 +2,7 @@
 
 端点：
 - POST /events/ingest
+- POST /events/ingest/alertmanager            （P2-2.5: Alertmanager v4 webhook 接入）
 - POST /events/correlate
 - GET  /events/incidents
 - GET  /events/incidents/{incident_id}
@@ -21,18 +22,22 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.aiops import (
     INCIDENT_STATES,
     INCIDENT_TRANSITIONS,
     TERMINAL_STATES,
     InvalidTransitionError,
+    alertmanager_to_events,
     get_change_correlator,
     get_event_correlator,
     is_valid_state,
+    should_resolve_incident,
 )
+from app.aiops.event_correlator import _get_db as get_events_db
 from app.auth import verify_token
+from app.config import get_settings
 from app.search import get_search_engine
 from app.storage import get_version_control
 
@@ -70,6 +75,157 @@ async def events_ingest(payload: dict) -> dict:
         },
     )
     return result
+
+
+@router.post("/events/ingest/alertmanager")
+async def events_ingest_alertmanager(
+    request: Request,
+    payload: dict,
+    token: str | None = Query(
+        None,
+        description="Alertmanager 入站 token（也可用 Authorization: Bearer 头）",
+    ),
+) -> dict:
+    """接收 Prometheus Alertmanager v4 webhook 告警（P2-2.5）
+
+    Alertmanager 标准 webhook receiver 配置：
+        receivers:
+          - name: opskg
+            webhook_configs:
+              - url: http://opskg:8000/events/ingest/alertmanager?token=xxx
+                send_resolved: true
+
+    认证（三选一，优先级递减）：
+    1. alertmanager_ingest_token（专用，独立于 api_token）
+    2. api_token（共享 legacy token）
+    3. 二者皆空 → 开发模式放行
+
+    支持的 token 传递方式：
+    - Authorization: Bearer <token>  （推荐）
+    - ?token=<token>                  （Alertmanager webhook_configs.url 携带）
+
+    Body: Alertmanager v4 标准 payload（含 alerts 数组）
+          或单 alert 对象（容错）
+
+    Returns:
+        {
+          "ingested": N,
+          "skipped_duplicates": M,
+          "resolved": K,                # 触发 incident 自动迁移的数量
+          "source": "alertmanager",
+          "alerts_total": len(alerts)
+        }
+    """
+    # ── 认证 ──
+    import secrets as _secrets
+
+    settings = get_settings()
+    expected_am = settings.alertmanager_ingest_token
+    expected_api = settings.api_token
+    expected = expected_am or expected_api
+    if expected:
+        # 优先从 Authorization header 取
+        auth_header = request.headers.get("authorization", "")
+        bearer_token = ""
+        if auth_header.lower().startswith("bearer "):
+            bearer_token = auth_header[7:].strip()
+        candidate = bearer_token or token
+        # 直接与 alertmanager_ingest_token 或 api_token 常量时间比较
+        # （verify_token_string 仅查 api_token，不支持 alertmanager 专用 token）
+        ok = bool(candidate) and (
+            (expected_am and _secrets.compare_digest(candidate, expected_am))
+            or (expected_api and _secrets.compare_digest(candidate, expected_api))
+        )
+        if not ok:
+            raise HTTPException(
+                401,
+                "Alertmanager webhook 认证失败",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    # else: 开发模式放行
+
+    # ── payload 转换 ──
+    try:
+        events = alertmanager_to_events(payload)
+    except ValueError as e:
+        raise HTTPException(400, f"Alertmanager payload 解析失败：{e}") from e
+
+    if not events:
+        return {
+            "ingested": 0,
+            "skipped_duplicates": 0,
+            "resolved": 0,
+            "source": "alertmanager",
+            "alerts_total": 0,
+        }
+
+    # ── 接入关联引擎 ──
+    corr = get_event_correlator()
+    result = corr.ingest(events)
+
+    # ── resolved 自动迁移 ──
+    # Alertmanager send_resolved: true 时，恢复的告警会重发同 fingerprint 的 alert
+    # 对应已存在的 incident 应自动迁移到 resolved 状态
+    resolved_count = 0
+    for ev in events:
+        if not should_resolve_incident(ev):
+            continue
+        attrs = ev.get("attributes") or {}
+        fingerprint = attrs.get("fingerprint", "")
+        alertname = attrs.get("alertname", "")
+        if not fingerprint:
+            continue
+        # 按 fingerprint 反查 incident：扫描 alert_attributes 中匹配的 incident
+        # 保守策略：仅迁移 status=open/ack/investigating/mitigated 的同 alertname incident
+        try:
+            conn = get_events_db()
+            rows = conn.execute(
+                """SELECT i.incident_id, i.status FROM incidents i
+                   WHERE i.status IN ('open', 'ack', 'investigating', 'mitigated')
+                   AND EXISTS (
+                       SELECT 1 FROM events e
+                       WHERE e.incident_id = i.incident_id
+                       AND e.component = ?
+                   )""",
+                (alertname,),
+            ).fetchall()
+            for inc_id, _status in rows:
+                try:
+                    corr.transition_incident(
+                        inc_id,
+                        "resolved",
+                        note=f"Alertmanager 自动恢复（fingerprint={fingerprint}）",
+                        by="alertmanager",
+                    )
+                    resolved_count += 1
+                except (KeyError, InvalidTransitionError):
+                    # 状态已变化或 incident 不存在 — 跳过
+                    continue
+        except Exception:  # noqa: BLE001
+            # 自动迁移失败不应阻塞 ingest 主流程
+            pass
+
+    # ── 触发 webhook ──
+    from app.webhooks import dispatch_event
+
+    dispatch_event(
+        "event.ingested",
+        {
+            "ingested": result.get("ingested", 0),
+            "skipped_duplicates": result.get("skipped_duplicates", 0),
+            "event_count": len(events),
+            "source": "alertmanager",
+            "resolved": resolved_count,
+        },
+    )
+
+    return {
+        "ingested": result.get("ingested", 0),
+        "skipped_duplicates": result.get("skipped_duplicates", 0),
+        "resolved": resolved_count,
+        "source": "alertmanager",
+        "alerts_total": len(events),
+    }
 
 
 @router.post("/events/correlate", dependencies=[Depends(verify_token)])

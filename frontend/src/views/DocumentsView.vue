@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, h, onUnmounted } from 'vue'
+import { ref, onMounted, watch, h } from 'vue'
 import {
   NDataTable,
   NButton,
@@ -23,14 +23,13 @@ import {
 } from 'naive-ui'
 import type { UploadCustomRequestOptions } from 'naive-ui'
 import { listDocuments, deleteDocument, parseDocument, getDocumentContent, searchDocuments, getPipelineStatus } from '@/api/documents'
-import { recompileDocument } from '@/api/wiki'
 import { formatFileSize, formatDateTime as formatDateTimeUtil } from '@/utils/format'
 import { useSse } from '@/composables/useSse'
 import type { SseEvent } from '@/composables/useSse'
 import type { DocumentMeta } from '@/types/api'
 
 const message = useMessage()
-const { subscribe, unsubscribe } = useSse()
+const { subscribe } = useSse()
 
 const loading = ref(false)
 const documents = ref<DocumentMeta[]>([])
@@ -51,6 +50,8 @@ interface PipelineStep {
   started_at?: string | null
   duration_ms?: number | null
   error?: string | null
+  // P2-5.5: compile 步骤的子进度（逐实体编译）
+  subProgress?: { current: number; total: number; currentEntity: string } | null
 }
 const pipelineSteps = ref<PipelineStep[]>([])
 const pipelineLoading = ref(false)
@@ -274,21 +275,52 @@ async function handleCompileToWiki(doc: DocumentMeta) {
       if (evt.type === 'step_start') {
         const step = evt.data.step as string
         const idx = stepIndex[step] ?? 0
-        pipelineSteps.value[idx].status = 'running'
-        pipelineProgress.value = (idx / 4) * 100
+        if (step in stepIndex) {
+          pipelineSteps.value[idx].status = 'running'
+          pipelineProgress.value = (idx / 4) * 100
+        }
       } else if (evt.type === 'step_done') {
         const step = evt.data.step as string
-        const idx = stepIndex[step] ?? 0
-        pipelineSteps.value[idx].status = 'done'
-        pipelineSteps.value[idx].duration_ms = evt.data.duration_ms ?? null
-        pipelineProgress.value = ((idx + 1) / 4) * 100
-        if (step === 'compile') {
-          pipelineResult.value = evt.data
+        // P2-5.5: wiki_compiler 取消时发 step_done("cancelled")，不应更新任何步骤
+        if (step === 'cancelled') return
+        const idx = stepIndex[step]
+        if (idx !== undefined) {
+          pipelineSteps.value[idx].status = 'done'
+          pipelineSteps.value[idx].duration_ms = evt.data.duration_ms ?? null
+          pipelineProgress.value = ((idx + 1) / 4) * 100
+          if (step === 'compile') {
+            pipelineResult.value = evt.data
+          }
+        }
+      } else if (evt.type === 'page_start') {
+        // P2-5.5: compile 步骤逐实体编译开始
+        const data = evt.data
+        pipelineSteps.value[2].subProgress = {
+          current: (data.index ?? 0),
+          total: data.total ?? 0,
+          currentEntity: data.entity ?? '',
+        }
+      } else if (evt.type === 'page_done') {
+        // P2-5.5: 单实体编译完成，更新子进度
+        const data = evt.data
+        const sp = pipelineSteps.value[2].subProgress
+        if (sp) {
+          sp.current = (data.index ?? sp.current) + 1
+          sp.currentEntity = ''
+        }
+      } else if (evt.type === 'progress') {
+        // P2-5.5: wiki_compiler 精确百分比进度（compile 步骤内）
+        const percent = evt.data.percent as number | undefined
+        if (typeof percent === 'number' && percent > 0) {
+          // compile 是第 3 步（索引 2），映射到 50%-75% 区间
+          pipelineProgress.value = 50 + (percent / 100) * 25
         }
       } else if (evt.type === 'done') {
         pipelineProgress.value = 100
         pipelineLoading.value = false
         compilingId.value = null
+        // 清理子进度
+        pipelineSteps.value[2].subProgress = null
         const created = evt.data.pages_created ?? 0
         const updated = evt.data.pages_updated ?? 0
         const errors = evt.data.errors ?? []
@@ -305,8 +337,8 @@ async function handleCompileToWiki(doc: DocumentMeta) {
         compilingId.value = null
         message.error('编译失败：' + (evt.data.message || '未知错误'))
         const step = evt.data.step as string
-        if (step) {
-          const idx = stepIndex[step] ?? 0
+        const idx = stepIndex[step]
+        if (idx !== undefined) {
           pipelineSteps.value[idx].status = 'error'
           pipelineSteps.value[idx].error = evt.data.message
         }
@@ -512,21 +544,32 @@ onMounted(() => {
                   vertical
                 >
                   <NStep
-                    v-for="(step, idx) in pipelineSteps"
+                    v-for="step in pipelineSteps"
                     :key="step.name"
                     :title="step.label"
-                    :description="step.description"
                     :status="
                       step.status === 'error' ? 'error' :
                       step.status === 'running' ? 'process' :
                       step.status === 'done' ? 'finish' : 'wait'
                     "
                   >
-                    <template v-if="step.status === 'done' && step.duration_ms" #description>
+                    <template v-if="step.status === 'done' && step.duration_ms" #default>
                       耗时 {{ (step.duration_ms / 1000).toFixed(1) }}s
                     </template>
-                    <template v-if="step.status === 'error' && step.error" #description>
+                    <template v-if="step.status === 'error' && step.error" #default>
                       <span class="step-error">{{ step.error }}</span>
+                    </template>
+                    <!-- P2-5.5: compile 步骤子进度（逐实体编译） -->
+                    <template
+                      v-if="step.status === 'running' && step.subProgress && step.subProgress.total > 0"
+                      #default
+                    >
+                      <span class="step-subprogress">
+                        编译中 {{ step.subProgress.current }}/{{ step.subProgress.total }}
+                        <span v-if="step.subProgress.currentEntity">
+                          — {{ step.subProgress.currentEntity }}
+                        </span>
+                      </span>
                     </template>
                   </NStep>
                 </NSteps>
@@ -672,6 +715,11 @@ onMounted(() => {
 
 .step-error {
   color: var(--n-error-color, #d03050);
+  font-size: 12px;
+}
+
+.step-subprogress {
+  color: var(--n-text-color-3, #999);
   font-size: 12px;
 }
 

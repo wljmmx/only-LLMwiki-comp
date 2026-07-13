@@ -21,6 +21,9 @@ from typing import Literal
 
 import structlog
 
+from app.config import get_settings
+from app.search.tokenizer import tokenize, tokenize_to_string
+
 logger = structlog.get_logger()
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "search_index.db"
@@ -45,13 +48,22 @@ def _get_db() -> sqlite3.Connection:
 
 def _init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript("""
-        -- FTS5 全文索引表
+        -- FTS5 全文索引表（P2-1.5: content 存预分词文本，原始内容存 doc_snippets）
         CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
             doc_id UNINDEXED,
             title,
             content,
             format UNINDEXED,
             tokenize='unicode61'
+        );
+
+        -- P2-1.5: 原始内容片段表（用于搜索结果 snippet 展示）
+        -- 与 docs_fts 一对一，doc_id 为外键逻辑约束
+        CREATE TABLE IF NOT EXISTS doc_snippets (
+            doc_id TEXT PRIMARY KEY,
+            title TEXT,
+            content TEXT,
+            created_at TEXT NOT NULL
         );
 
         -- 向量索引表（内存计算余弦相似度）
@@ -87,11 +99,30 @@ class SearchEngine:
         # 先删除旧索引
         conn.execute("DELETE FROM docs_fts WHERE doc_id = ?", (doc_id,))
         conn.execute("DELETE FROM doc_embeddings WHERE doc_id = ?", (doc_id,))
+        conn.execute("DELETE FROM doc_snippets WHERE doc_id = ?", (doc_id,))
 
-        # FTS5 全文索引
+        # P2-1.5: 双端预分词 —— index 侧用 jieba 切分后写空格分隔文本
+        # 这样 FTS5 unicode61 tokenizer 看到的就是已切分的 token，与 query 侧一致
+        mode = get_settings().search_tokenizer
+        tokenized_title = tokenize_to_string(title or "", mode=mode)
+        tokenized_content = tokenize_to_string(content[:50000] if content else "", mode=mode)
+
+        # FTS5 全文索引（存分词后的文本）
         conn.execute(
             "INSERT INTO docs_fts (doc_id, title, content, format) VALUES (?, ?, ?, ?)",
-            (doc_id, title or "", content[:50000], fmt),
+            (doc_id, tokenized_title, tokenized_content, fmt),
+        )
+
+        # P2-1.5: doc_snippets 存原始文本（用于搜索结果 snippet/title 展示）
+        # 与 docs_fts 一一对应，避免展示分词后的破碎文本
+        conn.execute(
+            "INSERT INTO doc_snippets (doc_id, title, content, created_at) VALUES (?, ?, ?, ?)",
+            (
+                doc_id,
+                title or "",
+                content[:50000] if content else "",
+                datetime.now(timezone.utc).isoformat(),
+            ),
         )
 
         # 向量索引
@@ -120,6 +151,7 @@ class SearchEngine:
         conn = _get_db()
         conn.execute("DELETE FROM docs_fts WHERE doc_id = ?", (doc_id,))
         conn.execute("DELETE FROM doc_embeddings WHERE doc_id = ?", (doc_id,))
+        conn.execute("DELETE FROM doc_snippets WHERE doc_id = ?", (doc_id,))
         conn.commit()
 
     # ────────── 检索 ──────────
@@ -261,14 +293,17 @@ class SearchEngine:
         if not query.strip():
             return {}
         conn = _get_db()
-        words = [w for w in query.split() if w]
-        if not words:
+        # P2-1.5: query 侧同样用 jieba 预分词，与 index 侧保持一致
+        # 否则中文 query 会被 FTS5 unicode61 整段当一个 token，无法匹配分词后的索引
+        mode = get_settings().search_tokenizer
+        tokens = tokenize(query, mode=mode)
+        if not tokens:
             return {}
-        safe_query = " ".join(words)
+        safe_query = " ".join(tokens)
         try:
-            # 分两步：先查 doc_id 和 bm25，再单独取 snippet
+            # docs_fts 中 title/content 已是分词文本，无需在 SELECT 中取展示用字段
             rows = conn.execute(
-                """SELECT doc_id, title, format, bm25(docs_fts) as score
+                """SELECT doc_id, format, bm25(docs_fts) as score
                    FROM docs_fts WHERE docs_fts MATCH ?
                    ORDER BY score LIMIT ?""",
                 (safe_query, limit),
@@ -280,14 +315,21 @@ class SearchEngine:
         for r in rows:
             raw_score = r["score"]
             score = 1.0 / (1.0 + math.exp(raw_score)) if raw_score > -50 else 1.0
-            # 从 content 截取片段
-            content_row = conn.execute(
-                "SELECT substr(content, 1, 200) as snippet FROM docs_fts WHERE doc_id = ?",
+            # P2-1.5: 展示用的 title/snippet 从 doc_snippets 取原始内容
+            # docs_fts 中存的是分词后文本，直接展示会出现 "nginx 502 故障 排查" 这种破碎形式
+            snippet_row = conn.execute(
+                "SELECT title, substr(content, 1, 200) as snippet FROM doc_snippets WHERE doc_id = ?",
                 (r["doc_id"],),
             ).fetchone()
-            snippet = content_row["snippet"] if content_row else ""
+            if snippet_row:
+                title = snippet_row["title"] or ""
+                snippet = snippet_row["snippet"] or ""
+            else:
+                # 兼容旧数据（doc_snippets 缺失时回退为空字符串）
+                title = ""
+                snippet = ""
             results[r["doc_id"]] = {
-                "title": r["title"],
+                "title": title,
                 "format": r["format"],
                 "snippet": snippet,
                 "score": score,

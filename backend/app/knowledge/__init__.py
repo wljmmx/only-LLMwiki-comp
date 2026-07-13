@@ -80,10 +80,10 @@ from app.knowledge.wiki_compiler import (
     WikiCompiler,
     WikiCompileResult,
     WikiPage,
-    get_wiki_compiler,
-    make_slug,
-    make_hierarchical_slug,
     generate_slug_for_heading_tree,
+    get_wiki_compiler,
+    make_hierarchical_slug,
+    make_slug,
 )
 from app.knowledge.wiki_drift import (
     DriftReport,
