@@ -182,6 +182,19 @@ const routes: RouteRecordRaw[] = [
           menuOrder: 3,
         },
       },
+      // P2-1: 系统配置管理
+      {
+        path: 'settings',
+        name: 'settings',
+        component: () => import('@/views/SettingsView.vue'),
+        meta: {
+          title: '系统配置',
+          icon: 'settings',
+          requireRole: ['admin'],
+          menuGroup: '系统工具',
+          menuOrder: 4,
+        },
+      },
       // 404 兜底（catch-all，必须放在最后）
       {
         path: ':pathMatch(.*)*',

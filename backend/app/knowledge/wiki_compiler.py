@@ -471,7 +471,7 @@ class WikiCompiler:
             "\n".join(f"- {k}: {v}" for k, v in entity.properties.items() if v)
             or "（无）"
         )
-        evidence = (entity.evidence_span or "").strip()[:1200]
+        evidence = (entity.evidence_span or "").strip()[:4000]  # P0-2: 从 1200 提升到 4000
         type_label = {
             "incident": "故障页（必含：概述/成因分析/排查步骤/处置方案/来源）",
             "runbook": "操作手册页（必含：概述/影响分析/排查步骤/处置方案/来源）",

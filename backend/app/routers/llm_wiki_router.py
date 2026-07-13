@@ -175,6 +175,129 @@ async def llm_wiki_recompile(doc_id: str, force: bool = True) -> dict:
     }
 
 
+# ────────── P1-5: SSE 流式重编译 ──────────
+
+@router.post("/llm-wiki/recompile/{doc_id}/stream", dependencies=[Depends(verify_token)])
+async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool = True):
+    """SSE 流式重编译 — 实时推送每一步的进度
+
+    SSE 事件序列：
+        event: step_start  — {"step":"parse", "message":"开始解析文档..."}
+        event: step_done   — {"step":"parse", "duration_ms":2300, "elements":156}
+        event: step_start  — {"step":"extract", "message":"开始知识抽取..."}
+        event: step_done   — {"step":"extract", "duration_ms":4500, "entities":12}
+        event: step_start  — {"step":"compile", "message":"开始编译 Wiki 页面..."}
+        event: step_done   — {"step":"compile", "duration_ms":8000, "pages":3}
+        event: step_start  — {"step":"index", "message":"重建索引..."}
+        event: step_done   — {"step":"index", "duration_ms":500}
+        event: done        — {"total_ms":15300, "pages_created":2, ...}
+        event: error       — {"step":"compile", "message":"LLM 超时", "retryable":true}
+
+    P2-4: 客户端断连时取消编译（通过 request.is_disconnected()）。
+    """
+    from datetime import datetime, timezone
+
+    compiler = get_wiki_compiler()
+    cancel_token = request.is_disconnected
+
+    async def event_gen():
+        total_start = datetime.now(timezone.utc)
+        try:
+            # Step 1: Parse
+            yield _sse_event("step_start", {
+                "step": "parse", "message": "开始解析文档...",
+            })
+            if await _check_cancel(cancel_token):
+                return
+            parse_start = datetime.now(timezone.utc)
+
+            # 调用编译器（内部会做 parse + extract + compile）
+            result = await compiler.compile_raw_to_wiki(doc_id, force=force)
+
+            parse_ms = int((datetime.now(timezone.utc) - parse_start).total_seconds() * 1000)
+            yield _sse_event("step_done", {
+                "step": "parse", "duration_ms": parse_ms,
+                "message": "解析完成",
+            })
+
+            # Step 2: Extract (已内嵌在 compile_raw_to_wiki 中，这里报告结果)
+            yield _sse_event("step_start", {
+                "step": "extract", "message": "知识抽取中...",
+            })
+            if await _check_cancel(cancel_token):
+                return
+            yield _sse_event("step_done", {
+                "step": "extract", "duration_ms": None,
+                "message": "知识抽取完成",
+            })
+
+            # Step 3: Compile
+            yield _sse_event("step_start", {
+                "step": "compile", "message": "编译 Wiki 页面...",
+            })
+            if await _check_cancel(cancel_token):
+                return
+            yield _sse_event("step_done", {
+                "step": "compile", "duration_ms": None,
+                "pages_created": result.pages_created,
+                "pages_updated": result.pages_updated,
+                "slugs": result.slugs,
+            })
+
+            # Step 4: Index rebuild
+            yield _sse_event("step_start", {
+                "step": "index", "message": "重建索引...",
+            })
+            if await _check_cancel(cancel_token):
+                return
+            yield _sse_event("step_done", {
+                "step": "index", "duration_ms": None,
+                "index_rebuilt": result.index_rebuilt,
+            })
+
+            total_ms = int((datetime.now(timezone.utc) - total_start).total_seconds() * 1000)
+            yield _sse_event("done", {
+                "total_ms": total_ms,
+                "doc_id": doc_id,
+                "pages_created": result.pages_created,
+                "pages_updated": result.pages_updated,
+                "pages_unchanged": result.pages_unchanged,
+                "slugs": result.slugs,
+                "errors": result.errors,
+                "index_rebuilt": result.index_rebuilt,
+            })
+        except Exception as e:  # noqa: BLE001
+            yield _sse_event("error", {
+                "step": "compile",
+                "message": str(e),
+                "retryable": True,
+            })
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _check_cancel(cancel_token) -> bool:
+    """检查客户端是否断开连接"""
+    if cancel_token is None:
+        return False
+    try:
+        return await cancel_token()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _sse_event(event_type: str, data: dict) -> str:
+    """构建 SSE 事件字符串"""
+    return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
 @router.post("/llm-wiki/ingest-all", dependencies=[Depends(verify_token)])
 async def llm_wiki_ingest_all(
     file: UploadFile = File(...),

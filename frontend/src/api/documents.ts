@@ -27,7 +27,7 @@ export function getDocument(docId: string) {
 }
 
 export function getDocumentContent(docId: string) {
-  return api.get<unknown, { content: string; format: string }>(`/documents/${docId}/content`)
+  return api.get<unknown, { content: string; format: string; source: string }>(`/documents/${docId}/content`)
 }
 
 export function getDocumentStats() {
@@ -42,4 +42,28 @@ export function parseDocument(fmt: string, formData: FormData) {
   return api.post<unknown, { doc_id: string; status: string }>(`/parsers/parse/${fmt}`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
+}
+
+// P3-3: 流水线状态
+export interface PipelineStepStatus {
+  name: string
+  label: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  started_at?: string | null
+  duration_ms?: number | null
+  error?: string | null
+}
+
+export interface PipelineStatusResponse {
+  doc_id: string
+  current_status: string
+  steps: PipelineStepStatus[]
+  retryable: boolean
+  failed_step: string | null
+  title: string
+  format: string
+}
+
+export function getPipelineStatus(docId: string) {
+  return api.get<unknown, PipelineStatusResponse>(`/documents/${docId}/pipeline-status`)
 }

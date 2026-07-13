@@ -115,7 +115,12 @@ async def parse_batch(files: list[UploadFile] = File(..., alias="files")) -> dic
         try:
             parser = get_parser(fmt)
             doc = parser.parse(stored_path, doc_meta["doc_id"])
-            store.update_status(doc_meta["doc_id"], "parsed", title=doc.title)
+            # P0-3: 持久化解析结果
+            store.update_status(
+                doc_meta["doc_id"], "parsed",
+                title=doc.title,
+                parse_result=_serialize_doc(doc),
+            )
             dispatch_event(
                 "document.parsed",
                 {
@@ -174,7 +179,12 @@ async def parse_file(fmt: str, file: UploadFile = File(...)) -> dict:
     try:
         parser = get_parser(fmt)
         doc = parser.parse(stored_path, doc_meta["doc_id"])
-        store.update_status(doc_meta["doc_id"], "parsed", title=doc.title)
+        # P0-3: 持久化解析结果
+        store.update_status(
+            doc_meta["doc_id"], "parsed",
+            title=doc.title,
+            parse_result=_serialize_doc(doc),
+        )
         # 建立搜索索引
         content_text = " ".join(e.content for e in doc.elements if e.content)
         get_search_engine().index_document(

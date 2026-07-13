@@ -440,7 +440,7 @@ onMounted(() => {
                 <div v-if="sseEvents.length" style="margin-top: 12px">
                   <h4 style="margin: 0 0 6px">SSE 事件 ({{ sseEvents.length }})</h4>
                   <div class="sse-log">
-                    <div v-for="(ev, idx) in sseEvents" :key="idx" class="sse-line">
+                    <div v-for="(ev, idx) in sseEvents" :key="ev.type + '-' + idx" class="sse-line">
                       <n-tag
                         size="tiny"
                         :type="

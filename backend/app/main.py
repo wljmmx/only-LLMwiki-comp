@@ -37,6 +37,7 @@ from app.routers.review_router import router as review_router
 from app.routers.runbook_router import router as runbook_router
 from app.routers.saml_router import router as saml_router
 from app.routers.search_router import router as search_router
+from app.routers.settings_management_router import router as settings_mgmt_router
 from app.routers.setup_router import router as setup_router
 from app.routers.templates_router import router as templates_router
 from app.routers.topology_router import router as topology_router
@@ -264,5 +265,6 @@ app.include_router(webhook_router)
 app.include_router(anomaly_router)
 app.include_router(realtime_router)
 app.include_router(setup_router)
+app.include_router(settings_mgmt_router)
 app.include_router(okf_router)
 app.include_router(backup_router)

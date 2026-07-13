@@ -2,6 +2,8 @@
 
 文件存储到 data/uploads/，元数据存到 SQLite。
 解析后的文件不再删除，支持后续检索和版本控制。
+
+P3-1: 新增 pipeline_runs 表，追踪流水线步骤级执行状态。
 """
 
 from __future__ import annotations
@@ -9,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -58,6 +61,23 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_doc_format ON documents(format);
         CREATE INDEX IF NOT EXISTS idx_doc_status ON documents(status);
         CREATE INDEX IF NOT EXISTS idx_doc_filename ON documents(filename);
+
+        -- P3-1: PipelineRun 状态机
+        CREATE TABLE IF NOT EXISTS pipeline_runs (
+            run_id TEXT PRIMARY KEY,
+            doc_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending','running','done','error','cancelled')),
+            current_step TEXT,
+            steps_json TEXT NOT NULL DEFAULT '[]',
+            started_at TEXT,
+            finished_at TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (doc_id) REFERENCES documents(doc_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pipeline_doc ON pipeline_runs(doc_id);
+        CREATE INDEX IF NOT EXISTS idx_pipeline_status ON pipeline_runs(status);
     """)
 
 
@@ -255,6 +275,114 @@ class DocumentStore:
             "SELECT * FROM documents WHERE checksum = ?", (checksum,)
         ).fetchone()
         return dict(row) if row else None
+
+    # ────────── P3-1: PipelineRun 状态机 ──────────
+
+    def create_pipeline_run(self, doc_id: str) -> str:
+        """创建流水线执行记录，返回 run_id"""
+        run_id = f"run-{uuid.uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc).isoformat()
+        steps = json.dumps([
+            {"name": "parse", "label": "解析", "status": "pending"},
+            {"name": "extract", "label": "知识抽取", "status": "pending"},
+            {"name": "compile", "label": "编译 Wiki", "status": "pending"},
+            {"name": "index", "label": "重建索引", "status": "pending"},
+        ])
+        conn = _get_db()
+        conn.execute(
+            """INSERT INTO pipeline_runs (run_id, doc_id, status, steps_json, created_at)
+               VALUES (?, ?, 'pending', ?, ?)""",
+            (run_id, doc_id, steps, now),
+        )
+        conn.commit()
+        return run_id
+
+    def start_pipeline_run(self, run_id: str, current_step: str) -> bool:
+        """标记流水线开始执行"""
+        conn = _get_db()
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """UPDATE pipeline_runs
+               SET status='running', current_step=?, started_at=?
+               WHERE run_id=?""",
+            (current_step, now, run_id),
+        )
+        conn.commit()
+        return conn.total_changes > 0
+
+    def update_pipeline_step(
+        self, run_id: str, step_name: str, step_status: str,
+        error: str | None = None, duration_ms: int | None = None,
+    ) -> bool:
+        """更新流水线中某个步骤的状态"""
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT steps_json FROM pipeline_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if not row:
+            return False
+        steps = json.loads(row["steps_json"])
+        for s in steps:
+            if s["name"] == step_name:
+                s["status"] = step_status
+                if error:
+                    s["error"] = error
+                if duration_ms is not None:
+                    s["duration_ms"] = duration_ms
+                break
+        conn.execute(
+            "UPDATE pipeline_runs SET steps_json=?, current_step=? WHERE run_id=?",
+            (json.dumps(steps), step_name, run_id),
+        )
+        conn.commit()
+        return True
+
+    def finish_pipeline_run(self, run_id: str, status: str = "done") -> bool:
+        """标记流水线完成"""
+        conn = _get_db()
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "UPDATE pipeline_runs SET status=?, finished_at=? WHERE run_id=?",
+            (status, now, run_id),
+        )
+        conn.commit()
+        return conn.total_changes > 0
+
+    def fail_pipeline_run(self, run_id: str, error: str) -> bool:
+        """标记流水线失败"""
+        conn = _get_db()
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "UPDATE pipeline_runs SET status='error', finished_at=?, error_message=? WHERE run_id=?",
+            (now, error, run_id),
+        )
+        conn.commit()
+        return conn.total_changes > 0
+
+    def get_pipeline_run(self, run_id: str) -> dict | None:
+        """获取流水线执行记录"""
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT * FROM pipeline_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["steps"] = json.loads(result["steps_json"])
+        return result
+
+    def get_latest_pipeline_run(self, doc_id: str) -> dict | None:
+        """获取文档最近的流水线执行记录"""
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT * FROM pipeline_runs WHERE doc_id=? ORDER BY created_at DESC LIMIT 1",
+            (doc_id,),
+        ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["steps"] = json.loads(result["steps_json"])
+        return result
 
 
 # 全局单例

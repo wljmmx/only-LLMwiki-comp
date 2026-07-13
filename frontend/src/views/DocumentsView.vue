@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, h } from 'vue'
+import { ref, onMounted, watch, h, onUnmounted } from 'vue'
 import {
   NDataTable,
   NButton,
@@ -14,15 +14,23 @@ import {
   NDescriptionsItem,
   NSpin,
   NEmpty,
+  NTabs,
+  NTabPane,
+  NSteps,
+  NStep,
+  NProgress,
   useMessage,
 } from 'naive-ui'
 import type { UploadCustomRequestOptions } from 'naive-ui'
-import { listDocuments, deleteDocument, parseDocument, getDocumentContent, searchDocuments } from '@/api/documents'
+import { listDocuments, deleteDocument, parseDocument, getDocumentContent, searchDocuments, getPipelineStatus } from '@/api/documents'
 import { recompileDocument } from '@/api/wiki'
 import { formatFileSize, formatDateTime as formatDateTimeUtil } from '@/utils/format'
+import { useSse } from '@/composables/useSse'
+import type { SseEvent } from '@/composables/useSse'
 import type { DocumentMeta } from '@/types/api'
 
 const message = useMessage()
+const { subscribe, unsubscribe } = useSse()
 
 const loading = ref(false)
 const documents = ref<DocumentMeta[]>([])
@@ -30,14 +38,27 @@ const total = ref(0)
 const limit = ref(10)
 const offset = ref(0)
 const searchText = ref('')
-// P2-11：服务端搜索模式（true 时禁用分页，搜索跨全表）
 const isSearching = ref(false)
-// 正在编译为 Wiki 的文档 ID（同一时间只允许一个，LLM 编译较慢）
 const compilingId = ref<string | null>(null)
 const formatFilter = ref<string>('')
 const statusFilter = ref<string>('')
 
+// P3-2: 流水线步骤状态
+interface PipelineStep {
+  name: string
+  label: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  started_at?: string | null
+  duration_ms?: number | null
+  error?: string | null
+}
+const pipelineSteps = ref<PipelineStep[]>([])
+const pipelineLoading = ref(false)
+const pipelineProgress = ref(0)
+const pipelineResult = ref<Record<string, any> | null>(null)
+
 const drawerVisible = ref(false)
+const drawerTab = ref<'info' | 'content' | 'pipeline'>('info')
 const currentDoc = ref<DocumentMeta | null>(null)
 const docContent = ref('')
 const docContentLoading = ref(false)
@@ -56,23 +77,26 @@ const formatOptions = [
 const statusOptions = [
   { label: '全部状态', value: '' },
   { label: '已上传', value: 'uploaded' },
-  { label: '解析中', value: 'parsing' },
   { label: '已解析', value: 'parsed' },
-  { label: '失败', value: 'failed' },
+  { label: '已抽取', value: 'extracted' },
+  { label: '已编译', value: 'compiled' },
+  { label: '失败', value: 'error' },
 ]
 
-const statusTagType: Record<string, 'default' | 'info' | 'success' | 'error'> = {
+const statusTagType: Record<string, 'default' | 'info' | 'success' | 'warning' | 'error'> = {
   uploaded: 'default',
-  parsing: 'info',
-  parsed: 'success',
-  failed: 'error',
+  parsed: 'info',
+  extracted: 'warning',
+  compiled: 'success',
+  error: 'error',
 }
 
 const statusText: Record<string, string> = {
   uploaded: '已上传',
-  parsing: '解析中',
   parsed: '已解析',
-  failed: '失败',
+  extracted: '已抽取',
+  compiled: '已编译',
+  error: '失败',
 }
 
 const columns = [
@@ -230,34 +254,81 @@ function handleUpload({ file, onFinish, onError }: UploadCustomRequestOptions) {
 
 async function handleCompileToWiki(doc: DocumentMeta) {
   compilingId.value = doc.id
-  message.loading('正在编译为 Wiki，LLM 处理中，请稍候...', { duration: 0 })
-  try {
-    const res = await recompileDocument(doc.id)
-    message.destroyAll()
-    const created = res.pages_created ?? 0
-    const updated = res.pages_updated ?? 0
-    const errors = res.errors ?? []
-    if (errors.length > 0) {
-      message.warning(`编译完成（${created} 创建 / ${updated} 更新），但有 ${errors.length} 个错误`)
-    } else if (created === 0 && updated === 0) {
-      message.info('编译完成，无新页面生成（内容可能未变化或 LLM 不可用降级为模板）')
-    } else {
-      message.success(`编译成功：${created} 个页面创建，${updated} 个页面更新`)
-    }
-  } catch (err: any) {
-    message.destroyAll()
-    message.error('编译失败：' + (err?.response?.data?.detail || err?.message || '未知错误'))
-    console.error(err)
-  } finally {
-    compilingId.value = null
+  pipelineLoading.value = true
+  pipelineProgress.value = 0
+  pipelineResult.value = null
+  pipelineSteps.value = [
+    { name: 'parse', label: '解析', status: 'pending' },
+    { name: 'extract', label: '知识抽取', status: 'pending' },
+    { name: 'compile', label: '编译 Wiki', status: 'pending' },
+    { name: 'index', label: '重建索引', status: 'pending' },
+  ]
+
+  // P3-2: 使用 SSE 流式编译，实时展示步骤进度
+  const stepIndex: Record<string, number> = {
+    parse: 0, extract: 1, compile: 2, index: 3,
   }
+
+  subscribe(`/llm-wiki/recompile/${doc.id}/stream?force=true`, {
+    onEvent: (evt: SseEvent) => {
+      if (evt.type === 'step_start') {
+        const step = evt.data.step as string
+        const idx = stepIndex[step] ?? 0
+        pipelineSteps.value[idx].status = 'running'
+        pipelineProgress.value = (idx / 4) * 100
+      } else if (evt.type === 'step_done') {
+        const step = evt.data.step as string
+        const idx = stepIndex[step] ?? 0
+        pipelineSteps.value[idx].status = 'done'
+        pipelineSteps.value[idx].duration_ms = evt.data.duration_ms ?? null
+        pipelineProgress.value = ((idx + 1) / 4) * 100
+        if (step === 'compile') {
+          pipelineResult.value = evt.data
+        }
+      } else if (evt.type === 'done') {
+        pipelineProgress.value = 100
+        pipelineLoading.value = false
+        compilingId.value = null
+        const created = evt.data.pages_created ?? 0
+        const updated = evt.data.pages_updated ?? 0
+        const errors = evt.data.errors ?? []
+        if (errors.length > 0) {
+          message.warning(`编译完成（${created} 创建 / ${updated} 更新），但有 ${errors.length} 个错误`)
+        } else if (created === 0 && updated === 0) {
+          message.info('编译完成，无新页面生成')
+        } else {
+          message.success(`编译成功：${created} 个页面创建，${updated} 个页面更新`)
+        }
+        fetchDocuments()
+      } else if (evt.type === 'error') {
+        pipelineLoading.value = false
+        compilingId.value = null
+        message.error('编译失败：' + (evt.data.message || '未知错误'))
+        const step = evt.data.step as string
+        if (step) {
+          const idx = stepIndex[step] ?? 0
+          pipelineSteps.value[idx].status = 'error'
+          pipelineSteps.value[idx].error = evt.data.message
+        }
+      }
+    },
+    onError: (err: string) => {
+      pipelineLoading.value = false
+      compilingId.value = null
+      message.error('编译连接失败：' + err)
+    },
+  })
 }
 
 async function handleView(doc: DocumentMeta) {
   currentDoc.value = doc
   drawerVisible.value = true
+  drawerTab.value = 'info'
   docContent.value = ''
   docContentLoading.value = true
+  pipelineSteps.value = []
+  pipelineLoading.value = false
+  pipelineResult.value = null
   try {
     const res = await getDocumentContent(doc.id)
     docContent.value = res.content
@@ -266,6 +337,18 @@ async function handleView(doc: DocumentMeta) {
     console.error(err)
   } finally {
     docContentLoading.value = false
+  }
+
+  // P3-3: 异步加载流水线状态
+  loadPipelineStatus(doc.id)
+}
+
+async function loadPipelineStatus(docId: string) {
+  try {
+    const res = await getPipelineStatus(docId)
+    pipelineSteps.value = (res.steps || []) as PipelineStep[]
+  } catch {
+    // 静默失败，流水线状态非关键
   }
 }
 
@@ -376,36 +459,100 @@ onMounted(() => {
     <NDrawer v-model:show="drawerVisible" :width="640" placement="right">
       <NDrawerContent title="文档详情" :closable="true">
         <template v-if="currentDoc">
-          <NDescriptions :column="2" bordered size="small" class="doc-info">
-            <NDescriptionsItem label="文件名">
-              {{ currentDoc.filename }}
-            </NDescriptionsItem>
-            <NDescriptionsItem label="格式">
-              {{ currentDoc.format.toUpperCase() }}
-            </NDescriptionsItem>
-            <NDescriptionsItem label="大小">
-              {{ formatFileSize(currentDoc.size) }}
-            </NDescriptionsItem>
-            <NDescriptionsItem label="状态">
-              <NTag :type="statusTagType[currentDoc.status]" size="small">
-                {{ statusText[currentDoc.status] }}
-              </NTag>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="上传时间" :span="2">
-              {{ formatDateTimeUtil(currentDoc.created_at) }}
-            </NDescriptionsItem>
-          </NDescriptions>
+          <NTabs v-model:value="drawerTab" type="line" animated>
+            <!-- Tab 1: 文档信息 -->
+            <NTabPane name="info" tab="文档信息">
+              <NDescriptions :column="2" bordered size="small" class="doc-info">
+                <NDescriptionsItem label="文件名">
+                  {{ currentDoc.filename }}
+                </NDescriptionsItem>
+                <NDescriptionsItem label="格式">
+                  {{ currentDoc.format.toUpperCase() }}
+                </NDescriptionsItem>
+                <NDescriptionsItem label="大小">
+                  {{ formatFileSize(currentDoc.size) }}
+                </NDescriptionsItem>
+                <NDescriptionsItem label="状态">
+                  <NTag :type="statusTagType[currentDoc.status]" size="small">
+                    {{ statusText[currentDoc.status] }}
+                  </NTag>
+                </NDescriptionsItem>
+                <NDescriptionsItem label="上传时间" :span="2">
+                  {{ formatDateTimeUtil(currentDoc.created_at) }}
+                </NDescriptionsItem>
+              </NDescriptions>
+            </NTabPane>
 
-          <div class="content-section">
-            <div class="content-title">内容预览</div>
-            <div class="content-preview">
-              <NSpin v-if="docContentLoading" />
-              <div v-else-if="docContent" class="doc-content">
-                <pre>{{ docContent }}</pre>
+            <!-- Tab 2: 内容预览 -->
+            <NTabPane name="content" tab="内容预览">
+              <div class="content-section">
+                <NSpin v-if="docContentLoading" />
+                <div v-else-if="docContent" class="doc-content">
+                  <pre>{{ docContent }}</pre>
+                </div>
+                <NEmpty v-else description="暂无内容" size="small" />
               </div>
-              <NEmpty v-else description="暂无内容" size="small" />
-            </div>
-          </div>
+            </NTabPane>
+
+            <!-- Tab 3: P3-3 处理流水线 -->
+            <NTabPane name="pipeline" tab="处理流水线">
+              <div class="pipeline-section">
+                <NProgress
+                  v-if="pipelineLoading"
+                  :percentage="pipelineProgress"
+                  :indicator-placement="'inside'"
+                  :height="24"
+                  :border-radius="4"
+                  style="margin-bottom: 20px"
+                />
+                <NSteps
+                  v-if="pipelineSteps.length > 0"
+                  :current="pipelineSteps.filter(s => s.status === 'done').length"
+                  :status="pipelineSteps.some(s => s.status === 'error') ? 'error' : 'process'"
+                  vertical
+                >
+                  <NStep
+                    v-for="(step, idx) in pipelineSteps"
+                    :key="step.name"
+                    :title="step.label"
+                    :description="step.description"
+                    :status="
+                      step.status === 'error' ? 'error' :
+                      step.status === 'running' ? 'process' :
+                      step.status === 'done' ? 'finish' : 'wait'
+                    "
+                  >
+                    <template v-if="step.status === 'done' && step.duration_ms" #description>
+                      耗时 {{ (step.duration_ms / 1000).toFixed(1) }}s
+                    </template>
+                    <template v-if="step.status === 'error' && step.error" #description>
+                      <span class="step-error">{{ step.error }}</span>
+                    </template>
+                  </NStep>
+                </NSteps>
+                <NEmpty v-else description="暂无流水线记录，点击"编译为Wiki"开始" size="small" />
+
+                <!-- P3-3: 编译结果摘要 -->
+                <div v-if="pipelineResult" class="compile-result">
+                  <div class="result-title">编译结果</div>
+                  <NDescriptions :column="2" bordered size="small">
+                    <NDescriptionsItem label="新建页面">
+                      {{ pipelineResult.pages_created ?? 0 }}
+                    </NDescriptionsItem>
+                    <NDescriptionsItem label="更新页面">
+                      {{ pipelineResult.pages_updated ?? 0 }}
+                    </NDescriptionsItem>
+                    <NDescriptionsItem label="生成 Slug" :span="2">
+                      <NTag v-for="slug in (pipelineResult.slugs || [])" :key="slug" size="tiny" style="margin-right:4px">
+                        {{ slug }}
+                      </NTag>
+                      <span v-if="!pipelineResult.slugs?.length">无</span>
+                    </NDescriptionsItem>
+                  </NDescriptions>
+                </div>
+              </div>
+            </NTabPane>
+          </NTabs>
         </template>
       </NDrawerContent>
     </NDrawer>
@@ -515,6 +662,31 @@ onMounted(() => {
   font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
   font-size: 13px;
   line-height: 1.6;
+  color: var(--n-text-color, #111827);
+}
+
+/* P3-3: 流水线面板 */
+.pipeline-section {
+  padding: 8px 0;
+}
+
+.step-error {
+  color: var(--n-error-color, #d03050);
+  font-size: 12px;
+}
+
+.compile-result {
+  margin-top: 24px;
+  padding: 16px;
+  background: var(--n-color-target, #f0f9ff);
+  border-radius: 8px;
+  border: 1px solid var(--n-border-color, #e5e7eb);
+}
+
+.compile-result .result-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
   color: var(--n-text-color, #111827);
 }
 </style>

@@ -311,7 +311,7 @@ onUnmounted(() => {
 
     <div ref="conversationRef" class="result-area">
       <!-- P2-13b: 多轮会话历史（已完成轮次） -->
-      <template v-for="(turn, idx) in conversation" :key="idx">
+      <template v-for="(turn, idx) in conversation" :key="'turn-' + idx">
         <div v-if="turn.role === 'user'" class="chat-turn chat-turn-user">
           <div class="chat-bubble chat-bubble-user">{{ turn.content }}</div>
         </div>
