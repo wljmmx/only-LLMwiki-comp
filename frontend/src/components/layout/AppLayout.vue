@@ -128,7 +128,7 @@ onMounted(() => {
   <!-- P1-4: skip-link 键盘可达性 -->
   <a href="#main-content" class="skip-link">跳到主内容</a>
 
-  <NLayout style="height: 100vh">
+  <NLayout horizontal style="height: 100vh">
     <!-- P0-3: 桌面端固定侧栏 -->
     <NLayoutSider
       v-if="!isMobile"
