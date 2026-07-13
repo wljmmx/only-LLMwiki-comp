@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 
@@ -181,64 +182,113 @@ async def llm_wiki_recompile(doc_id: str, force: bool = True) -> dict:
 async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool = True):
     """SSE 流式重编译 — 实时推送每一步的进度
 
-    SSE 事件序列：
+    P2-5.5: 透传 wiki_compiler 内部的进度事件（parse/extract/classify/compile
+    + 逐实体 PAGE_START/PAGE_DONE + 百分比 PROGRESS）到 SSE 流。
+
+    SSE 事件序列（来自 wiki_compiler.ProgressEventType）：
         event: step_start  — {"step":"parse", "message":"开始解析文档..."}
-        event: step_done   — {"step":"parse", "duration_ms":2300, "elements":156}
+        event: step_done   — {"step":"parse", "elements":156}
         event: step_start  — {"step":"extract", "message":"开始知识抽取..."}
-        event: step_done   — {"step":"extract", "duration_ms":4500, "entities":12}
-        event: step_start  — {"step":"compile", "message":"开始编译 Wiki 页面..."}
-        event: step_done   — {"step":"compile", "duration_ms":8000, "pages":3}
-        event: step_start  — {"step":"index", "message":"重建索引..."}
-        event: step_done   — {"step":"index", "duration_ms":500}
+        event: step_done   — {"step":"extract", "entities":12}
+        event: step_start  — {"step":"compile", "total":5}
+        event: page_start  — {"entity":"Nginx", "index":0, "total":5}
+        event: progress    — {"percent":20, "current":1, "total":5}
+        event: page_done   — {"entity":"Nginx", "slug":"nginx", "outcome":"created"}
+        ...
+        event: step_done   — {"step":"compile", "pages":3}
         event: done        — {"total_ms":15300, "pages_created":2, ...}
-        event: error       — {"step":"compile", "message":"LLM 超时", "retryable":true}
+        event: error       — {"step":"compile", "message":"...", "retryable":true}
 
     P2-4: 客户端断连时取消编译（通过 request.is_disconnected()）。
     """
-    from datetime import datetime, timezone
+    from app.knowledge.wiki_compiler import ProgressEventType
 
     compiler = get_wiki_compiler()
     cancel_token = request.is_disconnected
 
     async def event_gen():
         total_start = datetime.now(timezone.utc)
+        loop = asyncio.get_event_loop()
+        # 跨线程安全的事件队列：wiki_compiler 同步 on_progress → SSE async generator
+        ev_queue: asyncio.Queue = asyncio.Queue()
+
+        def on_progress(etype: ProgressEventType, data: dict) -> None:
+            """wiki_compiler 同步回调 → 线程安全入队
+
+            wiki_compiler 内部可能经 run_in_executor 调用 LLM，
+            回调可能在工作线程执行，故用 call_soon_threadsafe 调度入队。
+            """
+            try:
+                loop.call_soon_threadsafe(ev_queue.put_nowait, (etype.value, data))
+            except Exception:  # noqa: BLE001
+                pass  # 回调失败不应中断编译
+
+        async def run_compile():
+            """后台运行编译，结果/异常入队"""
+            try:
+                result = await compiler.compile_raw_to_wiki(
+                    doc_id,
+                    force=force,
+                    is_cancelled=cancel_token,  # L1: 客户端断连时取消
+                    on_progress=on_progress,  # P2-5.5: 进度回调
+                )
+                await ev_queue.put(("__result__", result))
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                await ev_queue.put(("__error__", str(e)))
+
+        task = asyncio.create_task(run_compile())
+
         try:
-            # L1: 中断检查 — 客户端断连时取消编译
-            yield _sse_event("step_start", {
-                "step": "compile", "message": "开始编译 Wiki 页面...",
-            })
-            if await _check_cancel(cancel_token):
-                return
+            while True:
+                # L1: 中断检查 — 客户端断连时取消编译
+                if await _check_cancel(cancel_token):
+                    task.cancel()
+                    return
 
-            # 调用编译器（内部会做 parse + extract + compile + classify + index）
-            result = await compiler.compile_raw_to_wiki(
-                doc_id,
-                force=force,
-                is_cancelled=cancel_token,  # L1: 客户端断连时取消
-            )
+                try:
+                    event_type, data = await asyncio.wait_for(ev_queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
 
-            total_ms = int((datetime.now(timezone.utc) - total_start).total_seconds() * 1000)
-
-            yield _sse_event("done", {
-                "total_ms": total_ms,
-                "doc_id": doc_id,
-                "pages_created": result.pages_created,
-                "pages_updated": result.pages_updated,
-                "pages_unchanged": result.pages_unchanged,
-                "slugs": result.slugs,
-                "review_needed": result.review_needed,
-                "stale_marked": result.stale_marked,
-                "paragraph_count": result.paragraph_count,
-                "errors": result.errors,
-                "index_rebuilt": result.index_rebuilt,
-                "graph_compiled": result.graph_compiled,
-            })
-        except Exception as e:  # noqa: BLE001
-            yield _sse_event("error", {
-                "step": "compile",
-                "message": str(e),
-                "retryable": True,
-            })
+                if event_type == "__result__":
+                    result = data
+                    total_ms = int(
+                        (datetime.now(timezone.utc) - total_start).total_seconds() * 1000
+                    )
+                    yield _sse_event("done", {
+                        "total_ms": total_ms,
+                        "doc_id": doc_id,
+                        "pages_created": result.pages_created,
+                        "pages_updated": result.pages_updated,
+                        "pages_unchanged": result.pages_unchanged,
+                        "slugs": result.slugs,
+                        "review_needed": result.review_needed,
+                        "stale_marked": result.stale_marked,
+                        "paragraph_count": result.paragraph_count,
+                        "errors": result.errors,
+                        "index_rebuilt": result.index_rebuilt,
+                        "graph_compiled": result.graph_compiled,
+                    })
+                    break
+                elif event_type == "__error__":
+                    yield _sse_event("error", {
+                        "step": "compile",
+                        "message": data,
+                        "retryable": True,
+                    })
+                    break
+                else:
+                    # 透传 wiki_compiler 的进度事件（step_start/step_done/page_start/page_done/progress/...）
+                    yield _sse_event(event_type, data)
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
 
     return StreamingResponse(
         event_gen(),
