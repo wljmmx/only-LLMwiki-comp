@@ -20,6 +20,10 @@ from app.aiops.event_correlator import (
     get_event_correlator,
     is_valid_state,
 )
+from app.aiops.rollback_executor import (
+    RollbackExecutor,
+    get_rollback_executor,
+)
 from app.aiops.topology_builder import (
     TopologyBuilder,
     get_topology_builder,
@@ -42,6 +46,8 @@ __all__ = [
     "get_change_correlator",
     "TopologyBuilder",
     "get_topology_builder",
+    "RollbackExecutor",
+    "get_rollback_executor",
     "alertmanager_to_events",
     "should_resolve_incident",
 ]

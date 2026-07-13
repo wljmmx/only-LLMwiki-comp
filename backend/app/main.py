@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -189,6 +189,15 @@ from app.observability import setup_tracing  # noqa: E402
 
 setup_tracing(app)
 
+# 安全加固：API 限流（slowapi）+ 审计日志
+# 顺序：CORS → metrics → tracing → 限流 → 审计
+# 限流与审计中间件均在 app 路由之前生效，跳过 /health、/metrics 等基础设施路径
+from app.middleware.audit_log import AuditLogMiddleware  # noqa: E402
+from app.middleware.rate_limit import configure_rate_limit  # noqa: E402
+
+configure_rate_limit(app)
+app.add_middleware(AuditLogMiddleware)
+
 
 @app.get("/health")
 async def health() -> dict[str, object]:
@@ -268,3 +277,67 @@ app.include_router(setup_router)
 app.include_router(settings_mgmt_router)
 app.include_router(okf_router)
 app.include_router(backup_router)
+
+
+# ────────── 审计日志查询端点（admin 权限） ──────────
+# 使用 dependencies 在装饰器层级强制 admin 权限（dev 模式 anonymous 放行）
+from fastapi import Depends  # noqa: E402
+
+from app.auth import require_role as _require_role  # noqa: E402
+
+
+@app.get(
+    "/api/audit/logs",
+    tags=["audit"],
+    dependencies=[Depends(_require_role("admin"))],
+)
+async def list_audit_logs(
+    user: str | None = Query(None, description="按用户名过滤（精确匹配）"),
+    method: str | None = Query(None, description="按 HTTP 方法过滤"),
+    path: str | None = Query(None, description="按路径过滤（模糊匹配）"),
+    start: str | None = Query(None, description="起始时间（ISO8601，含）"),
+    end: str | None = Query(None, description="结束时间（ISO8601，含）"),
+    limit: int = Query(100, ge=1, le=1000, description="返回上限"),
+    offset: int = Query(0, ge=0, description="分页偏移"),
+) -> dict:
+    """查询审计日志（admin 权限）
+
+    支持按 user / method / path / timestamp 过滤，按时间倒序返回。
+    """
+    from app.storage.audit_store import get_audit_store  # noqa: E402
+
+    store = get_audit_store()
+    logs = store.list_audit_logs(
+        user=user,
+        method=method,
+        path=path,
+        start=start,
+        end=end,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "logs": logs,
+        "count": len(logs),
+        "filters": {
+            "user": user,
+            "method": method,
+            "path": path,
+            "start": start,
+            "end": end,
+        },
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.get(
+    "/api/audit/stats",
+    tags=["audit"],
+    dependencies=[Depends(_require_role("admin"))],
+)
+async def audit_stats() -> dict:
+    """审计日志统计摘要（admin 权限）"""
+    from app.storage.audit_store import get_audit_store  # noqa: E402
+
+    return get_audit_store().get_audit_stats()

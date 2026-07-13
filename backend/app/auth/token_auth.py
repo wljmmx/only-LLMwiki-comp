@@ -17,7 +17,7 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
-from fastapi import HTTPException, Security
+from fastapi import HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_settings
@@ -26,6 +26,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def verify_token(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
 ) -> str:
     """验证 Bearer Token（向后兼容 P0-2 行为）
@@ -33,15 +34,22 @@ async def verify_token(
     - 未配置 OPSKG_API_TOKEN 且无用户 → 开发模式放行（返回 "anonymous"）
     - OPSKG_API_TOKEN 匹配 → legacy 模式（返回 "user"）
     - session token 有效 → 新模式（返回 "user:<username>"）
+
+    额外行为：解析 token 后将用户 dict 注入 request.state.user，
+    供 AuditLogMiddleware 在 call_next 之后读取（who 字段）。
+    不改变现有返回值与 401 行为。
     """
     settings = get_settings()
     expected_token = settings.api_token
 
     # 开发模式：未配置 legacy token 且无凭证 → 放行
     if not expected_token and not credentials:
+        # 注入空用户（审计 middleware 据此判定 anonymous）
+        request.state.user = None
         return "anonymous"
 
     if not credentials or credentials.scheme.lower() != "bearer":
+        request.state.user = None
         raise HTTPException(
             401, "未提供认证凭证", headers={"WWW-Authenticate": "Bearer"}
         )
@@ -49,7 +57,21 @@ async def verify_token(
     token = credentials.credentials
     identity = verify_token_string(token)
     if identity is None:
+        request.state.user = None
         raise HTTPException(401, "认证失败：Token 无效")
+    # session token 模式：尝试注入用户 dict 供审计使用
+    # legacy 模式（"user"）无用户对象，注入 None
+    if identity.startswith("user:"):
+        try:
+            from app.auth.models import get_auth_store
+
+            store = get_auth_store()
+            user_obj = store.verify_session(token)
+            request.state.user = user_obj
+        except Exception:  # noqa: BLE001
+            request.state.user = None
+    else:
+        request.state.user = None
     return identity
 
 

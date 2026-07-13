@@ -457,6 +457,8 @@ class TestOIDCFindOrCreateUser:
 
 class TestTokenAuth:
     def test_dev_mode_no_credentials(self, monkeypatch):
+        from types import SimpleNamespace
+
         from app.auth import token_auth
 
         # 未配置 OPSKG_API_TOKEN 且无凭证 → 开发模式
@@ -466,10 +468,15 @@ class TestTokenAuth:
         monkeypatch.setattr(token_auth, "get_settings", lambda: FakeSettings())
         import asyncio
 
-        result = asyncio.run(token_auth.verify_token(None))
+        # verify_token 新增 request: Request 首参（用于注入 request.state.user）
+        # 直接调用时需构造带 state 属性的 mock request
+        request = SimpleNamespace(state=SimpleNamespace())
+        result = asyncio.run(token_auth.verify_token(request, None))
         assert result == "anonymous"
 
     def test_legacy_token_match(self, monkeypatch):
+        from types import SimpleNamespace
+
         from fastapi.security import HTTPAuthorizationCredentials
 
         from app.auth import token_auth
@@ -481,10 +488,13 @@ class TestTokenAuth:
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="shared-secret")
         import asyncio
 
-        result = asyncio.run(token_auth.verify_token(creds))
+        request = SimpleNamespace(state=SimpleNamespace())
+        result = asyncio.run(token_auth.verify_token(request, creds))
         assert result == "user"
 
     def test_no_credentials_when_required(self, monkeypatch):
+        from types import SimpleNamespace
+
         from fastapi import HTTPException
 
         from app.auth import token_auth
@@ -495,8 +505,9 @@ class TestTokenAuth:
         monkeypatch.setattr(token_auth, "get_settings", lambda: FakeSettings())
         import asyncio
 
+        request = SimpleNamespace(state=SimpleNamespace())
         with pytest.raises(HTTPException) as exc:
-            asyncio.run(token_auth.verify_token(None))
+            asyncio.run(token_auth.verify_token(request, None))
         assert exc.value.status_code == 401
 
     def test_generate_token_returns_random(self):

@@ -12,6 +12,7 @@
 - get_incident: 获取 incident 详情
 - transition_incident: 迁移 incident 状态机（P2-2.2）
 - suggest_rollback: 基于 incident 给出回滚建议
+- execute_rollback: 执行回滚计划（P2-3.7，ArgoCD/Jenkins/dry_run，需 admin）
 - get_topology: 获取服务拓扑
 - infer_topology: 基于共现强度推断缺失的拓扑边（P2-4.1）
 - merge_topology_aliases: 合并别名节点（P2-4.2）
@@ -49,6 +50,7 @@ import structlog
 from app.aiops import (
     get_change_correlator,
     get_event_correlator,
+    get_rollback_executor,
     get_topology_builder,
 )
 from app.knowledge import get_runbook_generator
@@ -141,6 +143,8 @@ TOOL_REQUIRED_ROLES: dict[str, str] = {
     "transition_incident": "admin",
     "merge_topology_aliases": "admin",
     "review_change_impact": "operator",
+    # P2-3.7 回滚执行（触发实际部署回滚）— admin
+    "execute_rollback": "admin",
 }
 
 # 角色优先级
@@ -305,6 +309,35 @@ TOOLS: list[dict] = [
         },
     },
     {
+        "name": "execute_rollback",
+        "description": (
+            "执行回滚计划（P2-3.7）。将 suggest_rollback 的建议下发到 "
+            "ArgoCD / Jenkins 后端，或仅做 dry_run 预览。"
+            "高危操作：需要 admin 权限。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "rollback_plan": {
+                    "type": "object",
+                    "description": (
+                        "回滚计划，可来自 suggest_rollback 的输出或自定义。"
+                        "关键字段：change_id / rollback_to / app_name / job_name / service / incident_id"
+                    ),
+                },
+                "target": {
+                    "type": "string",
+                    "enum": ["dry_run", "argocd", "jenkins"],
+                    "description": (
+                        "执行后端：dry_run（默认，仅预览）/ argocd / jenkins"
+                    ),
+                    "default": "dry_run",
+                },
+            },
+            "required": ["rollback_plan"],
+        },
+    },
+    {
         "name": "get_topology",
         "description": "获取服务拓扑（Host/Service/Component 节点和它们之间的依赖关系）。",
         "inputSchema": {
@@ -435,6 +468,8 @@ _TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "get_incident":                {"readOnlyHint": True},
     "transition_incident":         {"destructiveHint": True, "idempotentHint": True},  # 改状态但幂等
     "suggest_rollback":            {"readOnlyHint": True},
+    # P2-3.7 回滚执行：破坏性操作（触发实际部署回滚），非幂等
+    "execute_rollback":            {"destructiveHint": True, "idempotentHint": False},
     "get_topology":                {"readOnlyHint": True},
     "infer_topology":              {"idempotentHint": True},  # INSERT OR IGNORE 幂等
     "merge_topology_aliases":      {"destructiveHint": True, "idempotentHint": True},  # 删节点但幂等
@@ -600,6 +635,47 @@ def _tool_suggest_rollback(args: dict) -> str:
     if not inc_id:
         return json.dumps({"error": "incident_id 不能为空"}, ensure_ascii=False)
     result = get_change_correlator().suggest_rollback(inc_id)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def _run_coroutine_sync(coro: Any) -> Any:
+    """在同步上下文中安全执行 async 协程
+
+    兼容两种场景：
+    - 无 running loop（工作线程 / 测试）：直接 asyncio.run
+    - 有 running loop（FastAPI 主线程）：在独立线程中 asyncio.run
+    """
+    try:
+        asyncio.get_running_loop()
+        # 主线程有 running loop，用独立线程运行避免嵌套
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+    except RuntimeError:
+        # 无 running loop，直接运行
+        return asyncio.run(coro)
+
+
+def _tool_execute_rollback(args: dict) -> str:
+    """P2-3.7 执行回滚计划（ArgoCD / Jenkins / dry_run）
+
+    高危操作，需 admin 权限（在 handle_request 中由 _check_tool_permission 校验）。
+    """
+    rollback_plan = args.get("rollback_plan")
+    if not rollback_plan or not isinstance(rollback_plan, dict):
+        return json.dumps(
+            {"error": "rollback_plan 不能为空且必须为对象"}, ensure_ascii=False
+        )
+
+    # target 默认用 settings.rollback_default_target（安全默认 dry_run）
+    from app.config import get_settings
+
+    default_target = get_settings().rollback_default_target
+    target = args.get("target") or default_target
+
+    executor = get_rollback_executor()
+    result = _run_coroutine_sync(executor.execute(rollback_plan, target))
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -824,6 +900,7 @@ TOOL_HANDLERS = {
     "get_incident": _tool_get_incident,
     "transition_incident": _tool_transition_incident,
     "suggest_rollback": _tool_suggest_rollback,
+    "execute_rollback": _tool_execute_rollback,
     "get_topology": _tool_get_topology,
     "infer_topology": _tool_infer_topology,
     "merge_topology_aliases": _tool_merge_topology_aliases,

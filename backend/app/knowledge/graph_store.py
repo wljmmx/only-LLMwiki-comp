@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -80,6 +82,11 @@ class GraphStore:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._driver: Driver | None = None
+        # 只读查询的 TTL 缓存，减少重复 Neo4j 查询开销
+        # key → (expires_at, value)；写操作全量失效（一致性优先于性能）
+        self._cache: dict[str, tuple[float, Any]] = {}
+        self._cache_ttl: float = self.settings.graph_cache_ttl
+        self._cache_lock = threading.Lock()
 
     @property
     def driver(self) -> Driver:
@@ -110,6 +117,39 @@ class GraphStore:
             self._driver.close()
             self._driver = None
 
+    # ── 缓存层（TTL，线程安全）──
+
+    def _cache_get(self, key: str) -> Any | None:
+        """读取缓存：返回未过期的值；过期则清理并返回 None（视为未命中）"""
+        with self._cache_lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return None
+            expires_at, value = entry
+            if time.time() >= expires_at:
+                # 已过期，清理并视为未命中
+                del self._cache[key]
+                return None
+            return value
+
+    def _cache_set(self, key: str, value: Any) -> None:
+        """写入缓存：(now + ttl, value)"""
+        with self._cache_lock:
+            self._cache[key] = (time.time() + self._cache_ttl, value)
+
+    def _cache_invalidate(self, pattern: str | None = None) -> None:
+        """失效缓存：pattern=None 全清，否则按前缀清空（str.startswith）"""
+        with self._cache_lock:
+            if pattern is None:
+                cleared = len(self._cache)
+                self._cache.clear()
+            else:
+                keys_to_del = [k for k in self._cache if k.startswith(pattern)]
+                for k in keys_to_del:
+                    del self._cache[k]
+                cleared = len(keys_to_del)
+        logger.debug("graph_cache_invalidate", pattern=pattern, cleared=cleared)
+
     # ── 写入 ──
 
     def upsert_entity(self, entity: GraphEntity) -> dict:
@@ -132,7 +172,10 @@ class GraphStore:
                 confidence=entity.confidence,
             )
             record = result.single()
-            return _to_jsonable(dict(record)) if record else {}
+            data = _to_jsonable(dict(record)) if record else {}
+        # 写操作成功后全量失效缓存（一致性优先于性能）
+        self._cache_invalidate()
+        return data
 
     def upsert_relation(self, rel: GraphRelation) -> dict:
         """创建或更新关系"""
@@ -156,7 +199,10 @@ class GraphStore:
                 confidence=rel.confidence,
             )
             record = result.single()
-            return _to_jsonable(dict(record)) if record else {}
+            data = _to_jsonable(dict(record)) if record else {}
+        # 写操作成功后全量失效缓存（一致性优先于性能）
+        self._cache_invalidate()
+        return data
 
     def batch_upsert(
         self,
@@ -198,6 +244,12 @@ class GraphStore:
 
     def query_entity(self, name: str) -> dict | None:
         """查询单个实体"""
+        cache_key = f"query_entity:{name}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            logger.debug("graph_cache_hit", key=cache_key)
+            return cached
+        logger.debug("graph_cache_miss", key=cache_key)
         with self.driver.session() as session:
             result = session.run(
                 "MATCH (n:Entity {name: $name}) RETURN properties(n) AS props",
@@ -206,10 +258,18 @@ class GraphStore:
             record = result.single()
             # properties(n) 含 updated_at（Cypher datetime() 写入的 neo4j.time.DateTime）
             # 必须经 _to_jsonable 转换，否则 FastAPI 响应序列化失败
-            return _to_jsonable(dict(record["props"])) if record else None
+            data = _to_jsonable(dict(record["props"])) if record else None
+        self._cache_set(cache_key, data)
+        return data
 
     def query_related(self, name: str, depth: int = 1) -> list[dict]:
         """查询实体的一跳邻居"""
+        cache_key = f"query_related:{name}:{depth}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            logger.debug("graph_cache_hit", key=cache_key)
+            return cached
+        logger.debug("graph_cache_miss", key=cache_key)
         with self.driver.session() as session:
             result = session.run(
                 """
@@ -220,10 +280,18 @@ class GraphStore:
                 """,
                 name=name,
             )
-            return [_to_jsonable(dict(record)) for record in result]
+            data = [_to_jsonable(dict(record)) for record in result]
+        self._cache_set(cache_key, data)
+        return data
 
     def query_by_type(self, entity_type: str, limit: int = 50) -> list[dict]:
         """按类型查询实体"""
+        cache_key = f"query_by_type:{entity_type}:{limit}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            logger.debug("graph_cache_hit", key=cache_key)
+            return cached
+        logger.debug("graph_cache_miss", key=cache_key)
         with self.driver.session() as session:
             result = session.run(
                 """
@@ -235,10 +303,18 @@ class GraphStore:
                 type=entity_type,
                 limit=limit,
             )
-            return [_to_jsonable(dict(record)) for record in result]
+            data = [_to_jsonable(dict(record)) for record in result]
+        self._cache_set(cache_key, data)
+        return data
 
     def search_entities(self, keyword: str, limit: int = 20) -> list[dict]:
         """模糊搜索实体"""
+        cache_key = f"search_entities:{keyword}:{limit}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            logger.debug("graph_cache_hit", key=cache_key)
+            return cached
+        logger.debug("graph_cache_miss", key=cache_key)
         with self.driver.session() as session:
             result = session.run(
                 """
@@ -250,7 +326,9 @@ class GraphStore:
                 keyword=keyword,
                 limit=limit,
             )
-            return [_to_jsonable(dict(record)) for record in result]
+            data = [_to_jsonable(dict(record)) for record in result]
+        self._cache_set(cache_key, data)
+        return data
 
     # ── GS-4: GDS 图算法 ──
 

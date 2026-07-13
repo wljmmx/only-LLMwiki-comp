@@ -177,12 +177,21 @@ def ensure_all_dbs_initialized() -> None:
     """
     from app.aiops.event_correlator import _get_db as _ev_get_db
     from app.search.search_engine import _get_db as _se_get_db
+    from app.storage.audit_store import _get_db as _audit_get_db
     from app.storage.document_store import _get_db as _doc_get_db
     from app.storage.version_control import _get_db as _vc_get_db
     from app.storage.webhook_store import _get_db as _wh_get_db
     from app.templates.manager import _get_db as _tpl_get_db
 
-    for get_db in (_doc_get_db, _vc_get_db, _wh_get_db, _ev_get_db, _se_get_db, _tpl_get_db):
+    for get_db in (
+        _doc_get_db,
+        _vc_get_db,
+        _wh_get_db,
+        _ev_get_db,
+        _se_get_db,
+        _tpl_get_db,
+        _audit_get_db,
+    ):
         conn = get_db()
         conn.close()
 

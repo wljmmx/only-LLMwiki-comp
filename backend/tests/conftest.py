@@ -13,6 +13,9 @@ import os
 
 # 确保测试期间关闭认证
 os.environ.setdefault("OPSKG_API_TOKEN", "")
+# 测试期间默认关闭限流（避免全量回归时跨测试计数串扰）
+# test_rate_limit.py 的 fixture 会按需重新启用
+os.environ.setdefault("OPSKG_RATE_LIMIT_ENABLED", "false")
 
 import pytest
 
