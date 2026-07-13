@@ -128,7 +128,7 @@ onMounted(() => {
   <!-- P1-4: skip-link 键盘可达性 -->
   <a href="#main-content" class="skip-link">跳到主内容</a>
 
-  <NLayout horizontal style="height: 100vh">
+  <NLayout horizontal style="height: 100vh; display: flex; flex-direction: row;">
     <!-- P0-3: 桌面端固定侧栏 -->
     <NLayoutSider
       v-if="!isMobile"
@@ -160,7 +160,7 @@ onMounted(() => {
       <AppSidebar @navigate="appStore.closeMobileDrawer()" />
     </NDrawer>
 
-    <NLayout>
+    <NLayout style="flex: 1;">
       <NLayoutHeader bordered class="header">
         <div class="header-left">
           <!-- P0-3: 移动端汉堡按钮 -->
@@ -319,10 +319,26 @@ onMounted(() => {
 .content {
   padding: var(--opskg-sp-6);
   overflow-y: auto;
+  flex: 1;
+  min-width: 0;
 }
 .content-inner {
+  width: 100%;
   max-width: var(--opskg-content-max-width);
   margin: 0 auto;
+}
+
+/* 强制水平布局：确保侧栏和内容区左右排列 */
+:deep(.n-layout--horizontal) {
+  display: flex !important;
+  flex-direction: row !important;
+}
+:deep(.n-layout--horizontal .n-layout-sider) {
+  flex-shrink: 0;
+}
+:deep(.n-layout--horizontal .n-layout:not(.n-layout-sider)) {
+  flex: 1;
+  min-width: 0;
 }
 
 /* P0-3: 移动端调整 */
