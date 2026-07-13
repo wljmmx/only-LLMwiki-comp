@@ -1,30 +1,47 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { searchKnowledge } from '@/api/search'
-import type { SearchResponse, SearchResult } from '@/types/api'
+import type { SearchResponse, SearchResult, SearchSuggestions } from '@/types/api'
 
+const router = useRouter()
 const query = ref('')
 const loading = ref(false)
 const searched = ref(false)
 const results = ref<SearchResult[]>([])
 const total = ref(0)
+const suggestions = ref<SearchSuggestions | null>(null)
 
 function handleSearch() {
   if (!query.value.trim()) return
   loading.value = true
   searched.value = true
+  suggestions.value = null
   searchKnowledge(query.value.trim())
     .then((res: SearchResponse) => {
       results.value = res.results
       total.value = res.count
+      suggestions.value = res.suggestions ?? null
     })
     .catch(() => {
       results.value = []
       total.value = 0
+      suggestions.value = null
     })
     .finally(() => {
       loading.value = false
     })
+}
+
+// P2-1.6：用建议查询触发新搜索
+function searchWith(newQuery: string) {
+  if (!newQuery.trim()) return
+  query.value = newQuery.trim()
+  handleSearch()
+}
+
+function goToDocuments() {
+  router.push('/documents')
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -109,7 +126,45 @@ function getScoreType(score: number): 'success' | 'info' | 'warning' | 'default'
         </n-space>
 
         <div v-if="total === 0" class="empty-wrapper">
-          <n-empty description="没有找到相关结果" />
+          <n-card v-if="suggestions" class="suggestions-card" bordered>
+            <div class="suggestions-diagnosis">
+              <span class="diagnosis-icon">!</span>
+              <span>{{ suggestions.diagnosis }}</span>
+            </div>
+            <div v-if="suggestions.did_you_mean" class="suggestions-section">
+              <span class="section-label">是否要找：</span>
+              <n-button
+                size="small"
+                type="primary"
+                tertiary
+                @click="searchWith(suggestions.did_you_mean!)"
+              >
+                {{ suggestions.did_you_mean }}
+              </n-button>
+            </div>
+            <div v-if="suggestions.similar_queries.length" class="suggestions-section">
+              <span class="section-label">相关搜索：</span>
+              <n-space :size="8" align="center">
+                <n-tag
+                  v-for="sq in suggestions.similar_queries"
+                  :key="sq"
+                  checkable
+                  size="medium"
+                  class="similar-tag"
+                  @click="searchWith(sq)"
+                >
+                  {{ sq }}
+                </n-tag>
+              </n-space>
+            </div>
+            <div class="suggestions-section upload-section">
+              <span class="section-label">{{ suggestions.upload_hint }}</span>
+              <n-button size="small" type="info" tertiary @click="goToDocuments">
+                前往上传
+              </n-button>
+            </div>
+          </n-card>
+          <n-empty v-else description="没有找到相关结果" />
         </div>
       </div>
     </div>
@@ -233,5 +288,60 @@ function getScoreType(score: number): 'success' | 'info' | 'warning' | 'default'
 
 .empty-wrapper {
   padding: 60px 0;
+}
+
+.suggestions-card {
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.suggestions-diagnosis {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--n-text-color, #111827);
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+
+.diagnosis-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--n-warning-color, #f0a020);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.suggestions-section {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.suggestions-section:last-child {
+  margin-bottom: 0;
+}
+
+.section-label {
+  color: var(--n-text-color-2, #6b7280);
+}
+
+.similar-tag {
+  cursor: pointer;
+}
+
+.upload-section {
+  padding-top: 12px;
+  border-top: 1px solid var(--n-divider-color, #e5e7eb);
 }
 </style>

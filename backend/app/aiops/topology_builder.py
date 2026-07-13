@@ -1138,6 +1138,30 @@ class TopologyBuilder:
             "details": merge_details,
         }
 
+    # ────────── P2-3.6 CMDB 实体归一化（IP↔主机名） ──────────
+
+    def normalize_by_cmdb(self) -> dict:
+        """P2-3.6 基于 CMDB IP↔主机名映射归一化拓扑
+
+        委托给 CMDBResolver.normalize_topology，执行：
+        1. 从节点 metadata.ip 自动构建映射（auto source）
+        2. 对 name 是 IP 的节点，查映射表替换为 hostname
+        3. 对 metadata.ip 与另一节点 name 重合的，合并节点
+
+        与 merge_aliases 互补：
+        - merge_aliases 处理 FQDN↔短名归一化（同类型、同短名前缀）
+        - normalize_by_cmdb 处理 IP↔hostname 归一化（基于 CMDB 映射表）
+
+        Returns:
+            {"normalized_count": int, "merged_count": int,
+             "mappings_used": list[str]}
+        """
+        # 方法内导入避免循环依赖
+        from app.aiops.cmdb_resolver import get_cmdb_resolver
+
+        resolver = get_cmdb_resolver()
+        return resolver.normalize_topology(self)
+
     # ────────── P2-4.4 Mermaid/Cytoscape 导出 ──────────
 
     def export(self, fmt: str = "mermaid") -> str:

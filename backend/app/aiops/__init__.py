@@ -8,6 +8,10 @@ from app.aiops.change_correlator import (
     ChangeIncidentLink,
     get_change_correlator,
 )
+from app.aiops.cmdb_resolver import (
+    CMDBResolver,
+    get_cmdb_resolver,
+)
 from app.aiops.event_correlator import (
     INCIDENT_STATES,
     INCIDENT_TRANSITIONS,
@@ -50,4 +54,6 @@ __all__ = [
     "get_rollback_executor",
     "alertmanager_to_events",
     "should_resolve_incident",
+    "CMDBResolver",
+    "get_cmdb_resolver",
 ]

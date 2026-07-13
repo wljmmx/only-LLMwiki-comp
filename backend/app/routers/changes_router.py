@@ -46,7 +46,13 @@ async def changes_correlate(payload: dict = None) -> dict:
 
     Body (可选):
         since_hours: 变更时间范围（默认 24）
-        time_window_minutes: 变更-incident 时间窗口（默认 30）
+        time_window_minutes: 覆盖 default 窗口的快捷方式（默认 30 分钟，向后兼容）。
+            每个 change 仍按其 change_type 取对应窗口（P2-3.5）：
+            - deployment: 120 分钟（2h 长尾）
+            - config_change: 60 分钟
+            - 其他: default 窗口
+            change_type_windows 可通过环境变量 OPSKG_CHANGE_TYPE_WINDOWS
+            （JSON 字符串，如 '{"deployment": 120, "config_change": 60}'）覆盖。
     """
     payload = payload or {}
     since = int(payload.get("since_hours", 24))

@@ -57,10 +57,19 @@ export interface SearchResult {
   type: string
 }
 
+// P2-1.6：空结果兜底建议
+export interface SearchSuggestions {
+  similar_queries: string[]
+  diagnosis: string
+  upload_hint: string
+  did_you_mean: string | null
+}
+
 export interface SearchResponse {
   query: string
   results: SearchResult[]
   count: number
+  suggestions?: SearchSuggestions | null
 }
 
 export interface WikiPage {
