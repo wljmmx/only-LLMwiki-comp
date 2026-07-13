@@ -127,7 +127,7 @@ import {
 } from 'naive-ui'
 import {
   getSettings, updateSettings, validateSettings, restartService,
-  type SettingsResponse, type SettingsGroup,
+  type SettingsGroup,
 } from '@/api/settings'
 
 const message = useMessage()

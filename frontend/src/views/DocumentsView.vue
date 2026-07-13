@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, h, onUnmounted } from 'vue'
+import { ref, onMounted, watch, h } from 'vue'
 import {
   NDataTable,
   NButton,
@@ -23,14 +23,13 @@ import {
 } from 'naive-ui'
 import type { UploadCustomRequestOptions } from 'naive-ui'
 import { listDocuments, deleteDocument, parseDocument, getDocumentContent, searchDocuments, getPipelineStatus } from '@/api/documents'
-import { recompileDocument } from '@/api/wiki'
 import { formatFileSize, formatDateTime as formatDateTimeUtil } from '@/utils/format'
 import { useSse } from '@/composables/useSse'
 import type { SseEvent } from '@/composables/useSse'
 import type { DocumentMeta } from '@/types/api'
 
 const message = useMessage()
-const { subscribe, unsubscribe } = useSse()
+const { subscribe } = useSse()
 
 const loading = ref(false)
 const documents = ref<DocumentMeta[]>([])
@@ -512,20 +511,19 @@ onMounted(() => {
                   vertical
                 >
                   <NStep
-                    v-for="(step, idx) in pipelineSteps"
+                    v-for="step in pipelineSteps"
                     :key="step.name"
                     :title="step.label"
-                    :description="step.description"
                     :status="
                       step.status === 'error' ? 'error' :
                       step.status === 'running' ? 'process' :
                       step.status === 'done' ? 'finish' : 'wait'
                     "
                   >
-                    <template v-if="step.status === 'done' && step.duration_ms" #description>
+                    <template v-if="step.status === 'done' && step.duration_ms" #default>
                       耗时 {{ (step.duration_ms / 1000).toFixed(1) }}s
                     </template>
-                    <template v-if="step.status === 'error' && step.error" #description>
+                    <template v-if="step.status === 'error' && step.error" #default>
                       <span class="step-error">{{ step.error }}</span>
                     </template>
                   </NStep>

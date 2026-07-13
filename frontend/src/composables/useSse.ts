@@ -79,7 +79,7 @@ export function useSse() {
               options.onEvent?.(parsed)
               if (parsed.type === 'error') {
                 error.value = parsed.data?.message || '未知错误'
-                options.onError?.(error.value)
+                options.onError?.(error.value ?? '未知错误')
               }
               if (parsed.type === 'done') {
                 options.onDone?.()

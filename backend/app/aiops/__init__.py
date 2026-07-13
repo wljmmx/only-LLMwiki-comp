@@ -1,3 +1,7 @@
+from app.aiops.alertmanager_adapter import (
+    alertmanager_to_events,
+    should_resolve_incident,
+)
 from app.aiops.change_correlator import (
     Change,
     ChangeCorrelator,
@@ -38,4 +42,6 @@ __all__ = [
     "get_change_correlator",
     "TopologyBuilder",
     "get_topology_builder",
+    "alertmanager_to_events",
+    "should_resolve_incident",
 ]

@@ -81,6 +81,8 @@ services:
       - CONFIDENCE_REVIEW=${CONFIDENCE_REVIEW:-0.60}
       # 认证（留空关闭=dev 模式；生产请设置 OPSKG_API_TOKEN 或用 bootstrap admin）
       - OPSKG_API_TOKEN=${OPSKG_API_TOKEN:-}
+      # Alertmanager webhook 入站 token（P2-2.5，留空回退到 OPSKG_API_TOKEN）
+      - OPSKG_ALERTMANAGER_INGEST_TOKEN=${OPSKG_ALERTMANAGER_INGEST_TOKEN:-}
       - OPSKG_BOOTSTRAP_ADMIN_USER=${OPSKG_BOOTSTRAP_ADMIN_USER:-admin}
       - OPSKG_BOOTSTRAP_ADMIN_PASSWORD=${OPSKG_BOOTSTRAP_ADMIN_PASSWORD:-admin}
       # 可观测性

@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     embedding_dim: int = 1024
     embedding_batch_size: int = 16
 
+    # 搜索分词器（P2-1.5 中文分词优化）
+    # - "jieba"：jieba.cut_for_search 搜索引擎模式（默认，中文优先，需 jieba 依赖）
+    # - "whitespace"：纯空格切分（向后兼容，无 jieba 依赖）
+    # jieba 不可用时自动回退到 whitespace
+    search_tokenizer: Literal["whitespace", "jieba"] = "jieba"
+
     # Neo4j
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
@@ -86,6 +92,12 @@ class Settings(BaseSettings):
     # 设置后 /setup/test-* 和 /setup/generate-command 需携带此 token
     # 留空则：bootstrap admin 已配置时要求 admin 登录，未配置时允许首次配置
     setup_token: str = ""
+
+    # Alertmanager webhook 入站 token（P2-2.5）
+    # 专用于 POST /events/ingest/alertmanager 端点，支持 Bearer header 或 ?token= query param
+    # 留空则回退到 api_token；二者皆空则开发模式放行
+    # 用途：Alertmanager 难以发送 Bearer header，通常通过 webhook URL 携带 ?token=xxx
+    alertmanager_ingest_token: str = ""
 
     # CORS 跨域（P0-7）
     # 逗号分隔的允许 origin 列表，如 "http://localhost:5173,https://opskg.example.com"
