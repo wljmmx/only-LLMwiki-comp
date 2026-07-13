@@ -20,9 +20,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
+from typing import Any
 
 import structlog
 import yaml
@@ -42,8 +47,116 @@ from app.storage.version_control import get_version_control
 
 logger = structlog.get_logger()
 
+# ────────── S3: LLM 重试配置 ──────────
+_MAX_LLM_RETRIES = 3
+_RETRY_BASE_DELAY = 1.0  # 秒
+
+# ────────── S2: 模板兜底标记正则 ──────────
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"待\s*(LLM|补全|人工)")
+
+# ────────── S2: 类型必含章节规范 ──────────
+_REQUIRED_SECTIONS: dict[str, list[str]] = {
+    "entity": ["概述", "属性", "来源"],
+    "concept": ["概述", "来源"],
+    "incident": ["概述", "排查步骤", "处置方案", "来源"],
+    "runbook": ["概述", "排查步骤", "处置方案", "来源"],
+    "service": ["概述", "来源"],
+    "host": ["概述", "来源"],
+}
+
+# ────────── L3: 质量阈值配置 ──────────
+_QUALITY_PUBLISH_THRESHOLD = 0.8  # 质量分 ≥ 0.8 自动发布
+_QUALITY_REVIEW_THRESHOLD = 0.5   # 质量分 ≥ 0.5 标记 review_needed，< 0.5 拒绝发布
+
+# ────────── M3: 进度事件类型 ──────────
+
+
+class ProgressEventType(str, Enum):
+    """编译进度事件类型"""
+    STEP_START = "step_start"
+    STEP_DONE = "step_done"
+    PAGE_START = "page_start"
+    PAGE_DONE = "page_done"
+    QUALITY_CHECK = "quality_check"
+    CONFLICT_DETECTED = "conflict_detected"
+    PROGRESS = "progress"  # 百分比进度
+
+
+# M3: 进度回调类型
+ProgressCallback = Callable[[ProgressEventType, dict[str, Any]], None]
+
 # CJK 字符检测（用于决定匹配策略与最小词长）
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+# ────────── M1: 相似度检测工具函数 ──────────
+
+
+def _entity_to_wiki_slugs(name: str) -> list[str]:
+    """GS-2: 将图谱实体名称映射为可能的 wiki slug 候选"""
+    candidates = [name]
+    kebab = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "-", name).strip("-").lower()
+    if kebab and kebab != name:
+        candidates.append(kebab)
+    for prefix in ["host-", "service-", "component-", "incident-"]:
+        if not name.lower().startswith(prefix):
+            candidates.append(f"{prefix}{name}")
+    return candidates
+
+
+def _tokenize(text: str) -> list[str]:
+    """简单分词：按空格/CJK字符/标点拆分，保留 2+ 字符的 token"""
+    tokens: list[str] = []
+    # 按非字母数字/CJK 拆分
+    parts = re.split(r"[^\w\u4e00-\u9fff]+", text.lower().strip())
+    for part in parts:
+        if len(part) >= 2:
+            tokens.append(part)
+        elif _CJK_RE.search(part):
+            # CJK 单字符也保留
+            tokens.append(part)
+    return tokens
+
+
+def _cosine_similarity(bow1: dict[str, float], bow2: dict[str, float]) -> float:
+    """计算两个词袋的余弦相似度"""
+    if not bow1 or not bow2:
+        return 0.0
+    # 交集
+    common = set(bow1.keys()) & set(bow2.keys())
+    if not common:
+        return 0.0
+    dot = sum(bow1[k] * bow2[k] for k in common)
+    norm1 = sum(v * v for v in bow1.values()) ** 0.5
+    norm2 = sum(v * v for v in bow2.values()) ** 0.5
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+    return round(dot / (norm1 * norm2), 4)
+
+
+def _parse_json_response(text: str) -> dict | None:
+    """从 LLM 响应中提取 JSON 对象"""
+    if not text.strip():
+        return None
+    # 尝试直接解析
+    try:
+        return json.loads(text.strip())
+    except json.JSONDecodeError:
+        pass
+    # 尝试提取 ```json ... ``` 代码块
+    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+    # 尝试提取 { ... } 对象
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            pass
+    return None
 
 # ────────── EntityType → Wiki 页面类型映射 ──────────
 # 见 AGENTS.md §三：entity | concept | incident | runbook | service | host
@@ -75,6 +188,8 @@ class WikiPage:
     review_status: str = "auto"  # auto | review_needed | approved
     source_doc_id: str = ""
     stale_items: list[str] = field(default_factory=list)  # 与已有版本冲突的事实
+    # S1: 段落分类标签（层级标签），用于页面标签和内容组织
+    paragraph_labels: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -92,6 +207,8 @@ class WikiCompileResult:
     index_rebuilt: bool = False
     # P3-4: 统一编译 — 标记是否同时写入了知识图谱
     graph_compiled: bool = False
+    # S1: 段落分类统计
+    paragraph_count: int = 0
 
 
 # ────────── 命名约定（AGENTS.md §五）──────────
@@ -253,21 +370,83 @@ class WikiCompiler:
         system: str | None = None,
         temperature: float = 0.3,
     ) -> str:
-        """统一 LLM 调用入口（与 doc_generator 模式一致）"""
+        """统一 LLM 调用入口（S3: 带重试机制，最多 3 次）"""
         messages: list[ChatMessage] = []
         if system:
             messages.append(ChatMessage(role="system", content=system))
         messages.append(ChatMessage(role="user", content=prompt))
-        try:
-            resp = await self.llm.chat(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=self.settings.llm_max_tokens,
-            )
-            return resp.text or ""
-        except Exception as e:
-            logger.warning("wiki_compiler_llm_failed", error=str(e))
-            return ""
+        for attempt in range(1, _MAX_LLM_RETRIES + 1):
+            try:
+                resp = await self.llm.chat(
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=self.settings.llm_max_tokens,
+                )
+                return resp.text or ""
+            except Exception as e:
+                _ = str(e)  # 记录最后一次错误
+                if attempt < _MAX_LLM_RETRIES:
+                    delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                    logger.warning(
+                        "wiki_compiler_llm_retry",
+                        attempt=attempt,
+                        max_retries=_MAX_LLM_RETRIES,
+                        delay=delay,
+                        error=str(e),
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.warning(
+                        "wiki_compiler_llm_failed",
+                        error=str(e),
+                        attempts=attempt,
+                    )
+        return ""
+
+    # ── S2: 页面质量校验 ──
+
+    @staticmethod
+    def _validate_page_quality(body_md: str, page_type: str) -> dict:
+        """校验 wiki 页面质量，返回校验结果
+
+        Returns:
+            {"valid": bool, "issues": [str], "score": float}
+            score: 1.0 = 完美, 0.0 = 完全不合格
+        """
+        issues: list[str] = []
+        checks_passed = 0
+        checks_total = 0
+
+        # 1. 必含章节检查
+        required = _REQUIRED_SECTIONS.get(page_type, ["概述", "来源"])
+        checks_total += len(required)
+        for sec in required:
+            if re.search(rf"^##\s+{sec}", body_md, re.MULTILINE):
+                checks_passed += 1
+            else:
+                issues.append(f"缺少必含章节：{sec}")
+
+        # 2. 模板兜底标记检查
+        checks_total += 1
+        placeholders = _TEMPLATE_PLACEHOLDER_RE.findall(body_md)
+        if placeholders:
+            issues.append(f"含 {len(placeholders)} 处模板兜底标记")
+        else:
+            checks_passed += 1
+
+        # 3. 内容长度检查（至少含 100 字符正文）
+        checks_total += 1
+        if len(body_md.strip()) >= 100:
+            checks_passed += 1
+        else:
+            issues.append("正文内容过短（<100 字符）")
+
+        score = checks_passed / max(checks_total, 1)
+        return {
+            "valid": len(issues) == 0,
+            "issues": issues,
+            "score": round(score, 2),
+        }
 
     # ── 主入口 ──
 
@@ -278,6 +457,12 @@ class WikiCompiler:
         force: bool = False,
         rebuild_index_after: bool = True,
         also_compile_graph: bool = False,
+        # M3: 进度回调
+        on_progress: ProgressCallback | None = None,
+        # L1: 中断检查
+        is_cancelled: Callable[[], bool] | None = None,
+        # L1: 任务状态
+        task_state: dict | None = None,
     ) -> WikiCompileResult:
         """把一份 raw 文档编译为 wiki 页面
 
@@ -294,8 +479,34 @@ class WikiCompiler:
             force: 强制重编译（即使内容未变）
             rebuild_index_after: 编译后是否重建 index.md
             also_compile_graph: P3-4 统一编译 — 同时写入知识图谱（Neo4j）
+            on_progress: M3 SSE 进度回调
+            is_cancelled: L1 中断检查回调
+            task_state: L1 任务状态字典（用于断点恢复）
         """
         result = WikiCompileResult(doc_id=doc_id)
+
+        # L1: 初始化任务状态
+        if task_state is not None:
+            task_state["status"] = "running"
+            task_state["started_at"] = datetime.now(timezone.utc).isoformat()
+            task_state["steps_completed"] = task_state.get("steps_completed", [])
+            task_state["last_entity_idx"] = task_state.get("last_entity_idx", -1)
+
+        # M3: 进度回调包装
+        def _emit(etype: ProgressEventType, data: dict[str, Any]) -> None:
+            if on_progress:
+                try:
+                    on_progress(etype, data)
+                except Exception:
+                    pass
+
+        # L1: 中断检查包装
+        def _check_cancel() -> bool:
+            if is_cancelled and is_cancelled():
+                if task_state is not None:
+                    task_state["status"] = "cancelled"
+                return True
+            return False
 
         # S15-1c: 知识编译 span 埋点，覆盖整个编译流程
         with span("wiki.compile", doc_id=doc_id) as _sp:
@@ -318,9 +529,9 @@ class WikiCompiler:
                 return result
 
             # 2. 解析 + 抽取
+            _emit(ProgressEventType.STEP_START, {"step": "parse", "message": "开始解析文档..."})
             try:
                 parser = get_parser(meta["format"])
-                # S15-1c: 文档解析 span 埋点
                 with span(
                     "document.parse",
                     doc_id=doc_id,
@@ -329,13 +540,57 @@ class WikiCompiler:
                     doc = parser.parse(meta["stored_path"], doc_id)
             except Exception as e:
                 result.errors.append(f"解析失败: {e}")
+                _emit(ProgressEventType.STEP_DONE, {"step": "parse", "error": str(e)})
+                return result
+            _emit(ProgressEventType.STEP_DONE, {"step": "parse", "elements": len(doc.elements)})
+            if _check_cancel():
+                _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": "编译已取消"})
                 return result
 
+            _emit(ProgressEventType.STEP_START, {"step": "extract", "message": "开始知识抽取..."})
             try:
                 extraction = await self.extractor.extract(doc)
             except Exception as e:
                 result.errors.append(f"抽取失败: {e}")
+                _emit(ProgressEventType.STEP_DONE, {"step": "extract", "error": str(e)})
                 return result
+            _emit(ProgressEventType.STEP_DONE, {"step": "extract", "entities": len(extraction.auto_accepted_entities) + len(extraction.review_entities)})
+            if _check_cancel():
+                _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": "编译已取消"})
+                return result
+
+            # S1: 段落级 LLM 归类
+            _emit(ProgressEventType.STEP_START, {"step": "classify", "message": "段落分类中..."})
+            paragraph_classifications: list[dict] = []
+            try:
+                paragraph_classifications = await self.extractor.classify_paragraphs(doc)
+                result.paragraph_count = len(paragraph_classifications)
+                logger.info(
+                    "paragraph_classification_integrated",
+                    doc_id=doc_id,
+                    count=result.paragraph_count,
+                )
+            except Exception as e:
+                logger.warning(
+                    "paragraph_classification_failed",
+                    doc_id=doc_id,
+                    error=str(e),
+                )
+                # 非致命错误，继续编译流程
+
+            # 构建段落标签映射：段落索引 → 层级标签列表
+            para_labels_map: dict[int, list[str]] = {}
+            # S1: 收集所有段落分类的唯一标签（文档级标签池）
+            doc_labels: list[str] = []
+            for pc in paragraph_classifications:
+                idx = pc.get("index")
+                label = pc.get("label", "")
+                if idx is not None and label:
+                    levels = [lvl.strip() for lvl in label.split(">") if lvl.strip()]
+                    para_labels_map[idx] = levels
+                    for lvl in levels:
+                        if lvl not in doc_labels:
+                            doc_labels.append(lvl)
 
             entities = list(extraction.auto_accepted_entities) + list(
                 extraction.review_entities
@@ -361,12 +616,38 @@ class WikiCompiler:
                 "checksum": meta.get("checksum", ""),
             }
 
-            for entity in entities:
+            _emit(ProgressEventType.STEP_START, {"step": "compile", "total": len(entities)})
+            total_entities = len(entities)
+            for i, entity in enumerate(entities):
+                if _check_cancel():
+                    if task_state is not None:
+                        task_state["last_entity_idx"] = i
+                        task_state["steps_completed"].append("compile_partial")
+                    _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": f"编译已取消（已完成 {i}/{total_entities}）"})
+                    return result
+                # L1: 断点恢复 — 跳过已处理的实体
+                if task_state is not None and i <= task_state.get("last_entity_idx", -1):
+                    continue
                 try:
-                    page = await self._compile_entity_page(entity, source_entry)
+                    _emit(ProgressEventType.PAGE_START, {
+                        "entity": entity.name,
+                        "index": i + 1,
+                        "total": total_entities,
+                    })
+                    _emit(ProgressEventType.PROGRESS, {
+                        "percent": round((i + 1) / max(total_entities, 1) * 100),
+                        "current": i + 1,
+                        "total": total_entities,
+                    })
+                    # S1: 使用文档级段落分类标签作为页面标签
+                    page = await self._compile_entity_page(
+                        entity, source_entry, para_labels=doc_labels
+                    )
                     if page is None:
                         continue
                     outcome = self._save_page(page, force=force)
+                    # GS-6: 双向同步 — 页面保存后同步更新图谱
+                    self._sync_page_to_graph(page)
                     result.slugs.append(page.slug)
                     if outcome == "created":
                         result.pages_created += 1
@@ -376,8 +657,59 @@ class WikiCompiler:
                             result.stale_marked.append(page.slug)
                     else:
                         result.pages_unchanged += 1
+                    # S2 + L3: 质量校验 — 根据阈值决定状态
+                    if page.review_status != "review_needed":
+                        quality = self._validate_page_quality(page.body_md, page.type)
+                        if not quality["valid"]:
+                            page.review_status = "review_needed"
+                            logger.info(
+                                "wiki_page_quality_fail",
+                                slug=page.slug,
+                                issues=quality["issues"],
+                                score=quality["score"],
+                            )
+                        # L3: 质量阈值控制
+                        if quality["score"] < _QUALITY_REVIEW_THRESHOLD:
+                            page.review_status = "review_needed"
+                            logger.warning(
+                                "wiki_page_quality_rejected",
+                                slug=page.slug,
+                                score=quality["score"],
+                                threshold=_QUALITY_REVIEW_THRESHOLD,
+                            )
                     if page.review_status == "review_needed":
                         result.review_needed.append(page.slug)
+                    _emit(ProgressEventType.PAGE_DONE, {
+                        "entity": entity.name,
+                        "slug": page.slug,
+                        "outcome": outcome,
+                        "review_status": page.review_status,
+                    })
+                    # M2: 冲突检测 — 合并后检测语义冲突
+                    if outcome == "updated":
+                        try:
+                            # 获取旧版本内容用于冲突检测
+                            doc_key = _key_from_slug(page.slug)
+                            old_version = self.vc.get_latest(doc_key)
+                            if old_version:
+                                conflicts = await self._detect_conflicts_with_llm(
+                                    old_version["content"], page.body_md
+                                )
+                                if conflicts:
+                                    page.stale_items.extend(conflicts)
+                                    if page.slug not in result.stale_marked:
+                                        result.stale_marked.append(page.slug)
+                                    logger.info(
+                                        "wiki_conflict_detected",
+                                        slug=page.slug,
+                                        conflict_count=len(conflicts),
+                                    )
+                        except Exception as e:
+                            logger.warning(
+                                "wiki_conflict_detection_failed",
+                                slug=page.slug,
+                                error=str(e),
+                            )
                 except Exception as e:
                     logger.exception("wiki_compiler_page_failed", slug=entity.name)
                     result.errors.append(f"{entity.name}: {e}")
@@ -438,6 +770,20 @@ class WikiCompiler:
                 unchanged=result.pages_unchanged,
                 errors=len(result.errors),
             )
+            # L1: 任务状态完成
+            if task_state is not None:
+                task_state["status"] = "completed"
+                task_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+                task_state["steps_completed"].append("done")
+            # M3: 编译完成事件
+            _emit(ProgressEventType.STEP_DONE, {
+                "step": "compile",
+                "pages_created": result.pages_created,
+                "pages_updated": result.pages_updated,
+                "pages_unchanged": result.pages_unchanged,
+                "review_needed": len(result.review_needed),
+                "errors": len(result.errors),
+            })
             return result
 
     # ── P3-4: 统一编译 ──
@@ -519,22 +865,33 @@ class WikiCompiler:
         self,
         entity: ExtractedEntity,
         source_entry: dict,
+        para_labels: list[str] | None = None,
     ) -> WikiPage | None:
         """把单个实体编译为 wiki 页面
 
         - 用 LLM 生成正文（按 AGENTS.md 骨架）
         - LLM 不可用时退化为模板化正文（基于 evidence_span）
+        - S1: 段落分类标签作为页面标签
         """
         slug = make_slug(entity.entity_type, entity.name)
         page_type = ENTITY_TYPE_TO_PAGE_TYPE.get(entity.entity_type, "concept")
         title = entity.name
 
-        # 标签：实体类型 + properties 中的关键字段
+        # 标签：实体类型 + properties 中的关键字段 + S1: 段落分类标签
         tags = [entity.entity_type.lower()]
         for k in ("category", "service", "host", "env", "level"):
             v = entity.properties.get(k)
             if isinstance(v, str) and v:
                 tags.append(_slugify(v))
+        # S1: 合并段落分类标签（去重，取前 2 层标签）
+        if para_labels:
+            for label in para_labels:
+                slugified = _slugify(label)
+                if slugified and slugified not in tags:
+                    tags.append(slugified)
+            tags = tags[:8]  # 限制标签总数
+        else:
+            tags = tags[:5]
 
         # 调 LLM 写正文
         body_md = await self._llm_write_body(entity, page_type)
@@ -551,11 +908,12 @@ class WikiCompiler:
             slug=slug,
             title=title,
             type=page_type,
-            tags=tags[:5],
+            tags=tags,
             sources=[source_entry],
             body_md=body_md,
             review_status=review_status,
             source_doc_id=source_entry.get("doc_id", ""),
+            paragraph_labels=para_labels or [],
         )
 
     async def _compile_heading_tree_to_wiki(
@@ -649,6 +1007,8 @@ class WikiCompiler:
 
             try:
                 outcome = self._save_page(page, force=force)
+                # GS-6: 双向同步
+                self._sync_page_to_graph(page)
                 result.slugs.append(slug)
                 if outcome == "created":
                     result.pages_created += 1
@@ -656,6 +1016,17 @@ class WikiCompiler:
                     result.pages_updated += 1
                 else:
                     result.pages_unchanged += 1
+                # S2: 质量校验
+                quality = self._validate_page_quality(page.body_md, page.type)
+                if not quality["valid"]:
+                    page.review_status = "review_needed"
+                    result.review_needed.append(slug)
+                    logger.info(
+                        "wiki_struct_quality_fail",
+                        slug=slug,
+                        issues=quality["issues"],
+                        score=quality["score"],
+                    )
                 count += 1
             except Exception as e:
                 logger.exception("wiki_compiler_struct_node_failed", slug=slug)
@@ -970,7 +1341,137 @@ H{level}
         sections.append("")
         return "\n".join(sections)
 
-    # ── 持久化与合并 ──
+    # ── GS-6: 双向同步 — Wiki 页面保存后同步更新图谱 ──
+
+    def _sync_page_to_graph(self, page: WikiPage) -> None:
+        """GS-6: Wiki 页面保存后，将实体信息同步到 Neo4j 知识图谱
+
+        Wiki → Graph 双向同步：
+        - 创建/更新对应的 GraphEntity 节点
+        - 图不可用时静默降级，不影响编译流程
+        """
+        try:
+            from app.knowledge.graph_store import GraphEntity, get_graph_store
+
+            store = get_graph_store()
+            entity = GraphEntity(
+                entity_type=page.type,
+                name=page.title,
+                properties={
+                    "slug": page.slug,
+                    "tags": page.tags,
+                    "review_status": page.review_status,
+                    "source_doc_id": page.source_doc_id,
+                    "paragraph_labels": page.paragraph_labels,
+                },
+                source_doc_id=page.source_doc_id,
+                confidence=1.0,  # wiki 页面已确认
+            )
+            store.upsert_entity(entity)
+            logger.info(
+                "wiki_graph_synced",
+                slug=page.slug,
+                entity_type=page.type,
+            )
+        except Exception as e:
+            logger.debug("wiki_graph_sync_skipped", slug=page.slug, error=str(e))
+
+    # M1: 相似度阈值
+    _SIMILARITY_THRESHOLD = 0.8
+
+    def _find_similar_page(self, page: WikiPage) -> str | None:
+        """M1: 查找与当前页面语义相似的已有页面
+
+        使用 TF-IDF 风格的词频余弦相似度，比较标题和正文。
+        返回相似度最高的已有页面 slug，如果都不超过阈值则返回 None。
+        """
+        try:
+            existing_pages = list_wiki_pages()
+        except Exception:
+            return None
+
+        if not existing_pages:
+            return None
+
+        # 收集已有 slug 集合（GS-2: 图谱相似度交叉引用）
+        existing_slugs = {ep.get("slug", "") for ep in existing_pages}
+
+        # 构建新页面的词袋（标题权重 ×3）
+        new_bow = self._build_bow(page.title, page.body_md)
+
+        best_slug: str | None = None
+        best_score = 0.0
+
+        for ep in existing_pages:
+            ep_slug = ep.get("slug", "")
+            if not ep_slug or ep_slug == page.slug:
+                continue
+            # 只比较同类型页面
+            if ep.get("type", "") != page.type:
+                continue
+
+            try:
+                ep_key = _key_from_slug(ep_slug)
+                ep_data = self.vc.get_latest(ep_key)
+                if not ep_data:
+                    continue
+                ep_title = ep.get("title", "")
+                ep_body = ep_data.get("content", "")
+                ep_bow = self._build_bow(ep_title, ep_body)
+                score = _cosine_similarity(new_bow, ep_bow)
+                if score > best_score:
+                    best_score = score
+                    best_slug = ep_slug
+            except Exception:
+                continue
+
+        if best_score >= self._SIMILARITY_THRESHOLD and best_slug:
+            logger.info(
+                "wiki_similarity_match",
+                new_slug=page.slug,
+                similar_slug=best_slug,
+                score=round(best_score, 3),
+            )
+            return best_slug
+        # GS-2: 图谱相似度增强 — 基于图结构的相似性得分
+        try:
+            from app.knowledge.graph_store import get_graph_store
+            graph_store = get_graph_store()
+            # 使用当前实体名称查询相似实体
+            similar_graph = graph_store.node_similarity(page.title, limit=3)
+            for sg in similar_graph:
+                # 映射 graph 名称到 wiki slug 候选
+                sg_candidates = _entity_to_wiki_slugs(sg["name"])
+                for sg_candidate in sg_candidates:
+                    if sg_candidate in existing_slugs and sg_candidate != page.slug:
+                        # 图谱结构相似性提升总分 (权重 0.3)
+                        boosted_score = best_score + sg["score"] * 0.3
+                        if boosted_score >= self._SIMILARITY_THRESHOLD:
+                            logger.info(
+                                "wiki_graph_similarity_boost",
+                                new_slug=page.slug,
+                                similar_slug=sg_candidate,
+                                base_score=round(best_score, 3),
+                                boosted_score=round(boosted_score, 3),
+                            )
+                            return sg_candidate
+        except Exception:
+            # 图不可用时不影响，继续返回 best_slug 还是 None
+            pass
+
+        return None
+
+    @staticmethod
+    def _build_bow(title: str, body: str) -> dict[str, float]:
+        """构建加权词袋（标题权重 ×3）"""
+        bow: dict[str, float] = {}
+        # 标题 token（权重 ×3）
+        for token in _tokenize(title):
+            bow[token] = bow.get(token, 0.0) + 3.0
+        # 正文 token（权重 ×1）
+        for token in _tokenize(body[:2000]):  # 限制长度
+            bow[token] = bow.get(token, 0.0) + 1.0
+        return bow
 
     def _save_page(self, page: WikiPage, *, force: bool) -> str:
         """保存页面到 VersionControl
@@ -993,8 +1494,46 @@ H{level}
             md_to_save = new_md
             outcome = "updated"
         else:
-            md_to_save = self._render_page_md(page, is_new=True)
-            outcome = "created"
+            # M1: 相似度检测 — 查找语义相似但 slug 不同的已有页面
+            similar_slug = self._find_similar_page(page)
+            if similar_slug:
+                similar_key = _key_from_slug(similar_slug)
+                similar_existing = self.vc.get_latest(similar_key)
+                if similar_existing:
+                    logger.info(
+                        "wiki_similar_page_found",
+                        new_slug=page.slug,
+                        similar_slug=similar_slug,
+                    )
+                    # 合并到相似页面（使用 similarity_slug）
+                    merged_page = WikiPage(
+                        slug=similar_slug,
+                        title=page.title,
+                        type=page.type,
+                        tags=list(set(page.tags + (similar_existing.get("tags", [])))),
+                        sources=page.sources,
+                        body_md=page.body_md,
+                        review_status=page.review_status,
+                        source_doc_id=page.source_doc_id,
+                        paragraph_labels=page.paragraph_labels,
+                    )
+                    new_md, stale_items = self._merge_existing(
+                        similar_existing["content"], merged_page
+                    )
+                    merged_page.stale_items = stale_items
+                    if not force and self._content_equal(similar_existing["content"], new_md):
+                        update_backlinks(similar_slug, similar_existing["content"])
+                        return "unchanged"
+                    md_to_save = new_md
+                    page.slug = similar_slug  # 更新 slug 为实际保存的
+                    doc_key = similar_key
+                    outcome = "updated"
+                else:
+                    md_to_save = self._render_page_md(page, is_new=True)
+                    outcome = "created"
+            else:
+                md_to_save = self._render_page_md(page, is_new=True)
+                outcome = "created"
 
         save_result = self.vc.save_version(
             doc_key=doc_key,
@@ -1041,6 +1580,71 @@ H{level}
                     "wiki_backlink_retrofit_failed", slug=page.slug, error=str(e)
                 )
         return outcome
+
+    # M2: 冲突检测提示
+    _CONFLICT_DETECTION_PROMPT = """你是一个运维知识文档审查专家。请分析以下两个版本的 wiki 页面内容，检测是否存在信息冲突。
+
+## 旧版本内容
+{old_body}
+
+## 新版本内容
+{new_body}
+
+## 检测规则
+1. 对比同一参数/配置项的值，如果新旧版本不同 → 标记为冲突
+2. 对比同一概念的定义/描述，如果存在矛盾 → 标记为冲突
+3. 对比同一故障的排查步骤/处置方案，如果存在差异 → 标记为冲突
+4. 如果仅仅是新增内容（旧版本没有），不要标记为冲突
+5. 如果内容一致或仅为表述差异，不要标记为冲突
+
+## 输出格式（严格 JSON）
+{{
+  "has_conflict": true/false,
+  "conflicts": [
+    {{
+      "item": "冲突项名称",
+      "old_value": "旧版本中的值",
+      "new_value": "新版本中的值",
+      "severity": "high/medium/low",
+      "resolution": "建议的消解方案"
+    }}
+  ]
+}}
+
+如果无冲突，返回 {{"has_conflict": false, "conflicts": []}}"""
+
+    async def _detect_conflicts_with_llm(
+        self, old_body: str, new_body: str
+    ) -> list[str]:
+        """M2: 使用 LLM 检测合并时的语义冲突
+
+        Returns:
+            冲突描述列表，格式: ["{severity}: {item} (旧: {old} → 新: {new})"]
+        """
+        if not old_body.strip() or not new_body.strip():
+            return []
+
+        prompt = self._CONFLICT_DETECTION_PROMPT.format(
+            old_body=old_body[:3000],
+            new_body=new_body[:3000],
+        )
+        try:
+            resp = await self._llm_complete(prompt, temperature=0.1)
+            if not resp:
+                return []
+            data = _parse_json_response(resp)
+            if not data or not data.get("has_conflict"):
+                return []
+            conflict_descriptions = []
+            for c in data.get("conflicts", []):
+                desc = (
+                    f"{c.get('severity', 'medium')}: {c.get('item', '未知')} "
+                    f"(旧: {c.get('old_value', '?')} → 新: {c.get('new_value', '?')})"
+                )
+                conflict_descriptions.append(desc)
+            return conflict_descriptions
+        except Exception:
+            return []
 
     def _merge_existing(
         self, existing_md: str, new_page: WikiPage

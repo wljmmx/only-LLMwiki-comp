@@ -54,6 +54,7 @@ TYPE_STALE = "stale"
 TYPE_ORPHAN = "orphan"
 TYPE_DEADLINK = "deadlink"
 TYPE_MISSING_CONCEPT = "missing_concept"
+TYPE_MISSING_CONCEPT_FROM_GRAPH = "missing_concept_from_graph"  # GS-3: 图谱实体无 wiki
 TYPE_EMPTY_SECTION = "empty_section"
 TYPE_MISSING_TYPE_SECTION = "missing_type_section"
 TYPE_OKF_VIOLATION = "okf_violation"  # P2-1 OKF v0.1 合规违规
@@ -217,6 +218,36 @@ def lint_all(*, include_stale: bool = True) -> LintReport:
                 detail={"cited_by": sources},
             )
         )
+
+    # GS-3: 图谱实体缺失检测 — 图谱中有实体但 wiki 无对应页面
+    try:
+        from app.knowledge.graph_store import get_graph_store
+
+        graph_store = get_graph_store()
+        stats = graph_store.get_stats()
+        if stats.get("total_entities", 0) > 0:
+            # 获取所有图谱实体名称
+            graph_entities = _get_graph_entity_names(graph_store)
+            # 转换为 wiki slug 格式
+            wiki_slug_set = all_slugs | {"index"}
+            for ge_name in graph_entities:
+                # 尝试多种 slug 映射方式
+                candidate_slugs = _entity_to_wiki_slugs(ge_name)
+                if not any(s in wiki_slug_set for s in candidate_slugs):
+                    report.add(
+                        LintIssue(
+                            type=TYPE_MISSING_CONCEPT_FROM_GRAPH,
+                            severity=SEV_WARN,
+                            slug=candidate_slugs[0] if candidate_slugs else ge_name,
+                            message=f"图谱实体 '{ge_name}' 无对应 wiki 页面，建议补全",
+                            detail={
+                                "graph_entity": ge_name,
+                                "candidate_slugs": candidate_slugs,
+                            },
+                        )
+                    )
+    except Exception as e:
+        logger.warning("wiki_lint_graph_missing_check_failed", error=str(e))
 
     # 5. 章节完整性 + 模板兜底检测
     for slug, content in page_contents.items():
@@ -757,3 +788,41 @@ def _load_ignored_keys() -> set[str]:
     rows = conn.execute("SELECT issue_key FROM lint_ignores").fetchall()
     conn.close()
     return {r["issue_key"] for r in rows}
+
+
+# ────────── GS-3: 图谱实体缺失检测工具 ──────────
+
+
+def _get_graph_entity_names(graph_store, limit: int = 500) -> list[str]:
+    """从 Neo4j 获取所有实体名称"""
+    try:
+        driver = graph_store.driver
+        with driver.session() as session:
+            result = session.run(
+                """
+                MATCH (n:Entity)
+                RETURN n.name AS name
+                ORDER BY n.name
+                LIMIT $limit
+                """,
+                limit=limit,
+            )
+            return [r["name"] for r in result]
+    except Exception:
+        return []
+
+
+def _entity_to_wiki_slugs(name: str) -> list[str]:
+    """将图谱实体名称映射为可能的 wiki slug 候选"""
+    import re as _re
+
+    candidates = [name]
+    # kebab-case
+    kebab = _re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "-", name).strip("-").lower()
+    if kebab and kebab != name:
+        candidates.append(kebab)
+    # 常见前缀映射
+    for prefix in ["host-", "service-", "component-", "incident-"]:
+        if not name.lower().startswith(prefix):
+            candidates.append(f"{prefix}{name}")
+    return candidates

@@ -203,59 +203,22 @@ async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool =
     async def event_gen():
         total_start = datetime.now(timezone.utc)
         try:
-            # Step 1: Parse
+            # L1: 中断检查 — 客户端断连时取消编译
             yield _sse_event("step_start", {
-                "step": "parse", "message": "开始解析文档...",
+                "step": "compile", "message": "开始编译 Wiki 页面...",
             })
             if await _check_cancel(cancel_token):
                 return
-            parse_start = datetime.now(timezone.utc)
 
-            # 调用编译器（内部会做 parse + extract + compile）
-            result = await compiler.compile_raw_to_wiki(doc_id, force=force)
-
-            parse_ms = int((datetime.now(timezone.utc) - parse_start).total_seconds() * 1000)
-            yield _sse_event("step_done", {
-                "step": "parse", "duration_ms": parse_ms,
-                "message": "解析完成",
-            })
-
-            # Step 2: Extract (已内嵌在 compile_raw_to_wiki 中，这里报告结果)
-            yield _sse_event("step_start", {
-                "step": "extract", "message": "知识抽取中...",
-            })
-            if await _check_cancel(cancel_token):
-                return
-            yield _sse_event("step_done", {
-                "step": "extract", "duration_ms": None,
-                "message": "知识抽取完成",
-            })
-
-            # Step 3: Compile
-            yield _sse_event("step_start", {
-                "step": "compile", "message": "编译 Wiki 页面...",
-            })
-            if await _check_cancel(cancel_token):
-                return
-            yield _sse_event("step_done", {
-                "step": "compile", "duration_ms": None,
-                "pages_created": result.pages_created,
-                "pages_updated": result.pages_updated,
-                "slugs": result.slugs,
-            })
-
-            # Step 4: Index rebuild
-            yield _sse_event("step_start", {
-                "step": "index", "message": "重建索引...",
-            })
-            if await _check_cancel(cancel_token):
-                return
-            yield _sse_event("step_done", {
-                "step": "index", "duration_ms": None,
-                "index_rebuilt": result.index_rebuilt,
-            })
+            # 调用编译器（内部会做 parse + extract + compile + classify + index）
+            result = await compiler.compile_raw_to_wiki(
+                doc_id,
+                force=force,
+                is_cancelled=cancel_token,  # L1: 客户端断连时取消
+            )
 
             total_ms = int((datetime.now(timezone.utc) - total_start).total_seconds() * 1000)
+
             yield _sse_event("done", {
                 "total_ms": total_ms,
                 "doc_id": doc_id,
@@ -263,8 +226,12 @@ async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool =
                 "pages_updated": result.pages_updated,
                 "pages_unchanged": result.pages_unchanged,
                 "slugs": result.slugs,
+                "review_needed": result.review_needed,
+                "stale_marked": result.stale_marked,
+                "paragraph_count": result.paragraph_count,
                 "errors": result.errors,
                 "index_rebuilt": result.index_rebuilt,
+                "graph_compiled": result.graph_compiled,
             })
         except Exception as e:  # noqa: BLE001
             yield _sse_event("error", {

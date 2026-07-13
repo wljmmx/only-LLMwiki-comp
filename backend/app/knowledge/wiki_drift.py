@@ -478,3 +478,165 @@ async def auto_recompile_stale(*, push_review: bool = True) -> RecompileBatchRes
         errors=batch.total_errors,
     )
     return batch
+
+
+# ────────── GS-7: 图谱漂移联动 ──────────
+
+
+@dataclass
+class GraphDriftReport:
+    """图谱漂移检测报告"""
+
+    graph_entities_changed: int = 0
+    affected_wiki_slugs: list[str] = field(default_factory=list)
+    new_entities: list[str] = field(default_factory=list)
+    removed_entities: list[str] = field(default_factory=list)
+    changed_entities: list[str] = field(default_factory=list)
+
+
+def detect_graph_drift() -> GraphDriftReport:
+    """GS-7: 检测图谱变化并标记受影响的 wiki 页面
+
+    策略：
+    - 对比图谱实体快照与上次记录的差异
+    - 将有对应 wiki 页面的实体变更标记为 stale
+    - 图不可用时静默降级
+
+    数据存储：SQLite 表 graph_entity_snapshots
+    """
+    report = GraphDriftReport()
+
+    try:
+        from app.knowledge.graph_store import get_graph_store
+
+        store = get_graph_store()
+        stats = store.get_stats()
+        if stats.get("total_entities", 0) == 0:
+            return report
+    except Exception:
+        return report
+
+    # 获取当前图谱实体快照
+    current_entities = _get_graph_snapshot(store)
+    if not current_entities:
+        return report
+
+    # 获取上次快照
+    prev_snapshot = _load_graph_snapshot()
+    if not prev_snapshot:
+        # 首次：保存快照作为基线
+        _save_graph_snapshot(current_entities)
+        return report
+
+    # 计算差异
+    prev_names = set(prev_snapshot.keys())
+    curr_names = set(current_entities.keys())
+
+    new_entities = curr_names - prev_names
+    removed_entities = prev_names - curr_names
+    common = prev_names & curr_names
+
+    changed_entities: list[str] = []
+    for name in common:
+        if prev_snapshot[name] != current_entities[name]:
+            changed_entities.append(name)
+
+    report.graph_entities_changed = len(new_entities) + len(removed_entities) + len(changed_entities)
+    report.new_entities = list(new_entities)
+    report.removed_entities = list(removed_entities)
+    report.changed_entities = changed_entities
+
+    if report.graph_entities_changed == 0:
+        return report
+
+    # 查找受影响的 wiki 页面
+    all_changed = new_entities | removed_entities | set(changed_entities)
+    pages = list_wiki_pages(limit=10000)
+    wiki_slug_map = {p.get("title", "").lower(): p["slug"] for p in pages}
+
+    for name in all_changed:
+        slug = wiki_slug_map.get(name.lower())
+        if not slug:
+            # 尝试 kebab-case 映射
+            import re as _re
+            kebab = _re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "-", name).strip("-").lower()
+            slug = wiki_slug_map.get(kebab)
+        if slug:
+            report.affected_wiki_slugs.append(slug)
+            # 标记 stale
+            mark_pages_stale([slug], f"graph_entity:{name}")
+
+    # 保存新快照
+    _save_graph_snapshot(current_entities)
+
+    logger.info(
+        "graph_drift_detected",
+        changed=report.graph_entities_changed,
+        affected_wiki=len(report.affected_wiki_slugs),
+    )
+    return report
+
+
+def _get_graph_snapshot(store) -> dict[str, str]:
+    """获取图谱实体名称→属性哈希的快照"""
+    try:
+        driver = store.driver
+        with driver.session() as session:
+            result = session.run(
+                """
+                MATCH (n:Entity)
+                RETURN n.name AS name, n.entity_type AS type,
+                       n.confidence AS confidence, n.updated_at AS updated_at
+                """
+            )
+            import hashlib
+            import json
+
+            snapshot: dict[str, str] = {}
+            for r in result:
+                name = r["name"]
+                props = {
+                    "type": r["type"],
+                    "confidence": r["confidence"],
+                    "updated_at": str(r["updated_at"]),
+                }
+                snapshot[name] = hashlib.sha256(
+                    json.dumps(props, sort_keys=True).encode()
+                ).hexdigest()[:16]
+            return snapshot
+    except Exception:
+        return {}
+
+
+def _save_graph_snapshot(snapshot: dict[str, str]) -> None:
+    """保存图谱快照到 SQLite"""
+    conn = _get_db()
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS graph_entity_snapshots (
+            entity_name TEXT PRIMARY KEY,
+            props_hash TEXT NOT NULL,
+            saved_at TEXT NOT NULL
+        )"""
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    conn.executemany(
+        "INSERT OR REPLACE INTO graph_entity_snapshots VALUES (?, ?, ?)",
+        [(name, h, now) for name, h in snapshot.items()],
+    )
+    conn.commit()
+
+
+def _load_graph_snapshot() -> dict[str, str]:
+    """从 SQLite 加载上次图谱快照"""
+    conn = _get_db()
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS graph_entity_snapshots (
+            entity_name TEXT PRIMARY KEY,
+            props_hash TEXT NOT NULL,
+            saved_at TEXT NOT NULL
+        )"""
+    )
+    rows = conn.execute(
+        "SELECT entity_name, props_hash FROM graph_entity_snapshots"
+    ).fetchall()
+    return {r["entity_name"]: r["props_hash"] for r in rows}

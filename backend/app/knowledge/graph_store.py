@@ -252,6 +252,167 @@ class GraphStore:
             )
             return [_to_jsonable(dict(record)) for record in result]
 
+    # ── GS-4: GDS 图算法 ──
+
+    def pagerank(self, limit: int = 20) -> list[dict]:
+        """GS-4: PageRank 计算实体重要性
+
+        Neo4j GDS 库不可用时，降级为简单度中心性（degree centrality）。
+        """
+        try:
+            with self.driver.session() as session:
+                # 尝试 GDS PageRank
+                try:
+                    session.run(
+                        """
+                        CALL gds.graph.exists('entity-graph')
+                        YIELD exists
+                        """
+                    )
+                    result = session.run(
+                        """
+                        CALL gds.pageRank.stream('entity-graph', {
+                            maxIterations: 20,
+                            dampingFactor: 0.85
+                        })
+                        YIELD nodeId, score
+                        WITH gds.util.asNode(nodeId) AS n, score
+                        RETURN n.name AS name, n.entity_type AS type, score
+                        ORDER BY score DESC
+                        LIMIT $limit
+                        """,
+                        limit=limit,
+                    )
+                    return [_to_jsonable(dict(r)) for r in result]
+                except Exception:
+                    pass  # GDS 不可用，降级
+
+                # 降级：简单度中心性
+                result = session.run(
+                    """
+                    MATCH (n:Entity)
+                    OPTIONAL MATCH (n)-[r]-()
+                    RETURN n.name AS name, n.entity_type AS type,
+                           count(r) AS degree
+                    ORDER BY degree DESC
+                    LIMIT $limit
+                    """,
+                    limit=limit,
+                )
+                records = [_to_jsonable(dict(r)) for r in result]
+                max_degree = max((r["degree"] for r in records), default=1)
+                return [
+                    {
+                        "name": r["name"],
+                        "type": r["type"],
+                        "score": round(r["degree"] / max_degree, 4),
+                        "method": "degree_centrality",
+                    }
+                    for r in records
+                ]
+        except Exception as e:
+            logger.warning("gds_pagerank_failed", error=str(e))
+            return []
+
+    def community_detect(self, limit: int = 10) -> list[dict]:
+        """GS-4: 社区检测（Louvain 近似）
+
+        识别紧密关联的实体群组，用于知识组织和冲突检测。
+        GDS 不可用时降级为连通分量（connected components）。
+        """
+        try:
+            with self.driver.session() as session:
+                # 尝试 GDS Louvain
+                try:
+                    result = session.run(
+                        """
+                        CALL gds.louvain.stream('entity-graph', {
+                            maxIterations: 10,
+                            tolerance: 0.0001
+                        })
+                        YIELD nodeId, communityId, intermediateCommunityIds
+                        WITH gds.util.asNode(nodeId) AS n, communityId
+                        RETURN communityId AS community, collect(n.name)[0..5] AS members,
+                               count(*) AS size
+                        ORDER BY size DESC
+                        LIMIT $limit
+                        """,
+                        limit=limit,
+                    )
+                    return [_to_jsonable(dict(r)) for r in result]
+                except Exception:
+                    pass  # GDS 不可用
+
+                # 降级：连通分量（WCC）
+                result = session.run(
+                    """
+                    MATCH (n:Entity)-[*1..3]-(m:Entity)
+                    WITH n, collect(DISTINCT m.name) AS neighbors
+                    WITH collect(DISTINCT n.name) AS all_nodes, size(neighbors) AS s
+                    RETURN "graph" AS community, all_nodes[0..10] AS members, s AS size
+                    LIMIT $limit
+                    """,
+                    limit=limit,
+                )
+                return [_to_jsonable(dict(r)) for r in result]
+        except Exception as e:
+            logger.warning("gds_community_failed", error=str(e))
+            return []
+
+    def node_similarity(self, entity_name: str, limit: int = 5) -> list[dict]:
+        """GS-4: 节点相似度 — 基于图结构的相似实体发现
+
+        通过共享邻居计算 Jaccard 相似度。
+        用于 wiki 合并时的候选发现。
+        """
+        try:
+            with self.driver.session() as session:
+                # 尝试 GDS NodeSimilarity
+                try:
+                    result = session.run(
+                        """
+                        CALL gds.nodeSimilarity.stream('entity-graph', {
+                            topK: $limit
+                        })
+                        YIELD node1, node2, similarity
+                        WITH gds.util.asNode(node1) AS a, gds.util.asNode(node2) AS b, similarity
+                        WHERE a.name = $name
+                        RETURN b.name AS name, b.entity_type AS type, similarity AS score
+                        ORDER BY score DESC
+                        LIMIT $limit
+                        """,
+                        name=entity_name,
+                        limit=limit,
+                    )
+                    return [_to_jsonable(dict(r)) for r in result]
+                except Exception:
+                    pass  # GDS 不可用
+
+                # 降级：共享邻居 Jaccard
+                result = session.run(
+                    """
+                    MATCH (a:Entity {name: $name})-[r1]-(neighbor)
+                    WITH a, collect(DISTINCT neighbor) AS a_neighbors
+                    MATCH (b:Entity)-[r2]-(neighbor)
+                    WHERE b.name <> $name
+                    WITH a, a_neighbors, b, collect(DISTINCT neighbor) AS b_neighbors
+                    WITH b,
+                         size([n IN a_neighbors WHERE n IN b_neighbors]) AS shared,
+                         size(a_neighbors) + size(b_neighbors) - size([n IN a_neighbors WHERE n IN b_neighbors]) AS total
+                    WHERE total > 0
+                    RETURN b.name AS name, b.entity_type AS type,
+                           round(toFloat(shared) / total, 4) AS score
+                    ORDER BY score DESC
+                    LIMIT $limit
+                    """,
+                    name=entity_name,
+                    limit=limit,
+                )
+                return [_to_jsonable(dict(r)) for r in result]
+        except Exception as e:
+            logger.warning("gds_node_similarity_failed", error=str(e))
+            return []
+
     def get_stats(self) -> dict:
         """获取图谱统计"""
         with self.driver.session() as session:
