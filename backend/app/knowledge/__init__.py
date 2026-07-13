@@ -82,6 +82,8 @@ from app.knowledge.wiki_compiler import (
     WikiPage,
     get_wiki_compiler,
     make_slug,
+    make_hierarchical_slug,
+    generate_slug_for_heading_tree,
 )
 from app.knowledge.wiki_drift import (
     DriftReport,
@@ -202,6 +204,8 @@ __all__ = [
     "WikiCompileResult",
     "get_wiki_compiler",
     "make_slug",
+    "make_hierarchical_slug",
+    "generate_slug_for_heading_tree",
     "StalePage",
     "DriftReport",
     "RecompileJob",

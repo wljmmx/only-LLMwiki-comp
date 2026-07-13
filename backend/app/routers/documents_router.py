@@ -6,14 +6,15 @@
 - GET    /documents/search
 - GET    /documents/{doc_id}
 - GET    /documents/{doc_id}/content
+- GET    /documents/{doc_id}/parse-tree
 - DELETE /documents/{doc_id}
 """
 
 from __future__ import annotations
 
 import json
-import structlog
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.aiops import get_topology_builder
@@ -154,6 +155,118 @@ async def get_document_content(doc_id: str) -> dict:
         "format": doc_fmt,
         "source": "binary_fallback",
     }
+
+
+@router.get("/documents/{doc_id}/parse-tree", dependencies=[Depends(verify_token)])
+async def get_document_parse_tree(doc_id: str) -> dict:
+    """获取文档解析树结构（标题层级 + 元素归属）
+
+    返回文档的完整解析树，包含：
+    - heading_tree: 标题层级树（含层级关系、slug、子章节）
+    - elements: 所有元素及其章节归属
+    - statistics: 解析统计信息
+
+    用于文档结构可视化和完整性校验。
+    """
+    store = get_document_store()
+    doc = store.get(doc_id)
+    if not doc:
+        raise HTTPException(404, f"文档不存在: {doc_id}")
+
+    doc_fmt = doc.get("format", "")
+
+    # 优先从持久化解析结果获取
+    if doc.get("parse_result"):
+        try:
+            parsed = json.loads(doc["parse_result"])
+            heading_tree = parsed.get("heading_tree", [])
+            elements = parsed.get("elements", [])
+            if heading_tree or elements:
+                stats = _compute_parse_tree_stats(heading_tree, elements)
+                return {
+                    "doc_id": doc_id,
+                    "title": parsed.get("title"),
+                    "format": doc_fmt,
+                    "heading_tree": heading_tree,
+                    "elements": elements,
+                    "statistics": stats,
+                    "source": "persisted",
+                }
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.warning("parse_result_decode_failed", doc_id=doc_id, error=str(e))
+
+    # 重新解析文档获取完整结构
+    try:
+        from app.parsers import get_parser
+        parser = get_parser(doc_fmt)
+        parsed_doc = parser.parse(doc["stored_path"], doc_id)
+
+        heading_tree = parsed_doc.get_heading_tree_dict()
+        elements = [{
+            "type": e.type.value,
+            "content": e.content[:2000],
+            "section": e.section,
+            "parent_section": e.parent_section,
+            "metadata": e.metadata,
+        } for e in parsed_doc.elements]
+
+        stats = _compute_parse_tree_stats(heading_tree, elements)
+
+        return {
+            "doc_id": doc_id,
+            "title": parsed_doc.title,
+            "format": doc_fmt,
+            "heading_tree": heading_tree,
+            "elements": elements,
+            "statistics": stats,
+            "source": "reparsed",
+        }
+    except Exception as e:
+        logger.error("parse_tree_reparse_failed", doc_id=doc_id, error=str(e))
+        raise HTTPException(500, f"解析树生成失败: {e}")
+
+
+def _compute_parse_tree_stats(heading_tree: list[dict], elements: list[dict]) -> dict:
+    """计算解析树统计信息"""
+    heading_counts = {}
+    element_counts = {}
+
+    def count_headings(nodes: list[dict]) -> None:
+        for node in nodes:
+            level = node.get("level", 1)
+            heading_counts[level] = heading_counts.get(level, 0) + 1
+            if node.get("children"):
+                count_headings(node["children"])
+
+    count_headings(heading_tree)
+
+    for e in elements:
+        etype = e.get("type", "")
+        element_counts[etype] = element_counts.get(etype, 0) + 1
+
+    return {
+        "total_headings": sum(heading_counts.values()),
+        "heading_by_level": heading_counts,
+        "total_elements": len(elements),
+        "elements_by_type": element_counts,
+        "sections_without_elements": _count_sections_without_elements(heading_tree),
+    }
+
+
+def _count_sections_without_elements(heading_tree: list[dict]) -> int:
+    """统计没有内容元素的章节数"""
+    count = 0
+
+    def check_node(nodes: list[dict]) -> None:
+        nonlocal count
+        for node in nodes:
+            if node.get("element_count", 0) == 0:
+                count += 1
+            if node.get("children"):
+                check_node(node["children"])
+
+    check_node(heading_tree)
+    return count
 
 
 @router.delete("/documents/{doc_id}", dependencies=[Depends(verify_token)])

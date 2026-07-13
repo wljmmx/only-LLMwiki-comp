@@ -28,6 +28,7 @@ class TextParser:
             checksum=checksum,
             title=title,
             elements=elements,
+            heading_tree=[],
         )
 
     def _parse_text(self, text: str) -> list[ParsedElement]:

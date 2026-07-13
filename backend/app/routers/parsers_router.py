@@ -51,14 +51,16 @@ def _serialize_doc(doc: ParsedDocument) -> dict:
         "checksum": doc.checksum,
         "title": doc.title,
         "element_count": len(doc.elements),
+        "heading_tree": doc.get_heading_tree_dict(),
         "elements": [
             {
                 "type": e.type.value,
                 "content": e.content[:2000],
                 "section": e.section,
+                "parent_section": e.parent_section,
                 "metadata": e.metadata,
             }
-            for e in doc.elements[:50]  # API 响应限制前 50 个元素
+            for e in doc.elements[:50]
         ],
     }
 

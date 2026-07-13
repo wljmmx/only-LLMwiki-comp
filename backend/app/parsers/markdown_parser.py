@@ -1,6 +1,12 @@
 """Markdown 解析器（F1）
 
 提取标题、段落、代码块、表格、列表，保留层级关系。
+
+新增功能：
+- 构建标题层级树（H1-H6）
+- 段落归属到最近的标题
+- 支持父级章节引用
+- 生成层级化 Slug 候选
 """
 
 from __future__ import annotations
@@ -8,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import re
 
-from app.parsers.base import ElementType, ParsedDocument, ParsedElement
+from app.parsers.base import ElementType, HeadingNode, ParsedDocument, ParsedElement
 
 
 class MarkdownParser:
@@ -20,7 +26,7 @@ class MarkdownParser:
 
         checksum = hashlib.sha256(text.encode()).hexdigest()
         title = self._extract_title(text)
-        elements = self._parse_markdown(text)
+        elements, heading_tree = self._parse_markdown(text)
 
         return ParsedDocument(
             doc_id=doc_id,
@@ -29,45 +35,67 @@ class MarkdownParser:
             checksum=checksum,
             title=title,
             elements=elements,
+            heading_tree=heading_tree,
         )
 
     def _extract_title(self, text: str) -> str | None:
         m = re.match(r"^#\s+(.+)$", text, re.MULTILINE)
         if m:
             return m.group(1).strip()
-        # 兜底：取首行非空内容（去除 Markdown 加粗标记）
         first = text.strip().split("\n")[0].strip()
         if first:
             return re.sub(r"\*+", "", first).strip()[:120]
         return None
 
-    def _parse_markdown(self, text: str) -> list[ParsedElement]:
+    def _parse_markdown(self, text: str) -> tuple[list[ParsedElement], list[HeadingNode]]:
         elements: list[ParsedElement] = []
         lines = text.split("\n")
         i = 0
+
+        heading_stack: list[tuple[int, HeadingNode]] = []
+        heading_tree: list[HeadingNode] = []
         current_section: str | None = None
+        current_parent_section: str | None = None
+        all_headings: list[HeadingNode] = []
 
         while i < len(lines):
             line = lines[i]
 
-            # 标题
             heading_match = re.match(r"^(#{1,6})\s+(.+)$", line)
             if heading_match:
                 level = len(heading_match.group(1))
                 title = heading_match.group(2).strip()
-                elements.append(
-                    ParsedElement(
-                        type=ElementType.HEADING,
-                        content=title,
-                        metadata={"level": level},
-                    )
+                heading_element = ParsedElement(
+                    type=ElementType.HEADING,
+                    content=title,
+                    section=title,
+                    parent_section=current_parent_section,
+                    metadata={"level": level},
                 )
+                elements.append(heading_element)
+
+                while heading_stack and heading_stack[-1][0] >= level:
+                    heading_stack.pop()
+
+                new_node = HeadingNode(level=level, title=title)
+                all_headings.append(new_node)
+
+                if heading_stack:
+                    heading_stack[-1][1].children.append(new_node)
+                else:
+                    heading_tree.append(new_node)
+
+                heading_stack.append((level, new_node))
+
                 if level <= 2:
                     current_section = title
+                if level >= 2:
+                    parents = [h[1].title for h in heading_stack[:-1]]
+                    current_parent_section = parents[-1] if parents else None
+
                 i += 1
                 continue
 
-            # 代码块（围栏）
             code_match = re.match(r"^```(\w*)$", line)
             if code_match:
                 lang = code_match.group(1) or ""
@@ -76,18 +104,19 @@ class MarkdownParser:
                 while i < len(lines) and not lines[i].startswith("```"):
                     code_lines.append(lines[i])
                     i += 1
-                i += 1  # skip closing ```
-                elements.append(
-                    ParsedElement(
-                        type=ElementType.CODE,
-                        content="\n".join(code_lines),
-                        section=current_section,
-                        metadata={"language": lang},
-                    )
+                i += 1
+                code_element = ParsedElement(
+                    type=ElementType.CODE,
+                    content="\n".join(code_lines),
+                    section=current_section,
+                    parent_section=current_parent_section,
+                    metadata={"language": lang},
                 )
+                elements.append(code_element)
+                if heading_stack:
+                    heading_stack[-1][1].elements.append(code_element)
                 continue
 
-            # 表格
             if (
                 "|" in line
                 and i + 1 < len(lines)
@@ -95,22 +124,22 @@ class MarkdownParser:
             ):
                 table_lines = [line]
                 i += 1
-                # 分隔行
                 table_lines.append(lines[i])
                 i += 1
                 while i < len(lines) and "|" in lines[i]:
                     table_lines.append(lines[i])
                     i += 1
-                elements.append(
-                    ParsedElement(
-                        type=ElementType.TABLE,
-                        content="\n".join(table_lines),
-                        section=current_section,
-                    )
+                table_element = ParsedElement(
+                    type=ElementType.TABLE,
+                    content="\n".join(table_lines),
+                    section=current_section,
+                    parent_section=current_parent_section,
                 )
+                elements.append(table_element)
+                if heading_stack:
+                    heading_stack[-1][1].elements.append(table_element)
                 continue
 
-            # 列表（连续行）
             list_match = re.match(r"^(\s*)([-*+]|\d+\.)\s+", line)
             if list_match:
                 list_lines = [line]
@@ -118,21 +147,21 @@ class MarkdownParser:
                 while i < len(lines) and re.match(r"^(\s*)([-*+]|\d+\.)\s+", lines[i]):
                     list_lines.append(lines[i])
                     i += 1
-                elements.append(
-                    ParsedElement(
-                        type=ElementType.LIST,
-                        content="\n".join(list_lines),
-                        section=current_section,
-                    )
+                list_element = ParsedElement(
+                    type=ElementType.LIST,
+                    content="\n".join(list_lines),
+                    section=current_section,
+                    parent_section=current_parent_section,
                 )
+                elements.append(list_element)
+                if heading_stack:
+                    heading_stack[-1][1].elements.append(list_element)
                 continue
 
-            # 空行跳过
             if not line.strip():
                 i += 1
                 continue
 
-            # 段落（连续非空行）
             para_lines = [line]
             i += 1
             while (
@@ -142,15 +171,17 @@ class MarkdownParser:
             ):
                 para_lines.append(lines[i])
                 i += 1
-            elements.append(
-                ParsedElement(
-                    type=ElementType.PARAGRAPH,
-                    content=" ".join(para_lines),
-                    section=current_section,
-                )
+            para_element = ParsedElement(
+                type=ElementType.PARAGRAPH,
+                content=" ".join(para_lines),
+                section=current_section,
+                parent_section=current_parent_section,
             )
+            elements.append(para_element)
+            if heading_stack:
+                heading_stack[-1][1].elements.append(para_element)
 
-        return elements
+        return elements, heading_tree
 
     def _is_special_line(self, line: str) -> bool:
         return bool(re.match(r"^(#{1,6}\s|```|[-*+]\s|\d+\.\s|\|)", line))

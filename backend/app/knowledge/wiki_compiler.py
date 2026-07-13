@@ -36,6 +36,7 @@ from app.knowledge.wiki_index import _key_from_slug, list_wiki_pages, rebuild_in
 from app.knowledge.wikilink import WIKILINK_RE, update_backlinks
 from app.observability import span
 from app.parsers import get_parser
+from app.parsers.base import ParsedDocument
 from app.storage import get_document_store
 from app.storage.version_control import get_version_control
 
@@ -131,6 +132,98 @@ def make_slug(entity_type: str, name: str) -> str:
         return f"runbook-{base}"
     # concept / entity
     return base
+
+
+def make_hierarchical_slug(
+    title: str,
+    level: int,
+    parent_slug: str | None = None,
+    entity_type: str | None = None,
+    max_length: int = 100,
+) -> str:
+    """生成层级化 Slug，反映文档章节结构
+
+    Slug 命名规则：
+    - H1：{slugified-title}（文档主标题）
+    - H2：{parent-slug}-{section-slug}
+    - H3：{grandparent-slug}-{parent-slug}-{section-slug}
+    - 截断规则：总长度不超过 max_length，保留关键识别信息
+    - 分隔符：连字符 "-"
+    - 大小写：全小写
+
+    Args:
+        title: 章节标题
+        level: 标题层级（1-6）
+        parent_slug: 父章节的 slug（可选）
+        entity_type: 实体类型（用于确定前缀，可选）
+        max_length: slug 最大长度
+
+    Returns:
+        层级化 slug 字符串
+    """
+    base = _slugify(title)
+    if not base:
+        base = f"section-{level}"
+
+    prefix = ""
+    if entity_type:
+        page_type = ENTITY_TYPE_TO_PAGE_TYPE.get(entity_type, "")
+        if page_type == "host":
+            prefix = "host-"
+        elif page_type == "service":
+            prefix = "service-"
+        elif page_type == "runbook":
+            prefix = "runbook-"
+        elif page_type == "incident":
+            if "troubleshoot" not in base and "故障" not in title:
+                base += "-troubleshooting"
+
+    if parent_slug:
+        parts = parent_slug.split("-")
+        if len(parts) > level - 1:
+            parent_base = "-".join(parts[: level - 1])
+        else:
+            parent_base = parent_slug
+        candidate = f"{prefix}{parent_base}-{base}" if prefix else f"{parent_base}-{base}"
+    else:
+        candidate = f"{prefix}{base}" if prefix else base
+
+    if len(candidate) <= max_length:
+        return candidate
+
+    truncated_base = base[: max_length - len(prefix) - 1]
+    candidate = f"{prefix}{truncated_base}" if prefix else truncated_base
+    return candidate.rstrip("-")
+
+
+def generate_slug_for_heading_tree(
+    heading_tree: list[dict],
+    parent_slug: str | None = None,
+) -> list[dict]:
+    """递归为标题树生成层级化 Slug
+
+    Args:
+        heading_tree: 标题树字典列表（由 HeadingNode.to_dict() 生成）
+        parent_slug: 父章节 slug
+
+    Returns:
+        更新后的标题树列表（含 slug 字段）
+    """
+    result = []
+    for node in heading_tree:
+        slug = make_hierarchical_slug(
+            title=node["title"],
+            level=node["level"],
+            parent_slug=parent_slug,
+        )
+        node["slug"] = slug
+        if node.get("children"):
+            node["children"] = generate_slug_for_heading_tree(
+                node["children"],
+                parent_slug=slug,
+            )
+        result.append(node)
+    return result
 
 
 # ────────── 编译器主体 ──────────
@@ -261,7 +354,7 @@ class WikiCompiler:
                 except Exception as e:
                     result.errors.append(f"图谱编译失败: {e}")
 
-            # 3. 逐个编译
+            # 3. 逐个编译（实体抽取方式）
             source_entry = {
                 "doc_id": doc_id,
                 "title": meta.get("title") or meta.get("filename", doc_id),
@@ -288,6 +381,23 @@ class WikiCompiler:
                 except Exception as e:
                     logger.exception("wiki_compiler_page_failed", slug=entity.name)
                     result.errors.append(f"{entity.name}: {e}")
+
+            # 4. 结构编译（基于标题层级树）
+            if doc.heading_tree:
+                try:
+                    struct_result = await self._compile_heading_tree_to_wiki(
+                        doc, source_entry, force=force
+                    )
+                    result.pages_created += struct_result.pages_created
+                    result.pages_updated += struct_result.pages_updated
+                    result.pages_unchanged += struct_result.pages_unchanged
+                    result.slugs.extend(struct_result.slugs)
+                    result.review_needed.extend(struct_result.review_needed)
+                    result.stale_marked.extend(struct_result.stale_marked)
+                    result.errors.extend(struct_result.errors)
+                except Exception as e:
+                    logger.exception("wiki_compiler_struct_failed", doc_id=doc_id)
+                    result.errors.append(f"结构编译失败: {e}")
 
             # 4. 状态推进
             self.store.update_status(doc_id, "compiled")
@@ -447,6 +557,143 @@ class WikiCompiler:
             review_status=review_status,
             source_doc_id=source_entry.get("doc_id", ""),
         )
+
+    async def _compile_heading_tree_to_wiki(
+        self,
+        doc: ParsedDocument,
+        source_entry: dict,
+        *,
+        force: bool = False,
+    ) -> WikiCompileResult:
+        """基于标题层级树生成结构化 wiki 页面
+
+        策略：
+        - H1：文档主标题，生成概念页（concept）
+        - H2：一级章节，生成概念页，slug 包含父级前缀
+        - H3：二级章节，生成概念页或作为内容段落
+        - H4-H6：深层章节，作为内容段落
+
+        Args:
+            doc: ParsedDocument（含 heading_tree）
+            source_entry: 来源信息
+            force: 是否强制更新
+
+        Returns:
+            WikiCompileResult
+        """
+        result = WikiCompileResult(doc_id=doc.doc_id)
+
+        heading_tree_dicts = doc.get_heading_tree_dict()
+        if not heading_tree_dicts:
+            return result
+
+        tree_with_slugs = generate_slug_for_heading_tree(heading_tree_dicts)
+
+        page_count = self._compile_tree_node(
+            tree_with_slugs,
+            doc,
+            source_entry,
+            result,
+            force=force,
+        )
+
+        logger.info(
+            "wiki_compiler_struct_done",
+            doc_id=doc.doc_id,
+            pages=page_count,
+        )
+        return result
+
+    def _compile_tree_node(
+        self,
+        nodes: list[dict],
+        doc: ParsedDocument,
+        source_entry: dict,
+        result: WikiCompileResult,
+        *,
+        force: bool = False,
+        parent_slug: str | None = None,
+    ) -> int:
+        """递归编译标题树节点为 wiki 页面"""
+        count = 0
+        for node in nodes:
+            slug = node.get("slug")
+            title = node.get("title", "")
+            level = node.get("level", 1)
+
+            if not slug or level > 3:
+                if node.get("children"):
+                    count += self._compile_tree_node(
+                        node["children"], doc, source_entry, result, force=force, parent_slug=slug
+                    )
+                continue
+
+            body_md = self._build_section_body(node, parent_slug)
+            page = WikiPage(
+                slug=slug,
+                title=title,
+                type="concept",
+                tags=[f"section-level-{level}", "document-structure"],
+                sources=[source_entry],
+                body_md=body_md,
+                review_status="auto",
+                source_doc_id=source_entry.get("doc_id", ""),
+            )
+
+            try:
+                outcome = self._save_page(page, force=force)
+                result.slugs.append(slug)
+                if outcome == "created":
+                    result.pages_created += 1
+                elif outcome == "updated":
+                    result.pages_updated += 1
+                else:
+                    result.pages_unchanged += 1
+                count += 1
+            except Exception as e:
+                logger.exception("wiki_compiler_struct_node_failed", slug=slug)
+                result.errors.append(f"{slug}: {e}")
+
+            if node.get("children"):
+                count += self._compile_tree_node(
+                    node["children"], doc, source_entry, result, force=force, parent_slug=slug
+                )
+
+        return count
+
+    def _build_section_body(self, node: dict, parent_slug: str | None = None) -> str:
+        """为章节节点构建 wiki 正文"""
+        level = node.get("level", 1)
+        element_count = node.get("element_count", 0)
+
+        lines = []
+
+        lines.append("## 概述")
+        lines.append(f"本章节为文档结构的一部分，包含 {element_count} 个内容元素。")
+        lines.append("")
+
+        if level > 1:
+            lines.append("## 父级章节")
+            if parent_slug:
+                lines.append(f"- [[{parent_slug}]]")
+            lines.append("")
+
+        children = node.get("children", [])
+        if children:
+            lines.append("## 子章节")
+            for child in children:
+                child_slug = child.get("slug")
+                child_title = child.get("title", "")
+                if child_slug:
+                    lines.append(f"- [[{child_slug}|{child_title}]]")
+                else:
+                    lines.append(f"- {child_title}")
+            lines.append("")
+
+        lines.append("## 来源")
+        lines.append("- 文档结构自动生成")
+
+        return "\n".join(lines)
 
     async def _llm_write_body(self, entity: ExtractedEntity, page_type: str) -> str:
         """让 LLM 按 AGENTS.md 骨架写页面正文
