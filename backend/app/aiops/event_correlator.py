@@ -321,25 +321,26 @@ class EventCorrelator:
         }
 
     def list_incidents(
-        self, status: str = "open", limit: int = 50
+        self, status: str = "open", limit: int = 50, offset: int = 0
     ) -> list[dict]:
         """列出 incident
 
         Args:
             status: 状态过滤，支持 "all" 或 "" 表示不过滤
             limit: 返回数量上限
+            offset: 偏移量（分页），默认 0（向后兼容）
         """
         conn = _get_db()
         if status in ("", "all", "*"):
             rows = conn.execute(
-                "SELECT * FROM incidents ORDER BY started_at DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM incidents ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
             ).fetchall()
         else:
             rows = conn.execute(
                 """SELECT * FROM incidents WHERE status = ?
-                   ORDER BY started_at DESC LIMIT ?""",
-                (status, limit),
+                   ORDER BY started_at DESC LIMIT ? OFFSET ?""",
+                (status, limit, offset),
             ).fetchall()
         result = []
         for r in rows:
@@ -708,9 +709,21 @@ class EventCorrelator:
         )
 
     def _merge_incidents(self, incidents: list[Incident]) -> list[Incident]:
-        """合并相同 scope 的 incident"""
+        """合并相同/子集 scope 的 incident（P2-2.6 扩展子集合并）
+
+        合并两步走：
+        1. 精确 scope 合并（回归保护：相同 scope 合并）
+        2. 子集 scope 合并（P2-2.6：小 scope 合并入大 scope，保留更大上下文）
+        """
         if not incidents:
             return []
+        # 1. 精确 scope 合并
+        exact = self._merge_exact_scope(incidents)
+        # 2. 子集 scope 合并（仅相同 entity_type 生效，避免误合并不同类型）
+        return self._merge_subset_scope(exact)
+
+    def _merge_exact_scope(self, incidents: list[Incident]) -> list[Incident]:
+        """精确 scope 合并：相同 scope 的 incident 合并"""
         merged: dict[str, Incident] = {}
         for inc in incidents:
             key = json.dumps(inc.scope, sort_keys=True)
@@ -727,6 +740,136 @@ class EventCorrelator:
             else:
                 merged[key] = inc
         return list(merged.values())
+
+    def _merge_subset_scope(self, incidents: list[Incident]) -> list[Incident]:
+        """子集 scope 合并（P2-2.6）：小 scope 合并入大 scope
+
+        规则：
+        - 若 incident A 的 scope 是 incident B 的子集（set(A) <= set(B)），
+          且二者 entity_type 相同，则合并 A 到 B（保留更大上下文）
+        - 超集反向同理：A 是 B 的超集，则合并 B 到 A
+        - 仅相同 entity_type（非空维度集合一致）才合并，避免误合并不同类型
+        - 合并方向：小 scope 合并入大 scope
+        - 合并后：events 拼接、scope 取并集、time_range 取更宽、severity 取更高
+        """
+        result = list(incidents)
+        changed = True
+        # 迭代直到无合并发生（处理链式合并 A ⊂ B ⊂ C）
+        while changed:
+            changed = False
+            # 按 scope 实体总数降序，大 scope 优先作为合并目标
+            result.sort(key=lambda inc: self._scope_size(inc.scope), reverse=True)
+            for i in range(len(result)):
+                if i >= len(result):
+                    break
+                parent = result[i]
+                parent_type = self._scope_entity_type(parent.scope)
+                parent_set = self._scope_to_set(parent.scope)
+                j = i + 1
+                while j < len(result):
+                    child = result[j]
+                    # 仅相同 entity_type 才考虑子集合并
+                    if self._scope_entity_type(child.scope) != parent_type:
+                        j += 1
+                        continue
+                    child_set = self._scope_to_set(child.scope)
+                    # 严格子集（排除相等，相等已由精确合并处理）
+                    if child_set.issubset(parent_set) and child_set != parent_set:
+                        self._merge_into(parent, child)
+                        logger.debug(
+                            "scope_subset_merged",
+                            merged_scope_size=self._scope_size(child.scope),
+                            parent_scope_size=self._scope_size(parent.scope),
+                        )
+                        result.pop(j)
+                        changed = True
+                        # 不递增 j：pop 后下一个元素移到当前位置
+                    else:
+                        j += 1
+        return result
+
+    @staticmethod
+    def _should_merge_by_scope(scope_a: dict, scope_b: dict) -> bool:
+        """判断两个 scope 是否应因子集关系合并（P2-2.6）
+
+        仅当 entity_type 相同且其中一个是另一个的严格子集时返回 True。
+        """
+        ec = EventCorrelator
+        if ec._scope_entity_type(scope_a) != ec._scope_entity_type(scope_b):
+            return False
+        set_a = ec._scope_to_set(scope_a)
+        set_b = ec._scope_to_set(scope_b)
+        if set_a == set_b:
+            return False
+        return set_a.issubset(set_b) or set_b.issubset(set_a)
+
+    @staticmethod
+    def _scope_entity_type(scope: dict) -> frozenset[str]:
+        """提取 scope 的实体类型（非空维度集合）
+
+        用于约束子集合并仅在同类型 incident 间生效，避免误合并。
+        例：{"hosts": ["h1"], "services": []} → frozenset({"hosts"})
+        """
+        return frozenset(k for k, v in scope.items() if v)
+
+    @staticmethod
+    def _scope_to_set(scope: dict) -> frozenset[str]:
+        """将 scope 转为带维度前缀的可比较集合
+
+        加前缀避免 host 名与服务名等跨维度撞名导致误判子集关系。
+        """
+        s: set[str] = set()
+        for h in scope.get("hosts", []):
+            s.add(f"host:{h}")
+        for svc in scope.get("services", []):
+            s.add(f"svc:{svc}")
+        for c in scope.get("components", []):
+            s.add(f"comp:{c}")
+        return frozenset(s)
+
+    @staticmethod
+    def _scope_size(scope: dict) -> int:
+        """scope 实体总数（hosts + services + components）"""
+        return (
+            len(scope.get("hosts", []))
+            + len(scope.get("services", []))
+            + len(scope.get("components", []))
+        )
+
+    @staticmethod
+    def _merge_into(parent: Incident, child: Incident) -> None:
+        """将 child 合并入 parent（就地修改 parent）
+
+        - events 列表拼接
+        - scope 取并集
+        - time_range 取更宽（started_at 取更早，ended_at 取更晚）
+        - severity 取更高
+        """
+        parent.alert_ids.extend(child.alert_ids)
+        parent.alerts.extend(child.alerts)
+        # scope 取并集（保持 sorted，与 _build_incident 一致）
+        parent.scope = {
+            "hosts": sorted(
+                set(parent.scope.get("hosts", []))
+                | set(child.scope.get("hosts", []))
+            ),
+            "services": sorted(
+                set(parent.scope.get("services", []))
+                | set(child.scope.get("services", []))
+            ),
+            "components": sorted(
+                set(parent.scope.get("components", []))
+                | set(child.scope.get("components", []))
+            ),
+        }
+        # time_range 取更宽
+        parent.started_at = min(parent.started_at, child.started_at)
+        parent.ended_at = max(parent.ended_at, child.ended_at)
+        # severity 取更高
+        if SEVERITY_RANK.get(child.severity, 0) > SEVERITY_RANK.get(
+            parent.severity, 0
+        ):
+            parent.severity = child.severity
 
     def _infer_root_cause(self, inc: Incident) -> None:
         """根因推断（启发式）

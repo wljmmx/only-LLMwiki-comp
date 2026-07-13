@@ -233,6 +233,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    # P2-3.5 按 change_type 区分关联时间窗口
+    # JSON 字符串，键为 change_type（如 deployment/config_change/default），值为分钟数
+    # 留空则使用内置默认：deployment=120, config_change=60, default=30
+    # 示例：OPSKG_CHANGE_TYPE_WINDOWS='{"deployment": 120, "config_change": 60}'
+    change_type_windows: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "OPSKG_CHANGE_TYPE_WINDOWS", "change_type_windows"
+        ),
+    )
+
     # ArgoCD 后端配置（留空则禁用 ArgoCD 后端）
     # 环境变量：OPSKG_ARGOCD_URL / OPSKG_ARGOCD_TOKEN / OPSKG_ARGOCD_APP_NAME
     argocd_url: str = Field(

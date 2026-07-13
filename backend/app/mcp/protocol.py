@@ -20,6 +20,9 @@
 - diff_topology_snapshots: 对比两个拓扑快照（P2-4.3）
 - impact_analysis: 影响分析
 - list_documents: 列出已上传文档
+- resolve_cmdb_entity: CMDB 实体归一化（IP↔主机名）查询（P2-3.6）
+- add_cmdb_mapping: 添加 CMDB IP↔主机名映射（P2-3.6，admin）
+- normalize_topology_by_cmdb: 基于 CMDB 映射归一化拓扑（P2-3.6，operator）
 
 暴露的资源（resources，P2-5.1）：
 - wiki://index              — Wiki 索引页
@@ -49,6 +52,7 @@ import structlog
 
 from app.aiops import (
     get_change_correlator,
+    get_cmdb_resolver,
     get_event_correlator,
     get_rollback_executor,
     get_topology_builder,
@@ -135,14 +139,17 @@ TOOL_REQUIRED_ROLES: dict[str, str] = {
     "impact_analysis": "viewer",
     "suggest_rollback": "viewer",
     "wiki_qa": "viewer",
+    "resolve_cmdb_entity": "viewer",
     # 生成类 — operator
     "generate_runbook": "operator",
     # 写操作 — operator
     "infer_topology": "operator",
+    "normalize_topology_by_cmdb": "operator",
     # 高危操作 — admin
     "transition_incident": "admin",
     "merge_topology_aliases": "admin",
     "review_change_impact": "operator",
+    "add_cmdb_mapping": "admin",
     # P2-3.7 回滚执行（触发实际部署回滚）— admin
     "execute_rollback": "admin",
 }
@@ -245,6 +252,10 @@ TOOLS: list[dict] = [
                     "description": "状态过滤；all 表示不过滤",
                 },
                 "limit": {"type": "integer", "default": 10},
+                "cursor": {
+                    "type": "string",
+                    "description": "分页游标，首次请求不传，后续用上次返回的 nextCursor",
+                },
             },
         },
     },
@@ -451,7 +462,63 @@ TOOLS: list[dict] = [
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "default": 20},
+                "cursor": {
+                    "type": "string",
+                    "description": "分页游标，首次请求不传，后续用上次返回的 nextCursor",
+                },
             },
+        },
+    },
+    {
+        "name": "resolve_cmdb_entity",
+        "description": (
+            "P2-3.6 CMDB 实体归一化查询。输入 IP / hostname / 短名，"
+            "返回归一化后的主机名。IP→hostname（若有映射），hostname→自身，"
+            "短名→FQDN（若有匹配的映射），无映射返回原值。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity": {
+                    "type": "string",
+                    "description": "待归一化的实体名（IP / hostname / 短名）",
+                },
+            },
+            "required": ["entity"],
+        },
+    },
+    {
+        "name": "add_cmdb_mapping",
+        "description": (
+            "P2-3.6 添加 CMDB IP↔主机名映射。高危操作，需 admin 权限。"
+            "添加后可用于 resolve_cmdb_entity 查询与 normalize_topology_by_cmdb 归一化。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ip": {
+                    "type": "string",
+                    "description": "IP 地址（如 10.0.0.1）",
+                },
+                "hostname": {
+                    "type": "string",
+                    "description": "对应的主机名（FQDN 或短名）",
+                },
+            },
+            "required": ["ip", "hostname"],
+        },
+    },
+    {
+        "name": "normalize_topology_by_cmdb",
+        "description": (
+            "P2-3.6 基于 CMDB IP↔主机名映射归一化拓扑。"
+            "扫描所有拓扑节点，对 name 是 IP 的节点替换为 hostname，"
+            "对 metadata.ip 与其他节点 name 重合的合并节点。"
+            "需 operator 权限。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
         },
     },
 ]
@@ -477,11 +544,58 @@ _TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "diff_topology_snapshots":     {"readOnlyHint": True},     # 纯对比，不改状态
     "impact_analysis":             {"readOnlyHint": True},
     "list_documents":              {"readOnlyHint": True},
+    # P2-3.6 CMDB 实体归一化
+    "resolve_cmdb_entity":         {"readOnlyHint": True},  # 纯查询，不改状态
+    "add_cmdb_mapping":            {"destructiveHint": True, "idempotentHint": True},  # 写映射表，同 IP 幂等
+    "normalize_topology_by_cmdb":  {"destructiveHint": True, "idempotentHint": True},  # 改拓扑，幂等
 }
 
 # 应用 annotations 到 TOOLS
 for _tool in TOOLS:
     _tool["annotations"] = _TOOL_ANNOTATIONS.get(_tool["name"], {})
+
+
+# ────────── P2-5.9 cursor 分页辅助 ──────────
+# cursor 采用 base64(offset) 编码，便于在 JSON-RPC 中以字符串传递；
+# 无效 cursor 一律回退到 offset=0，不抛异常（向后兼容）。
+
+
+def _encode_cursor(offset: int) -> str:
+    """将 offset 编码为 base64 字符串游标
+
+    Args:
+        offset: 偏移量（非负整数）
+
+    Returns:
+        base64 编码的字符串游标
+    """
+    import base64
+
+    if offset < 0:
+        offset = 0
+    return base64.b64encode(str(offset).encode("utf-8")).decode("ascii")
+
+
+def _decode_cursor(cursor: str | None) -> int:
+    """将 base64 cursor 解码为 offset
+
+    Args:
+        cursor: base64 编码的字符串游标；为空或 None 时返回 0
+
+    Returns:
+        offset 整数；解码失败或负数时回退到 0
+    """
+    import base64
+
+    if not cursor:
+        return 0
+    try:
+        decoded = base64.b64decode(str(cursor), validate=False).decode("utf-8")
+        offset = int(decoded)
+        return offset if offset >= 0 else 0
+    except Exception:  # noqa: BLE001
+        # 任何解码错误都回退到 0，避免向客户端抛异常
+        return 0
 
 
 # ────────── 工具实现 ──────────
@@ -549,27 +663,32 @@ def _tool_generate_runbook(args: dict) -> str:
 def _tool_list_incidents(args: dict) -> str:
     status = args.get("status", "open")
     limit = int(args.get("limit", 10))
-    items = get_event_correlator().list_incidents(status, limit)
-    return json.dumps(
-        {
-            "count": len(items),
-            "incidents": [
-                {
-                    "incident_id": i["incident_id"],
-                    "started_at": i["started_at"],
-                    "severity": i["severity"],
-                    "status": i.get("status", "open"),
-                    "alert_count": i.get("alert_count", 0),
-                    "suspected_root_cause": i.get("suspected_root_cause", ""),
-                    "scope": i.get("scope", {}),
-                    "assignee": i.get("assignee", ""),
-                }
-                for i in items
-            ],
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
+    # P2-5.9 cursor 分页：cursor 解码为 offset，无效回退 0
+    offset = _decode_cursor(args.get("cursor"))
+    # 多查 1 条用于判断是否还有下一页
+    items = get_event_correlator().list_incidents(status, limit + 1, offset)
+    has_more = len(items) > limit
+    page_items = items[:limit]
+    next_cursor = _encode_cursor(offset + limit) if has_more else None
+    result = {
+        "count": len(page_items),
+        "incidents": [
+            {
+                "incident_id": i["incident_id"],
+                "started_at": i["started_at"],
+                "severity": i["severity"],
+                "status": i.get("status", "open"),
+                "alert_count": i.get("alert_count", 0),
+                "suspected_root_cause": i.get("suspected_root_cause", ""),
+                "scope": i.get("scope", {}),
+                "assignee": i.get("assignee", ""),
+            }
+            for i in page_items
+        ],
+    }
+    # 有下一页时返回 nextCursor，否则置为 None（不省略以保持结构稳定）
+    result["nextCursor"] = next_cursor
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 def _tool_transition_incident(args: dict) -> str:
@@ -674,8 +793,30 @@ def _tool_execute_rollback(args: dict) -> str:
     default_target = get_settings().rollback_default_target
     target = args.get("target") or default_target
 
+    # P2-5.5 推送进度通知（SSE 端点会捕获；普通 JSON-RPC 路径为 no-op）
+    from app.mcp.progress import emit_progress
+
+    emit_progress(f"开始执行回滚（target={target}）", 0, 3)
+    if target == "dry_run":
+        emit_progress("生成回滚预览...", 1, 3)
+    else:
+        emit_progress(f"调用 {target} API...", 1, 3)
+
     executor = get_rollback_executor()
     result = _run_coroutine_sync(executor.execute(rollback_plan, target))
+
+    success = bool(result.get("success"))
+    provider = result.get("provider", target)
+    if success:
+        emit_progress(
+            f"回滚完成（success=True, provider={provider}）", 3, 3
+        )
+    else:
+        emit_progress(
+            f"回滚失败: {result.get('error', '未知错误')}（provider={provider}）",
+            3,
+            3,
+        )
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -872,25 +1013,77 @@ def _tool_diff_topology_snapshots(args: dict) -> str:
 
 def _tool_list_documents(args: dict) -> str:
     limit = int(args.get("limit", 20))
-    docs = get_document_store().list(limit=limit)
+    # P2-5.9 cursor 分页：cursor 解码为 offset，无效回退 0
+    offset = _decode_cursor(args.get("cursor"))
+    # 多查 1 条用于判断是否还有下一页
+    docs = get_document_store().list(limit=limit + 1, offset=offset)
+    has_more = len(docs) > limit
+    page_docs = docs[:limit]
+    next_cursor = _encode_cursor(offset + limit) if has_more else None
+    result = {
+        "count": len(page_docs),
+        "documents": [
+            {
+                "doc_id": d["doc_id"],
+                "filename": d.get("filename"),
+                "title": d.get("title"),
+                "format": d.get("format"),
+                "status": d.get("status"),
+                "size_bytes": d.get("size_bytes"),
+            }
+            for d in page_docs
+        ],
+    }
+    result["nextCursor"] = next_cursor
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+# ────────── P2-3.6 CMDB 实体归一化工具 ──────────
+
+
+def _tool_resolve_cmdb_entity(args: dict) -> str:
+    """P2-3.6 CMDB 实体归一化查询
+
+    输入 IP / hostname / 短名，返回归一化后的主机名。
+    """
+    entity = args.get("entity", "")
+    if not entity:
+        return json.dumps({"error": "entity 不能为空"}, ensure_ascii=False)
+    resolver = get_cmdb_resolver()
+    resolved = resolver.resolve(entity)
     return json.dumps(
         {
-            "count": len(docs),
-            "documents": [
-                {
-                    "doc_id": d["doc_id"],
-                    "filename": d.get("filename"),
-                    "title": d.get("title"),
-                    "format": d.get("format"),
-                    "status": d.get("status"),
-                    "size_bytes": d.get("size_bytes"),
-                }
-                for d in docs
-            ],
+            "input": entity,
+            "resolved": resolved,
+            "normalized": resolved != entity,
         },
         ensure_ascii=False,
         indent=2,
     )
+
+
+def _tool_add_cmdb_mapping(args: dict) -> str:
+    """P2-3.6 添加 CMDB IP↔主机名映射（admin）"""
+    ip = args.get("ip", "")
+    hostname = args.get("hostname", "")
+    if not ip or not hostname:
+        return json.dumps(
+            {"error": "ip 和 hostname 不能为空"}, ensure_ascii=False
+        )
+    resolver = get_cmdb_resolver()
+    try:
+        result = resolver.add_mapping(ip, hostname)
+    except ValueError as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def _tool_normalize_topology_by_cmdb(args: dict) -> str:
+    """P2-3.6 基于 CMDB 映射归一化拓扑（operator）"""
+    resolver = get_cmdb_resolver()
+    builder = get_topology_builder()
+    result = resolver.normalize_topology(builder)
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 TOOL_HANDLERS = {
@@ -908,6 +1101,9 @@ TOOL_HANDLERS = {
     "diff_topology_snapshots": _tool_diff_topology_snapshots,
     "impact_analysis": _tool_impact_analysis,
     "list_documents": _tool_list_documents,
+    "resolve_cmdb_entity": _tool_resolve_cmdb_entity,
+    "add_cmdb_mapping": _tool_add_cmdb_mapping,
+    "normalize_topology_by_cmdb": _tool_normalize_topology_by_cmdb,
 }
 
 

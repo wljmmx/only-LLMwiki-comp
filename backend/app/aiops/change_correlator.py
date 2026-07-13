@@ -41,6 +41,14 @@ CHANGE_TYPE_WEIGHT = {
     "other": 0.3,
 }
 
+# P2-3.5: 按 change_type 区分的关联时间窗口（单位：分钟）
+# deployment 长尾 2h（线上故障常在发布后 1-2h 才暴露），config_change 1h，其他默认 30 分钟
+_DEFAULT_CHANGE_TYPE_WINDOWS: dict[str, int] = {
+    "deployment": 120,
+    "config_change": 60,
+    "default": 30,
+}
+
 
 def _get_db() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -124,9 +132,20 @@ class ChangeIncidentLink:
 class ChangeCorrelator:
     """变更关联引擎"""
 
-    def __init__(self, time_window_minutes: int = 30) -> None:
+    def __init__(
+        self,
+        time_window_minutes: int = 30,
+        change_type_windows: dict[str, int] | None = None,
+    ) -> None:
         # 关联时间窗口：变更前后各 N 分钟内的 incident 视为候选
         self.time_window = timedelta(minutes=time_window_minutes)
+        # P2-3.5: 按 change_type 区分时间窗口
+        # 用户传入的 change_type_windows 覆盖默认值；time_window_minutes 始终覆盖 default 键（向后兼容）
+        merged = dict(_DEFAULT_CHANGE_TYPE_WINDOWS)
+        if change_type_windows:
+            merged.update(change_type_windows)
+        merged["default"] = time_window_minutes  # 向后兼容：time_window_minutes 覆盖 default
+        self.change_type_windows: dict[str, int] = merged
 
     def ingest(self, changes: list[dict]) -> dict:
         """接收变更事件并存储"""
@@ -178,7 +197,9 @@ class ChangeCorrelator:
 
         Args:
             since_hours: 变更时间范围（向前推 N 小时）
-            time_window_minutes: 变更-incident 时间窗口（默认 self.time_window）
+            time_window_minutes: 覆盖 default 窗口的快捷方式（向后兼容，默认用
+                self.change_type_windows["default"]）。每个 change 仍按其
+                change_type 取对应窗口（P2-3.5）。
         """
         conn = _get_db()
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).isoformat()
@@ -190,15 +211,19 @@ class ChangeCorrelator:
         if not ch_rows:
             return {"links": [], "stats": {"changes": 0, "incidents_linked": 0}}
 
-        # 时间窗口可覆盖
-        window = (
-            timedelta(minutes=time_window_minutes)
-            if time_window_minutes
-            else self.time_window
-        )
-        # 同时向前推足够时间，覆盖 incident 表
+        # P2-3.5: 每个 change 按其 change_type 取对应窗口
+        # time_window_minutes 覆盖 default 窗口（向后兼容），None 表示用内置 default
+        default_override = time_window_minutes
+
+        # inc_cutoff 用最大窗口向前多取 incident，确保不遗漏候选
+        # （某 change 用大窗口时，其候选 incident 可能早于 since_hours 边界）
+        max_window_minutes = max(self.change_type_windows.values())
+        if time_window_minutes is not None:
+            max_window_minutes = max(max_window_minutes, time_window_minutes)
         inc_cutoff = (
-            datetime.now(timezone.utc) - timedelta(hours=since_hours) - window
+            datetime.now(timezone.utc)
+            - timedelta(hours=since_hours)
+            - timedelta(minutes=max_window_minutes)
         ).isoformat()
         inc_rows = conn.execute(
             """SELECT * FROM incidents
@@ -207,11 +232,18 @@ class ChangeCorrelator:
             (inc_cutoff,),
         ).fetchall()
 
+        # P2-3.4: 计算被回滚目标集合，供 _compute_link 加权
+        changes_objs = [self._row_to_change(r) for r in ch_rows]
+        rollback_targets = self._find_rollback_targets(changes_objs)
+
         links: list[ChangeIncidentLink] = []
-        for ch_row in ch_rows:
-            ch = self._row_to_change(ch_row)
+        for ch in changes_objs:
+            # P2-3.5: 每个 change 用自己的窗口
+            ch_window = self._window_for_change(ch.change_type, default_override)
             for inc_row in inc_rows:
-                link = self._compute_link(ch, inc_row, window)
+                link = self._compute_link(
+                    ch, inc_row, ch_window, rollback_targets=rollback_targets
+                )
                 if link and link.correlation_score >= 0.3:
                     links.append(link)
 
@@ -303,8 +335,14 @@ class ChangeCorrelator:
         change: Change,
         inc_row: sqlite3.Row,
         window: timedelta,
+        rollback_targets: set[str] | None = None,
     ) -> ChangeIncidentLink | None:
-        """计算单个 change-incident 关联"""
+        """计算单个 change-incident 关联
+
+        Args:
+            rollback_targets: 被某次回滚变更指向的 change_id 集合（P2-3.4 加权用）。
+                若 change.id 在该集合中，说明它是某回滚动作的原始变更，更可能是根因。
+        """
         inc_started = self._parse_ts(inc_row["started_at"])
         ch_ts = self._parse_ts(change.timestamp)
         time_lag = (inc_started - ch_ts).total_seconds()
@@ -359,6 +397,17 @@ class ChangeCorrelator:
         # 综合分（封顶 1.0）：scope 0.6 + time 0.3 + type 0.225 = 1.125 → 封顶 1.0
         score = min(1.0, scope_score + time_score + type_weight * 0.25)
 
+        # P2-3.4: rollback_of 识别 - 调整关联权重
+        rolled_back_note = ""
+        if change.rollback_of:
+            # 此变更是回滚动作（指向某原始变更），通常不是根因 → 降权
+            score *= 0.3
+            rolled_back_note = "（rollback 动作，已降权）"
+        elif rollback_targets and change.id in rollback_targets:
+            # 此变更被某次回滚动作指向（即它是回滚的原始变更），更可能是根因 → 加权
+            score = min(1.0, score * 1.5)
+            rolled_back_note = "（被回滚指向，加权）"
+
         # 推理说明
         reasoning_parts = []
         reasoning_parts.append(f"scope 重合 {len(overlap)} 项: {', '.join(overlap)}")
@@ -369,6 +418,8 @@ class ChangeCorrelator:
                 f"incident 发生在变更前 {int(-time_lag)}s（可能是触发原因）"
             )
         reasoning_parts.append(f"变更类型 {change.change_type} 权重 {type_weight}")
+        if rolled_back_note:
+            reasoning_parts.append(f"rollback_of 识别{rolled_back_note}")
 
         return ChangeIncidentLink(
             change_id=change.id,
@@ -380,7 +431,13 @@ class ChangeCorrelator:
         )
 
     def suggest_rollback(self, incident_id: str) -> dict:
-        """基于 incident 关联的变更，给出回滚建议"""
+        """基于 incident 关联的变更，给出回滚建议
+
+        P2-3.4: 利用 rollback_of 字段识别回滚变更
+        - 排除 rollback_of 非空的变更（回滚动作本身不是根因候选）
+        - 优先返回被 rollback_of 指向的原始变更
+        - 结果附加 is_rolled_back 字段，标注该变更是否已被回滚
+        """
         changes = self.get_incident_changes(incident_id)
         if not changes:
             return {
@@ -388,11 +445,20 @@ class ChangeCorrelator:
                 "suggested": False,
                 "reason": "无关联变更",
             }
-        # 取相关度最高且非 rollback 类型的变更
+
+        # P2-3.4: 计算被回滚目标集合
+        # get_incident_changes 返回 dict 列表（含 rollback_of 字段，来自 changes 表 SELECT *）
+        rollback_target_ids = {
+            c.get("rollback_of", "") for c in changes if c.get("rollback_of", "")
+        }
+
+        # 取相关度最高且非回滚动作的变更作为根因候选
+        # P2-3.4: 排除 rollback_of 非空的变更（回滚动作本身不是根因）
         candidates = [
             c
             for c in changes
             if c.get("change_type") != "rollback"
+            and not c.get("rollback_of", "")  # 排除回滚动作
             and c.get("correlation_score", 0) >= 0.5
         ]
         if not candidates:
@@ -402,7 +468,18 @@ class ChangeCorrelator:
                 "reason": "关联变更相关度不足",
                 "linked_changes": changes,
             }
-        top = max(candidates, key=lambda c: c.get("correlation_score", 0))
+
+        # P2-3.4: 优先返回被 rollback_of 指向的原始变更
+        # 这些变更已被某次回滚动作标记，更可能是根因
+        rolled_back_candidates = [
+            c for c in candidates if c["id"] in rollback_target_ids
+        ]
+        pool = rolled_back_candidates if rolled_back_candidates else candidates
+        top = max(pool, key=lambda c: c.get("correlation_score", 0))
+
+        # P2-3.4: 标注 top 是否已被回滚
+        is_rolled_back = top["id"] in rollback_target_ids
+
         return {
             "incident_id": incident_id,
             "suggested": True,
@@ -415,6 +492,7 @@ class ChangeCorrelator:
             "ticket_id": top.get("ticket_id", ""),
             "correlation_score": top.get("correlation_score", 0),
             "reasoning": top.get("reasoning", ""),
+            "is_rolled_back": is_rolled_back,  # P2-3.4: 标注是否已被回滚
             "all_linked_changes": changes,
         }
 
@@ -437,6 +515,34 @@ class ChangeCorrelator:
             status=r["status"] or "completed",
             rollback_of=r["rollback_of"] or "",
         )
+
+    @staticmethod
+    def _find_rollback_targets(changes: list[Change]) -> set[str]:
+        """扫描 changes 列表，返回所有被 rollback_of 指向的 change_id 集合
+
+        用于 suggest_rollback 优先级判定与 _compute_link 加权（P2-3.4）。
+        若某变更 A 的 rollback_of 指向变更 B（A 是回滚动作，B 是被回滚的原始变更），
+        则 B.id 会被收录进返回集合。
+        """
+        return {ch.rollback_of for ch in changes if ch.rollback_of}
+
+    def _window_for_change(
+        self, change_type: str, default_override: int | None = None
+    ) -> timedelta:
+        """根据 change_type 取对应关联时间窗口（P2-3.5）
+
+        Args:
+            change_type: 变更类型
+            default_override: 若提供，覆盖 self.change_type_windows["default"]；
+                None 表示用内置 default 窗口
+        """
+        default_minutes = (
+            default_override
+            if default_override is not None
+            else self.change_type_windows["default"]
+        )
+        minutes = self.change_type_windows.get(change_type, default_minutes)
+        return timedelta(minutes=minutes)
 
     @staticmethod
     def _parse_ts(ts: str) -> datetime:
@@ -493,5 +599,18 @@ _correlator: ChangeCorrelator | None = None
 def get_change_correlator() -> ChangeCorrelator:
     global _correlator
     if _correlator is None:
-        _correlator = ChangeCorrelator()
+        # P2-3.5: 从配置加载 change_type_windows（JSON 字符串，空则用默认）
+        ctw: dict[str, int] | None = None
+        try:
+            from app.config import get_settings
+
+            raw = get_settings().change_type_windows.strip()
+            if raw:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    ctw = {k: int(v) for k, v in parsed.items()}
+        except Exception as exc:  # noqa: BLE001 - 配置异常时降级到默认窗口
+            logger.warning("change_type_windows_load_failed", error=str(exc))
+            ctw = None
+        _correlator = ChangeCorrelator(change_type_windows=ctw)
     return _correlator
