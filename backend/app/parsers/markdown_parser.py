@@ -7,6 +7,7 @@
 - 段落归属到最近的标题
 - 支持父级章节引用
 - 生成层级化 Slug 候选
+- 支持编号标题识别（如 "1.1 章节标题"）
 """
 
 from __future__ import annotations
@@ -42,6 +43,9 @@ class MarkdownParser:
         m = re.match(r"^#\s+(.+)$", text, re.MULTILINE)
         if m:
             return m.group(1).strip()
+        m = re.match(r"^(\d+\.)+\s+(.+)$", text, re.MULTILINE)
+        if m:
+            return m.group(2).strip()[:120]
         first = text.strip().split("\n")[0].strip()
         if first:
             return re.sub(r"\*+", "", first).strip()[:120]
@@ -56,7 +60,6 @@ class MarkdownParser:
         heading_tree: list[HeadingNode] = []
         current_section: str | None = None
         current_parent_section: str | None = None
-        all_headings: list[HeadingNode] = []
 
         while i < len(lines):
             line = lines[i]
@@ -65,34 +68,32 @@ class MarkdownParser:
             if heading_match:
                 level = len(heading_match.group(1))
                 title = heading_match.group(2).strip()
-                heading_element = ParsedElement(
-                    type=ElementType.HEADING,
-                    content=title,
-                    section=title,
-                    parent_section=current_parent_section,
-                    metadata={"level": level},
+                self._process_heading(
+                    heading_match, elements, heading_stack, heading_tree,
+                    current_section, current_parent_section, level, title
                 )
-                elements.append(heading_element)
-
-                while heading_stack and heading_stack[-1][0] >= level:
-                    heading_stack.pop()
-
-                new_node = HeadingNode(level=level, title=title)
-                all_headings.append(new_node)
-
-                if heading_stack:
-                    heading_stack[-1][1].children.append(new_node)
-                else:
-                    heading_tree.append(new_node)
-
-                heading_stack.append((level, new_node))
-
                 if level <= 2:
                     current_section = title
                 if level >= 2:
                     parents = [h[1].title for h in heading_stack[:-1]]
                     current_parent_section = parents[-1] if parents else None
+                i += 1
+                continue
 
+            numbered_heading_match = re.match(r"^(\d+(?:\.\d+)*)\s+(.+)$", line)
+            if numbered_heading_match:
+                number_str = numbered_heading_match.group(1)
+                title = numbered_heading_match.group(2).strip()
+                level = len(number_str.split("."))
+                self._process_heading(
+                    numbered_heading_match, elements, heading_stack, heading_tree,
+                    current_section, current_parent_section, level, title
+                )
+                if level <= 2:
+                    current_section = title
+                if level >= 2:
+                    parents = [h[1].title for h in heading_stack[:-1]]
+                    current_parent_section = parents[-1] if parents else None
                 i += 1
                 continue
 
@@ -183,5 +184,37 @@ class MarkdownParser:
 
         return elements, heading_tree
 
+    def _process_heading(
+        self,
+        match,
+        elements: list[ParsedElement],
+        heading_stack: list[tuple[int, HeadingNode]],
+        heading_tree: list[HeadingNode],
+        current_section: str | None,
+        current_parent_section: str | None,
+        level: int,
+        title: str,
+    ) -> None:
+        heading_element = ParsedElement(
+            type=ElementType.HEADING,
+            content=title,
+            section=title,
+            parent_section=current_parent_section,
+            metadata={"level": level},
+        )
+        elements.append(heading_element)
+
+        while heading_stack and heading_stack[-1][0] >= level:
+            heading_stack.pop()
+
+        new_node = HeadingNode(level=level, title=title)
+
+        if heading_stack:
+            heading_stack[-1][1].children.append(new_node)
+        else:
+            heading_tree.append(new_node)
+
+        heading_stack.append((level, new_node))
+
     def _is_special_line(self, line: str) -> bool:
-        return bool(re.match(r"^(#{1,6}\s|```|[-*+]\s|\d+\.\s|\|)", line))
+        return bool(re.match(r"^(#{1,6}\s|```|[-*+]\s|\d+\.\s|\||\d+(?:\.\d+)*\s)", line))

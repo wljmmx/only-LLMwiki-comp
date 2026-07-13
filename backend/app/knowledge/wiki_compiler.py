@@ -573,6 +573,8 @@ class WikiCompiler:
         - H3：二级章节，生成概念页或作为内容段落
         - H4-H6：深层章节，作为内容段落
 
+        每个章节使用 LLM 生成结构化内容，遵循 AGENTS.md 骨架。
+
         Args:
             doc: ParsedDocument（含 heading_tree）
             source_entry: 来源信息
@@ -589,7 +591,7 @@ class WikiCompiler:
 
         tree_with_slugs = generate_slug_for_heading_tree(heading_tree_dicts)
 
-        page_count = self._compile_tree_node(
+        page_count = await self._compile_tree_node_with_llm(
             tree_with_slugs,
             doc,
             source_entry,
@@ -604,7 +606,7 @@ class WikiCompiler:
         )
         return result
 
-    def _compile_tree_node(
+    async def _compile_tree_node_with_llm(
         self,
         nodes: list[dict],
         doc: ParsedDocument,
@@ -614,7 +616,7 @@ class WikiCompiler:
         force: bool = False,
         parent_slug: str | None = None,
     ) -> int:
-        """递归编译标题树节点为 wiki 页面"""
+        """递归编译标题树节点为 wiki 页面（使用 LLM 生成内容）"""
         count = 0
         for node in nodes:
             slug = node.get("slug")
@@ -623,12 +625,17 @@ class WikiCompiler:
 
             if not slug or level > 3:
                 if node.get("children"):
-                    count += self._compile_tree_node(
+                    count += await self._compile_tree_node_with_llm(
                         node["children"], doc, source_entry, result, force=force, parent_slug=slug
                     )
                 continue
 
-            body_md = self._build_section_body(node, parent_slug)
+            try:
+                body_md = await self._llm_compile_section(node, parent_slug)
+            except Exception as e:
+                logger.warning("llm_compile_section_failed", slug=slug, error=str(e))
+                body_md = self._build_section_body(node, parent_slug)
+
             page = WikiPage(
                 slug=slug,
                 title=title,
@@ -655,21 +662,117 @@ class WikiCompiler:
                 result.errors.append(f"{slug}: {e}")
 
             if node.get("children"):
-                count += self._compile_tree_node(
+                count += await self._compile_tree_node_with_llm(
                     node["children"], doc, source_entry, result, force=force, parent_slug=slug
                 )
 
         return count
 
-    def _build_section_body(self, node: dict, parent_slug: str | None = None) -> str:
-        """为章节节点构建 wiki 正文"""
+    async def _llm_compile_section(self, node: dict, parent_slug: str | None = None) -> str:
+        """使用 LLM 将章节内容编译为结构化 wiki 页面
+
+        Args:
+            node: 章节节点字典（含 title, elements, children）
+            parent_slug: 父章节 slug
+
+        Returns:
+            结构化 wiki 页面正文（不含 frontmatter）
+        """
+        title = node.get("title", "")
         level = node.get("level", 1)
-        element_count = node.get("element_count", 0)
+        elements = node.get("elements", [])
+
+        content_text = self._render_elements_to_text(elements)
+
+        children_info = []
+        for child in node.get("children", []):
+            child_slug = child.get("slug")
+            child_title = child.get("title", "")
+            if child_slug:
+                children_info.append(f"- [[{child_slug}|{child_title}]]")
+            else:
+                children_info.append(f"- {child_title}")
+
+        parent_info = f"父级章节：[[{parent_slug}]]" if parent_slug else ""
+
+        system_prompt = """你是 OpsKG Wiki 管理员。把文档章节编译为结构化 Markdown wiki 页面。
+
+严格遵循 AGENTS.md 规定的页面骨架。使用 [[slug]] 双向链接到相关概念。
+
+页面类型：概念页（concept）
+必含章节：概述、原理、应用场景、来源
+
+注意：
+1. 只输出 Markdown 正文，不要 YAML frontmatter，不要 ```md 包裹
+2. 在首次提及相关概念/服务/主机时，用 [[kebab-case-slug]] 形式建链
+3. 不要编造未在原文中出现的具体数值
+4. 保留原文的表格和代码块格式
+5. 使用合适的标题层级（从 ## 开始）"""
+
+        user_prompt = f"""请把以下文档章节编译为一个 wiki 页面。
+
+# 章节标题
+{title}
+
+# 章节层级
+H{level}
+
+# 父级章节
+{parent_info}
+
+# 子章节
+{chr(10).join(children_info) if children_info else "（无）"}
+
+# 原文内容
+{content_text[:4000]}
+
+# 编译要求
+1. 严格按概念页骨架输出 Markdown 章节（## 概述、## 原理、## 应用场景、## 来源）
+2. 在首次提及相关概念时，用 [[kebab-case-slug]] 形式建链
+3. 保留原文中的表格和代码块
+4. 「## 来源」章节引用本页来源即可
+5. 标题用 `# {title}` 起首"""
+
+        try:
+            text = await self._llm_complete(user_prompt, system=system_prompt, temperature=0.2)
+            return self._strip_codefence(text).strip()
+        except Exception as e:
+            logger.error("llm_compile_section_llm_error", title=title, error=str(e))
+            return self._build_section_body(node, parent_slug)
+
+    def _render_elements_to_text(self, elements: list[dict]) -> str:
+        """将元素列表渲染为纯文本"""
+        lines = []
+        for elem in elements:
+            etype = elem.get("type", "")
+            content = elem.get("content", "")
+            if not content.strip():
+                continue
+
+            if etype == "paragraph":
+                lines.append(content)
+            elif etype == "code":
+                lines.append("```")
+                lines.append(content)
+                lines.append("```")
+            elif etype == "table":
+                lines.append(content)
+            elif etype == "list":
+                lines.append(content)
+            elif etype == "heading":
+                h_level = elem.get("metadata", {}).get("level", 1)
+                lines.append("#" * h_level + " " + content)
+        return "\n\n".join(lines)
+
+    def _build_section_body(self, node: dict, parent_slug: str | None = None) -> str:
+        """为章节节点构建 wiki 正文（包含实际内容）"""
+        level = node.get("level", 1)
+        elements = node.get("elements", [])
 
         lines = []
 
         lines.append("## 概述")
-        lines.append(f"本章节为文档结构的一部分，包含 {element_count} 个内容元素。")
+        lines.append(f"本章节为文档结构的一部分，包含 {len(elements)} 个内容元素。")
         lines.append("")
 
         if level > 1:
@@ -689,6 +792,32 @@ class WikiCompiler:
                 else:
                     lines.append(f"- {child_title}")
             lines.append("")
+
+        lines.append("## 内容")
+        lines.append("")
+
+        for elem in elements:
+            etype = elem.get("type", "")
+            content = elem.get("content", "")
+            if not content.strip():
+                continue
+
+            if etype == "paragraph":
+                lines.append(content)
+                lines.append("")
+            elif etype == "code":
+                lines.append(f"```\n{content}\n```")
+                lines.append("")
+            elif etype == "table":
+                lines.append(content)
+                lines.append("")
+            elif etype == "list":
+                lines.append(content)
+                lines.append("")
+            elif etype == "heading":
+                h_level = elem.get("metadata", {}).get("level", level + 1)
+                lines.append("#" * h_level + " " + content)
+                lines.append("")
 
         lines.append("## 来源")
         lines.append("- 文档结构自动生成")

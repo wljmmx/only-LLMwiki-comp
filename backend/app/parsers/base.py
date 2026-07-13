@@ -57,6 +57,16 @@ class HeadingNode:
             "slug": self.slug,
             "children": [c.to_dict() for c in self.children],
             "element_count": len(self.elements),
+            "elements": [
+                {
+                    "type": e.type.value,
+                    "content": e.content,
+                    "section": e.section,
+                    "parent_section": e.parent_section,
+                    "metadata": e.metadata,
+                }
+                for e in self.elements
+            ],
         }
 
 
