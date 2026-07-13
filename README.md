@@ -16,8 +16,9 @@ curl -sSL https://raw.githubusercontent.com/wljmmx/only-LLMwiki-comp/main/docker
 # 2. 启动（拉取 ghcr.io 预构建镜像 + Neo4j）
 docker compose up -d
 
-# 3. 访问 http://localhost（首次自动跳转 Setup Wizard 引导配置）
+# 3. 访问 http://localhost:8080（首次自动跳转 Setup Wizard 引导配置）
 #    Neo4j 控制台 http://localhost:7474（neo4j / password）
+#    注：默认宿主端口 8080，可通过 .env 中 OPSKG_PORT 修改（如 OPSKG_PORT=9982）
 ```
 
 镜像地址：`ghcr.io/wljmmx/only-llmwiki-comp:0.0.1`
@@ -28,7 +29,7 @@ docker compose up -d
 
 ```bash
 docker run -d --name opskg \
-  -p 80:80 \
+  -p 80:8080 \
   -e OPENAI_COMPAT_API_KEY=sk-xxx \
   -e NEO4J_URI=bolt://host.docker.internal:7687 \
   -e NEO4J_PASSWORD=password \
@@ -107,12 +108,13 @@ cp .env.example .env
 docker compose up -d
 
 # 验证
-curl http://localhost/health          # OpsKG 健康检查
-# 浏览器打开 http://localhost        # OpsKG 控制台（首次自动跳转 Setup Wizard）
-# Neo4j 控制台 http://localhost:7474   # neo4j / password
+curl http://localhost:8080/health          # OpsKG 健康检查
+# 浏览器打开 http://localhost:8080        # OpsKG 控制台（首次自动跳转 Setup Wizard）
+# Neo4j 控制台 http://localhost:7474       # neo4j / password
 ```
 
-镜像暴露端口 80（容器内 nginx），健康检查 `curl -fsS http://localhost/health`。
+镜像暴露端口 8080（容器内 nginx），健康检查 `curl -fsS http://localhost:8080/health`。
+宿主端口默认 8080，可通过 `.env` 中 `OPSKG_PORT` 修改（如 `OPSKG_PORT=9982` 映射到宿主 9982）。
 依赖 Neo4j healthy 后才启动 OpsKG，避免冷启动连接失败。
 
 > 💡 **未配置即开箱**：即使 `.env` 留空，容器也能启动；浏览器访问后由 UI Setup Wizard 引导你

@@ -42,10 +42,11 @@ services:
 
   # ========== OpsKG 单镜像（前端 + 后端 + nginx） ==========
   opskg:
-    # 默认拉取 ghcr.io 预构建镜像（一键部署）
-    # 如需从源码构建，注释 image 行，取消注释 build 行
-    image: ghcr.io/wljmmx/only-llmwiki-comp:${OPSKG_VERSION:-0.0.1}
-    # build: .
+    # 从源码构建（确保包含最新修复，如 nginx 非 root 启动修复）
+    # 如需使用 ghcr.io 预构建镜像，注释 build 行，取消注释 image 行
+    # 注：v0.0.1 预构建镜像不含 nginx 非 root 修复，建议从源码构建或使用 latest 标签
+    build: .
+    # image: ghcr.io/wljmmx/only-llmwiki-comp:${OPSKG_VERSION:-0.0.1}
     container_name: opskg
     ports:
       - "${OPSKG_PORT:-8080}:8080"   # nginx（非特权端口，前端 + /api 反代）

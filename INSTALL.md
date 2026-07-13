@@ -136,13 +136,13 @@ cp .env.example .env
 docker compose up -d
 
 # 3. 验证
-curl http://localhost/health          # OpsKG 健康检查
-# 浏览器打开 http://localhost        # OpsKG 控制台（首次自动跳转 Setup Wizard）
+curl http://localhost:8080/health          # OpsKG 健康检查
+# 浏览器打开 http://localhost:8080        # OpsKG 控制台（首次自动跳转 Setup Wizard）
 # Neo4j 控制台：http://localhost:7474  # neo4j / password
 ```
 
 **docker-compose 关键设计**：
-- `opskg` 服务：单镜像，暴露宿主端口 80（容器内 nginx），healthcheck `curl -fsS http://localhost/health`
+- `opskg` 服务：单镜像，暴露宿主端口 8080（容器内 nginx），healthcheck `curl -fsS http://localhost:8080/health`。宿主端口可通过 `.env` 中 `OPSKG_PORT` 修改（如 `OPSKG_PORT=9982`）
 - `neo4j` 服务：5-community，含 healthcheck，`start_period: 30s` 等待 Neo4j 启动
 - `opskg` 通过 `depends_on: neo4j: condition: service_healthy` 等待 Neo4j 健康后再启动
 - 所有环境变量从 `.env` 注入
@@ -152,7 +152,7 @@ curl http://localhost/health          # OpsKG 健康检查
 ```bash
 docker build -t opskg:latest .
 docker run -d --name opskg \
-  -p 80:80 \
+  -p 80:8080 \
   -e LLM_BACKEND=openai_compat \
   -e OPENAI_COMPAT_API_KEY=sk-xxx \
   -e NEO4J_URI=bolt://host.docker.internal:7687 \
@@ -224,7 +224,7 @@ docker compose --env-file .env.prod up -d
 
 ```bash
 docker run -d --name opskg \
-  -p 80:80 \
+  -p 80:8080 \
   -v /path/to/my-nginx.conf:/etc/nginx/conf.d/default.conf:ro \
   ... \
   opskg:latest

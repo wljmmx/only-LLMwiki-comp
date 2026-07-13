@@ -281,7 +281,7 @@ jobs:
             - **镜像地址**: `ghcr.io/wljmmx/only-llmwiki-comp:${{ github.ref_name }}`
             - **架构**: linux/amd64, linux/arm64
             - **许可证**: Apache-2.0
-            - **健康检查**: `curl -fsS http://localhost/health`
+            - **健康检查**: `curl -fsS http://localhost:8080/health`
 
             详细使用说明见 [INSTALL.md](https://github.com/wljmmx/only-LLMwiki-comp/blob/${{ github.ref_name }}/INSTALL.md)。
           draft: false
