@@ -79,6 +79,8 @@ describe('WikiHealthView.vue', () => {
     pinia = createPinia()
     setActivePinia(pinia)
     vi.clearAllMocks()
+    // P2-14: onMounted 自动调用 handleRunLint，需要 mock 默认 resolve
+    ;(runWikiLint as any).mockResolvedValue(sampleLintReport)
     vi.spyOn(console, 'error').mockImplementation(() => {})
   })
   afterEach(() => {
@@ -91,21 +93,23 @@ describe('WikiHealthView.vue', () => {
     })
   }
 
-  it('初始状态：activeTab=lint、lintReport=null、各列表空', () => {
+  it('初始状态：activeTab=lint、lintReport=null、各列表空', async () => {
     const wrapper = mountView()
+    await flushPromises()
     const vm = wrapper.vm as any
     expect(vm.activeTab).toBe('lint')
-    expect(vm.lintReport).toBe(null)
+    // P2-14: onMounted 自动调用 handleRunLint，mock 已 resolve，lintReport 应为 mockLintReport
+    expect(vm.lintReport).toEqual(sampleLintReport)
     expect(vm.stalePages).toEqual([])
     expect(vm.orphanPages).toEqual([])
     expect(vm.orphanLoaded).toBe(false)
     expect(vm.lintLoading).toBe(false)
   })
 
-  it('onMounted 不自动加载 lint（仅用户点击触发）', async () => {
+  it('onMounted 自动加载 lint（P2-14）', async () => {
     mountView()
     await flushPromises()
-    expect(runWikiLint).not.toHaveBeenCalled()
+    expect(runWikiLint).toHaveBeenCalledWith(true)
     expect(getWikiStale).not.toHaveBeenCalled()
     expect(getWikiOrphans).not.toHaveBeenCalled()
   })

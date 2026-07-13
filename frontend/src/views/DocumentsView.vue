@@ -591,7 +591,7 @@ onMounted(() => {
       </NDataTable>
     </div>
 
-    <NDrawer v-model:show="drawerVisible" :width="640" placement="right">
+    <NDrawer v-model:show="drawerVisible" :width="720" placement="right">
       <NDrawerContent title="文档详情" :closable="true">
         <template v-if="currentDoc">
           <NTabs v-model:value="drawerTab" type="line" animated>

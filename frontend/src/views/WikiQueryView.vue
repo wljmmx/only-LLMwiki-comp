@@ -5,13 +5,8 @@ import { NInput, NButton, NCard, NTag, NSpace, NAlert, NDivider } from 'naive-ui
 import { queryWikiStream } from '@/api/wiki'
 import type { WikiQueryResult, ChatHistoryEntry } from '@/api/wiki'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
-import {
-  computeFeedbackFingerprint,
-  getFeedback,
-  setFeedback as persistFeedback,
-  clearFeedback as removeFeedback,
-  type FeedbackRating,
-} from '@/utils/queryFeedback'
+import { computeFeedbackFingerprint, getFeedback, setFeedback as persistFeedback, clearFeedback as removeFeedback, type FeedbackRating } from '@/utils/queryFeedback'
+import { getTypeLabel } from '@/utils/format'
 import AppIcon from '@/components/common/AppIcon.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
@@ -457,7 +452,7 @@ onUnmounted(() => {
                   <div class="recalled-info">
                     <span class="recalled-title">{{ page.title }}</span>
                     <n-tag size="small" type="info" class="recalled-type">
-                      {{ page.type }}
+                      {{ getTypeLabel(page.type) }}
                     </n-tag>
                   </div>
                   <n-tag :type="getScoreType(page.score)" size="small">

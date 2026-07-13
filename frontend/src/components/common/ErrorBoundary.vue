@@ -8,7 +8,8 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  showStack: true,
+  // P2-3: 生产环境默认隐藏堆栈，避免暴露内部路径
+  showStack: !import.meta.env.PROD,
 })
 
 const emit = defineEmits<{

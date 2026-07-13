@@ -247,7 +247,7 @@ onMounted(() => {
     </n-card>
 
     <!-- 详情抽屉 -->
-    <n-drawer v-model:show="detailVisible" :width="600" placement="right">
+    <n-drawer v-model:show="detailVisible" :width="720" placement="right">
       <n-drawer-content title="变更详情" closable>
         <div v-if="detailLoading" class="loading-container">
           <n-spin size="large" />

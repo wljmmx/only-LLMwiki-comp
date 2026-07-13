@@ -66,3 +66,18 @@ export function formatRelativeTime(ts: number): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getMonth() + 1}-${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
+
+/** P2-20: Wiki 页面类型中文标签映射（统一全视图翻译） */
+export const typeLabelMap: Record<string, string> = {
+  entity: '实体',
+  concept: '概念',
+  incident: '事件',
+  runbook: '运行手册',
+  service: '服务',
+  host: '主机',
+}
+
+/** P2-20: 获取类型中文标签，未知类型返回原文 */
+export function getTypeLabel(type: string): string {
+  return typeLabelMap[type] || type
+}

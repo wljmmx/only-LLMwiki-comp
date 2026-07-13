@@ -244,7 +244,7 @@ onMounted(() => {
             clearable
           />
           <n-button quaternary size="small" :loading="loading" @click="loadTopology">刷新</n-button>
-          <n-button size="small" type="warning" :loading="rebuilding" @click="handleRebuild">
+          <n-button size="small" type="error" :loading="rebuilding" @click="handleRebuild">
             重建拓扑
           </n-button>
         </n-space>
@@ -384,7 +384,7 @@ onMounted(() => {
     </n-card>
 
     <!-- 节点详情抽屉 -->
-    <n-drawer v-model:show="detailVisible" :width="600" placement="right">
+    <n-drawer v-model:show="detailVisible" :width="720" placement="right">
       <n-drawer-content title="节点详情" closable>
         <div v-if="detailLoading" class="loading-container">
           <n-spin size="large" />

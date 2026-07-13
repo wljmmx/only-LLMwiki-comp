@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import DOMPurify from 'dompurify'
 import { searchKnowledge } from '@/api/search'
+import { getTypeLabel } from '@/utils/format'
 import type { SearchResponse, SearchResult, SearchSuggestions } from '@/types/api'
 
 const router = useRouter()
@@ -185,7 +186,7 @@ function handleResultClick(item: SearchResult): void {
             <p class="result-snippet" v-html="highlightSnippet(item.snippet, query)"></p>
             <div class="card-footer">
               <n-tag size="small" type="info">
-                {{ item.type }}
+                {{ getTypeLabel(item.type) }}
               </n-tag>
             </div>
           </n-card>
