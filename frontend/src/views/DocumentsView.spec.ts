@@ -20,9 +20,11 @@ vi.mock('@/api/documents', () => ({
   deleteDocument: vi.fn(),
   parseDocument: vi.fn(),
   getDocumentContent: vi.fn(),
+  getPipelineStatus: vi.fn(),
+  compileToWiki: vi.fn(),
 }))
 
-import { listDocuments, searchDocuments, deleteDocument, getDocumentContent } from '@/api/documents'
+import { listDocuments, searchDocuments, deleteDocument, getDocumentContent, compileToWiki } from '@/api/documents'
 import DocumentsView from '@/views/DocumentsView.vue'
 import '@/test/setup'
 
@@ -120,8 +122,7 @@ describe('DocumentsView.vue', () => {
   it('handleDelete 成功调用 deleteDocument 并刷新列表', async () => {
     ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
     ;(deleteDocument as any).mockResolvedValue({ deleted: true })
-    // handleDelete 用 window.confirm，mock 为 true
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    // P1-13: 确认逻辑已移至 NPopconfirm UI 层，handleDelete 直接执行删除
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -132,26 +133,85 @@ describe('DocumentsView.vue', () => {
     expect(listDocuments).toHaveBeenCalled() // 刷新
   })
 
-  it('handleDelete 用户取消确认时不调用 deleteDocument', async () => {
+  it('handleDelete 成功后清空该行在 checkedRowKeys 中的项', async () => {
     ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
     ;(deleteDocument as any).mockResolvedValue({ deleted: true })
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
+    vm.checkedRowKeys = ['d1', 'd2']
     await vm.handleDelete(sampleDoc)
-    expect(deleteDocument).not.toHaveBeenCalled()
+    expect(vm.checkedRowKeys).toEqual(['d2'])
   })
 
   it('handleDelete 失败时 message.error', async () => {
     ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
     ;(deleteDocument as any).mockRejectedValue(new Error('forbidden'))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
     await vm.handleDelete(sampleDoc)
     expect(mockMessage.error).toHaveBeenCalledWith('删除失败')
+  })
+
+  it('P1-14: handleBatchDelete 批量删除并清空选中', async () => {
+    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(deleteDocument as any).mockResolvedValue({ deleted: true })
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.checkedRowKeys = ['d1', 'd2', 'd3']
+    ;(listDocuments as any).mockClear()
+    await vm.handleBatchDelete()
+    expect(deleteDocument).toHaveBeenCalledTimes(3)
+    expect(deleteDocument).toHaveBeenCalledWith('d1')
+    expect(deleteDocument).toHaveBeenCalledWith('d2')
+    expect(deleteDocument).toHaveBeenCalledWith('d3')
+    expect(mockMessage.success).toHaveBeenCalledWith('成功删除 3 个文档')
+    expect(vm.checkedRowKeys).toEqual([])
+    expect(listDocuments).toHaveBeenCalled()
+  })
+
+  it('P1-14: handleBatchDelete 部分失败时给出 warning', async () => {
+    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(deleteDocument as any)
+      .mockResolvedValueOnce({ deleted: true })
+      .mockRejectedValueOnce(new Error('fail'))
+      .mockResolvedValueOnce({ deleted: true })
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.checkedRowKeys = ['d1', 'd2', 'd3']
+    await vm.handleBatchDelete()
+    expect(mockMessage.warning).toHaveBeenCalledWith('批量删除部分失败：成功 2 / 失败 1')
+    expect(vm.checkedRowKeys).toEqual([])
+  })
+
+  it('P1-14: handleBatchCompile 批量调用 compileToWiki 并清空选中', async () => {
+    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(compileToWiki as any).mockResolvedValue({ pages_created: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.checkedRowKeys = ['d1', 'd2']
+    ;(listDocuments as any).mockClear()
+    await vm.handleBatchCompile()
+    expect(compileToWiki).toHaveBeenCalledTimes(2)
+    expect(compileToWiki).toHaveBeenCalledWith('d1')
+    expect(compileToWiki).toHaveBeenCalledWith('d2')
+    expect(mockMessage.success).toHaveBeenCalledWith('成功编译 2 个文档')
+    expect(vm.checkedRowKeys).toEqual([])
+    expect(listDocuments).toHaveBeenCalled()
+  })
+
+  it('P1-14: handleClearSelection 清空选中', async () => {
+    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.checkedRowKeys = ['d1', 'd2']
+    vm.handleClearSelection()
+    expect(vm.checkedRowKeys).toEqual([])
   })
 
   it('P2-11：handleSearchInput 非空时防抖后调用 searchDocuments 服务端搜索', async () => {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, h } from 'vue'
-import { NGrid, NGi, NCard, NStatistic, NDataTable, NSpin, NTag } from 'naive-ui'
+import { NGrid, NGi, NCard, NStatistic, NDataTable, NSkeleton, NTag } from 'naive-ui'
 import { getDocumentStats, listDocuments } from '@/api/documents'
 import { getReviewStats, getReviewQueue } from '@/api/review'
 import { getSearchStats } from '@/api/search'
@@ -125,7 +125,26 @@ onMounted(() => {
 
 <template>
   <div class="dashboard-container">
-    <NSpin :show="loading" size="large">
+    <template v-if="loading">
+      <!-- P1-3: 加载中骨架屏，模拟 4 个统计卡片 + 2 个列表卡片布局，最小化 CLS -->
+      <NGrid :cols="4" :x-gap="16" :y-gap="16" class="stats-grid">
+        <NGi v-for="n in 4" :key="`stat-skel-${n}`">
+          <NCard>
+            <NSkeleton text :width="80" :height="14" />
+            <NSkeleton text :width="120" :height="32" style="margin-top: 12px" />
+          </NCard>
+        </NGi>
+      </NGrid>
+      <NGrid :cols="2" :x-gap="16" :y-gap="16" class="content-grid">
+        <NGi v-for="n in 2" :key="`content-skel-${n}`">
+          <NCard>
+            <NSkeleton text :width="120" :height="18" style="margin-bottom: 16px" />
+            <NSkeleton text :repeat="5" />
+          </NCard>
+        </NGi>
+      </NGrid>
+    </template>
+    <template v-else>
       <NGrid :cols="4" :x-gap="16" :y-gap="16" class="stats-grid">
         <NGi>
           <NCard>
@@ -175,7 +194,7 @@ onMounted(() => {
           </NCard>
         </NGi>
       </NGrid>
-    </NSpin>
+    </template>
   </div>
 </template>
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { NSplit, NTree, NCard, NTag, NSpace, NSpin, NEmpty, NThing, NButton, NTooltip } from 'naive-ui'
+import { NSplit, NTree, NCard, NTag, NSpace, NSkeleton, NEmpty, NThing, NButton, NTooltip } from 'naive-ui'
 import type { TreeOption } from 'naive-ui'
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
 import { renderWikiMarkdown, parseSlugFromHash } from '@/utils/wikiRender'
@@ -214,7 +214,10 @@ onMounted(() => {
           <div class="tree-header">
             <span class="tree-title">Wiki 页面</span>
           </div>
-          <NSpin v-if="treeLoading" class="tree-loading" />
+          <!-- P1-3: 左侧页面树加载用骨架列表占位 -->
+          <div v-if="treeLoading" class="tree-skeleton">
+            <NSkeleton text :repeat="8" :height="20" />
+          </div>
           <NTree
             v-else
             :data="treeData"
@@ -229,8 +232,12 @@ onMounted(() => {
       </template>
       <template #2>
         <NCard class="content-panel" size="large">
-          <div v-if="contentLoading" class="content-loading">
-            <NSpin size="large" />
+          <!-- P1-3: 右侧内容加载用骨架段落占位（标题 + 元信息 + 正文段落） -->
+          <div v-if="contentLoading" class="content-skeleton">
+            <NSkeleton text :width="280" :height="32" style="margin-bottom: 16px" />
+            <NSkeleton text :width="200" :height="14" style="margin-bottom: 24px" />
+            <NSkeleton text :repeat="6" style="margin-bottom: 12px" />
+            <NSkeleton text width="60%" />
           </div>
           <template v-else-if="currentPage">
             <div class="page-header">
@@ -401,10 +408,8 @@ onMounted(() => {
   padding-right: 4px;
 }
 
-.tree-loading {
-  display: flex;
-  justify-content: center;
-  padding: 40px 0;
+.tree-skeleton {
+  padding: 8px 0;
 }
 
 .content-panel {
@@ -417,11 +422,8 @@ onMounted(() => {
   padding: 32px 40px;
 }
 
-.content-loading {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 300px;
+.content-skeleton {
+  padding: 8px 0;
 }
 
 .page-header {

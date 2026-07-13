@@ -31,6 +31,8 @@ import {
 } from '@/api/versions'
 import { getAuthToken } from '@/api/index'
 import { formatDateTime } from '@/utils/format'
+import PageHeader from '@/components/common/PageHeader.vue'
+import LoadingState from '@/components/common/LoadingState.vue'
 
 const message = useMessage()
 
@@ -207,14 +209,10 @@ onMounted(() => {
 
 <template>
   <div class="versions-view">
-    <div class="page-header">
-      <h2 class="page-title">版本控制</h2>
-      <p class="page-desc">
-        文档版本历史、Diff 对比、回滚。基于 doc_key（如
-        <code>wiki:nginx-502</code>
-        ）查询版本，回滚会创建新版本不删除历史。
-      </p>
-    </div>
+    <PageHeader
+      title="版本控制"
+      description="文档版本历史、Diff 对比、回滚。基于 doc_key（如 wiki:nginx-502）查询版本，回滚会创建新版本不删除历史。"
+    />
 
     <n-card :bordered="true" class="search-card">
       <n-space align="center" :size="12" wrap>
@@ -261,9 +259,7 @@ onMounted(() => {
         </n-space>
       </template>
 
-      <div v-if="loading" class="loading-container">
-        <n-spin size="large" />
-      </div>
+      <LoadingState v-if="loading" />
 
       <n-empty
         v-else-if="!versions.length"
@@ -326,9 +322,7 @@ onMounted(() => {
     <!-- 详情抽屉 -->
     <n-drawer v-model:show="detailVisible" :width="720" placement="right">
       <n-drawer-content title="版本详情" closable>
-        <div v-if="detailLoading" class="loading-container">
-          <n-spin size="large" />
-        </div>
+        <LoadingState v-if="detailLoading" />
         <template v-else-if="selectedVersion">
           <n-descriptions :column="1" bordered label-placement="left" size="small">
             <n-descriptions-item label="doc_key">
@@ -390,9 +384,7 @@ onMounted(() => {
       :title="contentPreview ? `v${contentPreview.version} 内容预览` : '内容预览'"
       style="width: 800px; max-width: 95vw"
     >
-      <div v-if="contentLoading" class="loading-container">
-        <n-spin size="large" />
-      </div>
+      <LoadingState v-if="contentLoading" />
       <template v-else-if="contentPreview">
         <n-code
           :code="contentPreview.content || ''"
@@ -450,9 +442,7 @@ onMounted(() => {
         </n-space>
       </div>
 
-      <div v-if="diffLoading" class="loading-container">
-        <n-spin size="large" />
-      </div>
+      <LoadingState v-if="diffLoading" />
 
       <n-code
         v-else-if="diffResult"
@@ -478,22 +468,6 @@ onMounted(() => {
   margin: 0 auto;
 }
 
-.page-header {
-  margin-bottom: 24px;
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  margin: 0 0 8px;
-}
-
-.page-desc {
-  font-size: 14px;
-  color: var(--n-text-color-2, #6b7280);
-  margin: 0;
-}
-
 .search-card {
   margin-bottom: 16px;
 }
@@ -506,15 +480,6 @@ onMounted(() => {
 .wiki-docs-label {
   font-size: 12px;
   color: var(--n-text-color-2, #6b7280);
-}
-
-.loading-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 0;
-  gap: 16px;
 }
 
 .doc-key {

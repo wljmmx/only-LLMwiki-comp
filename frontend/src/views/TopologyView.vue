@@ -25,6 +25,7 @@ import {
   type TopologyNode,
   type TopologyEdge,
 } from '@/api/aiops'
+import { nodeTypeColor } from '@/utils/statusMap'
 
 const message = useMessage()
 
@@ -62,11 +63,7 @@ const impactLoading = ref(false)
 const impactForNode = ref<string>('')
 const impactResult = ref<any>(null)
 
-const nodeTypeColor: Record<string, string> = {
-  Host: '#2080f0',
-  Service: '#f0a020',
-  Component: '#18a058',
-}
+// 节点类型色（P1-19: 已迁移至 @/utils/statusMap，引用 CSS 变量）
 
 const nodeTypeBg: Record<string, string> = {
   Host: 'rgba(32, 128, 240, 0.15)',
@@ -283,7 +280,7 @@ onMounted(() => {
                 :x="(layoutNodes.placed[edge.source].x + layoutNodes.placed[edge.target].x) / 2"
                 :y="(layoutNodes.placed[edge.source].y + layoutNodes.placed[edge.target].y) / 2 - 4"
                 font-size="10"
-                fill="#666"
+                fill="currentColor"
                 text-anchor="middle"
               >
                 {{ edge.relation }}
@@ -313,7 +310,12 @@ onMounted(() => {
               :key="name"
               :transform="`translate(${item.x}, ${item.y})`"
               class="node-group"
+              tabindex="0"
+              role="button"
+              :aria-label="item.node.name"
               @click="openNodeDetail(item.node)"
+              @keydown.enter="openNodeDetail(item.node)"
+              @keydown.space.prevent="openNodeDetail(item.node)"
             >
               <rect
                 :x="-70"
@@ -325,7 +327,14 @@ onMounted(() => {
                 :stroke="nodeTypeColor[item.node.type] || '#999'"
                 stroke-width="1.5"
               />
-              <text x="0" y="-4" font-size="12" font-weight="600" fill="#333" text-anchor="middle">
+              <text
+                x="0"
+                y="-4"
+                font-size="12"
+                font-weight="600"
+                fill="currentColor"
+                text-anchor="middle"
+              >
                 {{
                   item.node.name.length > 16 ? item.node.name.slice(0, 14) + '…' : item.node.name
                 }}
@@ -523,9 +532,16 @@ onMounted(() => {
   background: transparent;
 }
 
+/* P0-2: 边标签文字色跟随主题（currentColor 引用） */
+.edges {
+  color: var(--opskg-text-2);
+}
+
 .node-group {
   cursor: pointer;
   transition: transform 0.15s ease;
+  /* P0-2: 节点名文字色跟随主题（currentColor 引用） */
+  color: var(--opskg-text-1);
 }
 
 .node-group:hover rect {
@@ -533,11 +549,17 @@ onMounted(() => {
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
 }
 
+/* P1-18: 键盘聚焦可见样式 */
+.node-group:focus-visible {
+  outline: 2px solid var(--opskg-color-primary);
+  outline-offset: 2px;
+}
+
 .legend {
   position: absolute;
   top: 16px;
   right: 16px;
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--opskg-bg-elevated);
   border: 1px solid var(--n-border-color, #e5e5e5);
   border-radius: 6px;
   padding: 8px 12px;

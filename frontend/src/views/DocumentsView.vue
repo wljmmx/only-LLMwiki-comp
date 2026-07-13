@@ -19,10 +19,11 @@ import {
   NSteps,
   NStep,
   NProgress,
+  NPopconfirm,
   useMessage,
 } from 'naive-ui'
 import type { UploadCustomRequestOptions } from 'naive-ui'
-import { listDocuments, deleteDocument, parseDocument, getDocumentContent, searchDocuments, getPipelineStatus } from '@/api/documents'
+import { listDocuments, deleteDocument, parseDocument, getDocumentContent, searchDocuments, getPipelineStatus, compileToWiki } from '@/api/documents'
 import { formatFileSize, formatDateTime as formatDateTimeUtil } from '@/utils/format'
 import { useSse } from '@/composables/useSse'
 import type { SseEvent } from '@/composables/useSse'
@@ -41,6 +42,10 @@ const isSearching = ref(false)
 const compilingId = ref<string | null>(null)
 const formatFilter = ref<string>('')
 const statusFilter = ref<string>('')
+
+// P1-14: 文档批量操作选中状态
+const checkedRowKeys = ref<string[]>([])
+const batchLoading = ref(false)
 
 // P3-2: 流水线步骤状态
 interface PipelineStep {
@@ -101,6 +106,11 @@ const statusText: Record<string, string> = {
 }
 
 const columns = [
+  // P1-14: 批量选择列
+  {
+    type: 'selection' as const,
+    width: 50,
+  },
   {
     title: '文件名',
     key: 'filename',
@@ -169,10 +179,20 @@ const columns = [
               },
               { default: () => '编译为Wiki' },
             ),
+            // P1-13: 删除按钮外裹 NPopconfirm，替代 window.confirm
             h(
-              NButton,
-              { size: 'small', type: 'error', quaternary: true, onClick: () => handleDelete(row) },
-              { default: () => '删除' },
+              NPopconfirm,
+              {
+                onPositiveClick: () => handleDelete(row),
+              },
+              {
+                trigger: () => h(
+                  NButton,
+                  { size: 'small', type: 'error', quaternary: true },
+                  { default: () => '删除' },
+                ),
+                default: () => `确定删除文档 ${row.filename}？此操作不可撤销`,
+              },
             ),
           ],
         },
@@ -384,18 +404,73 @@ async function loadPipelineStatus(docId: string) {
   }
 }
 
+// P1-13: 实际执行单行删除（确认逻辑由 NPopconfirm 处理）
 async function handleDelete(doc: DocumentMeta) {
-  if (!window.confirm(`确定要删除文档 "${doc.filename}" 吗？`)) {
-    return
-  }
   try {
     await deleteDocument(doc.id)
     message.success('删除成功')
+    // P1-14: 清空该行在 checkedRowKeys 中的项，防止脏数据
+    checkedRowKeys.value = checkedRowKeys.value.filter((k) => k !== doc.id)
     fetchDocuments()
   } catch (err) {
     message.error('删除失败')
     console.error(err)
   }
+}
+
+// P1-14: 批量删除文档（确认逻辑由工具栏 NPopconfirm 处理）
+async function handleBatchDelete() {
+  const ids = [...checkedRowKeys.value]
+  if (ids.length === 0) return
+  batchLoading.value = true
+  try {
+    const results = await Promise.allSettled(ids.map((id) => deleteDocument(id)))
+    const failed = results.filter((r) => r.status === 'rejected')
+    if (failed.length === 0) {
+      message.success(`成功删除 ${ids.length} 个文档`)
+    } else if (failed.length === ids.length) {
+      message.error('批量删除全部失败')
+    } else {
+      message.warning(`批量删除部分失败：成功 ${ids.length - failed.length} / 失败 ${failed.length}`)
+    }
+    checkedRowKeys.value = []
+    fetchDocuments()
+  } catch (err) {
+    message.error('批量删除失败')
+    console.error(err)
+  } finally {
+    batchLoading.value = false
+  }
+}
+
+// P1-14: 批量编译为 Wiki（调用非流式 compileToWiki API）
+async function handleBatchCompile() {
+  const ids = [...checkedRowKeys.value]
+  if (ids.length === 0) return
+  batchLoading.value = true
+  try {
+    const results = await Promise.allSettled(ids.map((id) => compileToWiki(id)))
+    const failed = results.filter((r) => r.status === 'rejected')
+    if (failed.length === 0) {
+      message.success(`成功编译 ${ids.length} 个文档`)
+    } else if (failed.length === ids.length) {
+      message.error('批量编译全部失败')
+    } else {
+      message.warning(`批量编译部分失败：成功 ${ids.length - failed.length} / 失败 ${failed.length}`)
+    }
+    checkedRowKeys.value = []
+    fetchDocuments()
+  } catch (err) {
+    message.error('批量编译失败')
+    console.error(err)
+  } finally {
+    batchLoading.value = false
+  }
+}
+
+// P1-14: 取消批量选择
+function handleClearSelection() {
+  checkedRowKeys.value = []
 }
 
 function handlePageChange(page: number) {
@@ -464,10 +539,38 @@ onMounted(() => {
     </div>
 
     <div class="table-container">
+      <!-- P1-14: 批量操作工具栏（仅在有选中项时显示） -->
+      <div v-if="checkedRowKeys.length > 0" class="batch-toolbar">
+        <NSpace align="center" size="medium">
+          <span class="batch-count">已选 {{ checkedRowKeys.length }} 项</span>
+          <NPopconfirm @positive-click="handleBatchDelete">
+            <template #trigger>
+              <NButton type="error" :loading="batchLoading" :disabled="batchLoading">
+                批量删除
+              </NButton>
+            </template>
+            确定删除选中的 {{ checkedRowKeys.length }} 个文档？此操作不可撤销
+          </NPopconfirm>
+          <NButton
+            type="primary"
+            :loading="batchLoading"
+            :disabled="batchLoading"
+            @click="handleBatchCompile"
+          >
+            批量编译为 Wiki
+          </NButton>
+          <NButton :disabled="batchLoading" @click="handleClearSelection">
+            取消选择
+          </NButton>
+        </NSpace>
+      </div>
+
       <NDataTable
+        v-model:checked-row-keys="checkedRowKeys"
         :columns="columns"
         :data="documents"
         :loading="loading"
+        :row-key="(row: DocumentMeta) => row.id"
         :pagination="isSearching
           ? false
           : {
@@ -660,6 +763,21 @@ onMounted(() => {
   border: 1px solid var(--n-border-color, #e5e7eb);
   padding: 16px;
   overflow: hidden;
+}
+
+/* P1-14: 批量操作工具栏 */
+.batch-toolbar {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: var(--n-color-target, #f0f9ff);
+  border: 1px solid var(--n-border-color, #e5e7eb);
+  border-radius: 6px;
+}
+
+.batch-toolbar .batch-count {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--n-text-color, #111827);
 }
 
 .doc-info {

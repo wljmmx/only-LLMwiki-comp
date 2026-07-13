@@ -12,7 +12,7 @@ import {
   NGrid,
   NGi,
   NSelect,
-  NSpin,
+  NSkeleton,
   NEmpty,
   useMessage,
 } from 'naive-ui'
@@ -239,19 +239,26 @@ onMounted(() => {
 
 <template>
   <div class="review-view">
-    <NSpin :show="statsLoading">
-      <NGrid :cols="4" :x-gap="16" :y-gap="16" class="stats-grid">
-        <NGi v-for="card in statCards" :key="card.label">
-          <NCard>
-            <NStatistic :label="card.label" :value="card.value">
-              <template #prefix>
-                <span :style="{ color: card.color }">●</span>
-              </template>
-            </NStatistic>
-          </NCard>
-        </NGi>
-      </NGrid>
-    </NSpin>
+    <!-- P1-3: 统计卡加载用骨架卡片占位 -->
+    <NGrid v-if="statsLoading" :cols="4" :x-gap="16" :y-gap="16" class="stats-grid">
+      <NGi v-for="n in 4" :key="`stat-skel-${n}`">
+        <NCard>
+          <NSkeleton text :width="60" :height="14" />
+          <NSkeleton text :width="100" :height="28" style="margin-top: 12px" />
+        </NCard>
+      </NGi>
+    </NGrid>
+    <NGrid v-else :cols="4" :x-gap="16" :y-gap="16" class="stats-grid">
+      <NGi v-for="card in statCards" :key="card.label">
+        <NCard>
+          <NStatistic :label="card.label" :value="card.value">
+            <template #prefix>
+              <span :style="{ color: card.color }">●</span>
+            </template>
+          </NStatistic>
+        </NCard>
+      </NGi>
+    </NGrid>
 
     <NCard class="table-card">
       <div class="action-bar">
@@ -272,11 +279,23 @@ onMounted(() => {
         </NSpace>
       </div>
 
+      <!-- P1-3: 列表加载用表格行骨架占位 -->
+      <div v-if="loading" class="table-skeleton">
+        <div v-for="n in 5" :key="n" class="table-skeleton-row">
+          <NSkeleton text :width="16" :height="16" />
+          <NSkeleton text class="col-title" />
+          <NSkeleton text :width="80" />
+          <NSkeleton text :width="60" />
+          <NSkeleton text :width="140" />
+          <NSkeleton text :width="140" />
+          <NSkeleton text :width="100" />
+        </div>
+      </div>
       <NDataTable
+        v-else
         v-model:checked-row-keys="checkedRowKeys"
         :columns="columns"
         :data="items"
-        :loading="loading"
         :row-key="(row: ReviewItem) => row.id"
         :pagination="{
           itemCount: total,
@@ -336,6 +355,21 @@ onMounted(() => {
   margin-bottom: 16px;
   display: flex;
   justify-content: space-between;
+  align-items: center;
+}
+
+/* P1-3: 列表加载骨架行，列宽对齐 NDataTable 列（selection/title/type/status/source/date/actions） */
+.table-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 8px 0;
+}
+
+.table-skeleton-row {
+  display: grid;
+  grid-template-columns: 24px 1fr 100px 80px 160px 160px 120px;
+  gap: 12px;
   align-items: center;
 }
 
