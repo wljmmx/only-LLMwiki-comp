@@ -622,10 +622,24 @@ def _tool_get_topology(args: dict) -> str:
 def _tool_infer_topology(args: dict) -> str:
     min_cooccur = int(args.get("min_cooccurrence", 2))
     min_conf = float(args.get("min_confidence", 0.3))
+
+    # P2-5.5 推送进度通知（SSE 端点会捕获；普通 JSON-RPC 路径为 no-op）
+    from app.mcp.progress import emit_progress
+
+    emit_progress("开始推断拓扑边", 0, 4)
+    emit_progress(f"读取拓扑节点（min_cooccurrence={min_cooccur}, min_confidence={min_conf}）", 1, 4)
+    emit_progress("计算节点对共现并写入推断边（O(N²)，可能耗时）", 2, 4)
+
     result = get_topology_builder().infer_cooccurrence_edges(
         min_cooccurrence=min_cooccur,
         min_confidence=min_conf,
     )
+    emit_progress(
+        f"完成：评估 {result['considered_pairs']} 对，推断 {result['inferred_edges']} 条边，跳过 {result['skipped_existing']} 条已存在",
+        4,
+        4,
+    )
+
     return json.dumps(
         {
             "considered_pairs": result["considered_pairs"],
@@ -639,7 +653,19 @@ def _tool_infer_topology(args: dict) -> str:
 
 
 def _tool_merge_topology_aliases(args: dict) -> str:
+    # P2-5.5 推送进度通知
+    from app.mcp.progress import emit_progress
+
+    emit_progress("开始合并别名节点", 0, 3)
+    emit_progress("检测别名候选并重定向边（可能涉及 N×E 次 SQL）", 1, 3)
+
     result = get_topology_builder().merge_aliases()
+    emit_progress(
+        f"完成：合并 {result['merged_pairs']} 对别名，移除 {result['removed_nodes']} 节点，重定向 {result['redirected_edges']} 条边",
+        3,
+        3,
+    )
+
     return json.dumps(
         {
             "merged_pairs": result["merged_pairs"],
@@ -656,7 +682,21 @@ def _tool_impact_analysis(args: dict) -> str:
     node_name = args.get("node_name", "")
     if not node_name:
         return json.dumps({"error": "node_name 不能为空"}, ensure_ascii=False)
+
+    # P2-5.5 推送进度通知
+    from app.mcp.progress import emit_progress
+
+    emit_progress(f"开始影响分析：节点 {node_name}", 0, 3)
+    emit_progress("BFS 遍历邻居（depth=2）+ 冗余度计算", 1, 3)
+
     result = get_topology_builder().impact_analysis(node_name)
+    downstream_count = len(result.get("impacted_downstream", []))
+    emit_progress(
+        f"完成：影响 {downstream_count} 个下游节点",
+        3,
+        3,
+    )
+
     # P2-4.7 增加 redundancy 字段输出
     redundancy = result.get("redundancy", {})
     return json.dumps(

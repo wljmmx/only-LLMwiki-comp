@@ -10,7 +10,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import asyncio
+import json
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.auth import verify_token
@@ -27,8 +32,12 @@ class DocGenRequest(BaseModel):
     max_iterations: int | None = None
 
 
-# ────────── W7 文档生成 API ──────────
+def _sse_event(event_type: str, data: dict) -> str:
+    """格式化 SSE 事件帧"""
+    return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
+
+# ────────── W7 文档生成 API ──────────
 
 @router.post("/doc/generate", dependencies=[Depends(verify_token)])
 async def generate_document(req: DocGenRequest) -> dict:
@@ -50,6 +59,128 @@ async def generate_document(req: DocGenRequest) -> dict:
         "token_usage": state.get("token_usage", 0),
         "error": state.get("error", ""),
     }
+
+
+@router.post("/doc/generate/stream", dependencies=[Depends(verify_token)])
+async def generate_document_stream(req: DocGenRequest, request: Request):
+    """P2-5.5: SSE 流式文档生成 — 实时推送 6 阶段进度
+
+    SSE 事件序列（来自 doc_generator.PipelineStage）：
+        event: stage_start  — {"stage":"intent", "message":"分析需求意图...", "iteration":0}
+        event: stage_done   — {"stage":"intent", "token_usage":120, "error":null}
+        event: stage_start  — {"stage":"outline", ...}
+        event: stage_done   — {"stage":"outline", "sections_total":5, ...}
+        event: stage_start  — {"stage":"generate", "sections_total":5, ...}
+        event: section_start — {"stage":"generate", "section_index":0, "section_total":5, "section_title":"..."}
+        event: section_done  — {"stage":"generate", "section_index":1, "section_total":5, ...}
+        ...
+        event: stage_done   — {"stage":"generate", "sections_completed":5, ...}
+        event: stage_start  — {"stage":"review", "iteration":1, ...}
+        event: stage_done   — {"stage":"review", "decision":"accept|reject", ...}
+        [如 reject → stage_start("modify") → stage_done("modify") → stage_start("review") ...]
+        event: stage_start  — {"stage":"proofread", ...}
+        event: stage_done   — {"stage":"proofread", ...}
+        event: done         — {"document":"...", "outline":[...], "iterations":1, "token_usage":1234, ...}
+        event: error        — {"stage":"...", "message":"...", "retryable":true}
+
+    P2-4: 客户端断连时取消生成（通过 request.is_disconnected()）。
+    """
+    pipeline = get_pipeline()
+    cancel_token = request.is_disconnected
+
+    async def event_gen():
+        total_start = datetime.now(timezone.utc)
+        loop = asyncio.get_event_loop()
+        # 跨线程安全的事件队列
+        ev_queue: asyncio.Queue = asyncio.Queue()
+
+        def on_progress(stage: str, data: dict) -> None:
+            """doc_generator 同步回调 → 线程安全入队"""
+            try:
+                loop.call_soon_threadsafe(ev_queue.put_nowait, (stage, data))
+            except Exception:  # noqa: BLE001
+                pass
+
+        async def run_generate():
+            try:
+                result = await pipeline.generate(
+                    request=req.request,
+                    context=req.context,
+                    max_iterations=req.max_iterations,
+                    on_progress=on_progress,
+                )
+                await ev_queue.put(("__result__", result))
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                await ev_queue.put(("__error__", str(e)))
+
+        task = asyncio.create_task(run_generate())
+
+        try:
+            while True:
+                # 客户端断连取消
+                if await _check_cancel(cancel_token):
+                    task.cancel()
+                    return
+
+                try:
+                    stage, data = await asyncio.wait_for(ev_queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+
+                if stage == "__result__":
+                    state = data
+                    total_ms = int(
+                        (datetime.now(timezone.utc) - total_start).total_seconds() * 1000
+                    )
+                    yield _sse_event("done", {
+                        "total_ms": total_ms,
+                        "document": state.get("final_document", ""),
+                        "outline": state.get("outline", []),
+                        "sections": [
+                            {"title": s.get("title", ""), "content": s.get("content", "")[:500]}
+                            for s in state.get("sections", [])
+                        ],
+                        "iterations": state.get("iteration", 0),
+                        "token_usage": state.get("token_usage", 0),
+                        "error": state.get("error", ""),
+                    })
+                    break
+                elif stage == "__error__":
+                    yield _sse_event("error", {
+                        "stage": "generate",
+                        "message": data,
+                        "retryable": True,
+                    })
+                    break
+                else:
+                    # 透传 doc_generator 的进度事件
+                    yield _sse_event(stage, data)
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _check_cancel(cancel_token) -> bool:
+    """检查客户端是否断连"""
+    try:
+        return bool(await cancel_token())
+    except Exception:  # noqa: BLE001
+        return False
 
 
 @router.post("/doc/generate-from-knowledge", dependencies=[Depends(verify_token)])
