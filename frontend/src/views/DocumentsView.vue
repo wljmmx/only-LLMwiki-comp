@@ -530,7 +530,7 @@ onMounted(() => {
                     </template>
                   </NStep>
                 </NSteps>
-                <NEmpty v-else description="暂无流水线记录，点击"编译为Wiki"开始" size="small" />
+                <NEmpty v-else description="暂无流水线记录，点击编译为Wiki开始" size="small" />
 
                 <!-- P3-3: 编译结果摘要 -->
                 <div v-if="pipelineResult" class="compile-result">
