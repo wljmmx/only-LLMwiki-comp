@@ -18,7 +18,6 @@ export function useSse() {
   const error = ref<string | null>(null)
   let abortController: AbortController | null = null
 
-  /** 订阅 SSE 端点 */
   function subscribe(
     endpoint: string,
     options: UseSseOptions = {},
@@ -31,41 +30,49 @@ export function useSse() {
     const headers: Record<string, string> = {
       'Accept': 'text/event-stream',
       'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
     }
     if (token) {
       headers['Authorization'] = `Bearer ${token}`
     }
 
-    const eventSource = new EventSource(url, {
-      // EventSource 不支持自定义 headers，改用 fetch + ReadableStream
-    } as any)
+    console.log('[SSE] Connecting to:', url)
 
-    // 使用 fetch 实现 SSE（支持 Authorization header）
     fetch(url, {
+      method: 'POST',
       headers,
       signal: abortController.signal,
     }).then(async (response) => {
       if (!response.ok) {
-        error.value = `SSE 连接失败: ${response.status}`
-        options.onError?.(error.value)
+        const errMsg = `SSE 连接失败: ${response.status} ${response.statusText}`
+        error.value = errMsg
+        console.error('[SSE]', errMsg)
+        options.onError?.(errMsg)
         return
       }
       connected.value = true
       error.value = null
+      console.log('[SSE] Connected')
 
       const reader = response.body?.getReader()
       const decoder = new TextDecoder()
-      if (!reader) return
+      if (!reader) {
+        error.value = '响应体为空'
+        options.onError?.('响应体为空')
+        return
+      }
 
       let buffer = ''
       try {
         while (true) {
           const { done, value } = await reader.read()
-          if (done) break
+          if (done) {
+            console.log('[SSE] Connection closed')
+            break
+          }
           buffer += decoder.decode(value, { stream: true })
-          // 解析 SSE 事件
           const events = buffer.split('\n\n')
-          buffer = events.pop() || '' // 最后一个可能不完整
+          buffer = events.pop() || ''
           for (const raw of events) {
             const parsed = _parseSseEvent(raw)
             if (parsed) {
@@ -83,6 +90,7 @@ export function useSse() {
       } catch (err: any) {
         if (err.name !== 'AbortError') {
           error.value = err.message
+          console.error('[SSE] Error:', err.message)
           options.onError?.(err.message)
         }
       }
@@ -90,6 +98,7 @@ export function useSse() {
     }).catch((err: any) => {
       if (err.name !== 'AbortError') {
         error.value = err.message
+        console.error('[SSE] Fetch error:', err.message)
         options.onError?.(err.message)
       }
     })
@@ -100,7 +109,6 @@ export function useSse() {
     }
   }
 
-  /** 取消订阅 */
   function unsubscribe() {
     abortController?.abort()
     connected.value = false
@@ -113,7 +121,6 @@ export function useSse() {
   return { subscribe, unsubscribe, connected, error }
 }
 
-/** 解析原始 SSE 事件文本 */
 function _parseSseEvent(raw: string): SseEvent | null {
   const lines = raw.split('\n')
   let eventType = 'message'
