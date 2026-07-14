@@ -99,7 +99,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 RUN groupadd -r opskg && useradd -r -g opskg -d /app -s /sbin/nologin opskg \
     && mkdir -p /app/data /var/log/nginx /var/log/supervisor \
                 /var/lib/nginx/body /var/lib/nginx/proxy /var/lib/nginx/fastcgi \
-                /var/cache/nginx /run \
+                /var/cache/nginx /var/cache/nginx/client_temp /var/cache/nginx/proxy_temp \
+                /run /run/nginx \
     && chown -R opskg:opskg /app /var/log/nginx /var/log/supervisor \
                 /var/lib/nginx /var/cache/nginx /run
 
