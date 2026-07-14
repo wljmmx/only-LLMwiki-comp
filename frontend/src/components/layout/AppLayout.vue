@@ -346,6 +346,7 @@ onMounted(() => {
 }
 .content-inner {
   width: 100%;
+  height: 100%;
   max-width: var(--opskg-content-max-width);
   margin: 0 auto;
 }

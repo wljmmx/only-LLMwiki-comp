@@ -31,6 +31,51 @@
         :name="key"
         :tab="group.label"
       >
+        <!-- LLM 配置：活跃后端指示 + 测试按钮 -->
+        <n-alert
+          v-if="key === 'llm'"
+          :type="llmTestResult?.success ? 'success' : llmTestResult ? 'error' : 'info'"
+          :bordered="false"
+          class="llm-status-bar"
+        >
+          <template #header>
+            <div class="llm-status-header">
+              <span>
+                当前活跃后端：
+                <strong>{{ activeBackend }}</strong>
+                <template v-if="activeBackend === 'openai_compat'">
+                  · {{ groups.llm?.items?.openai_compat_model?.value || '-' }}
+                </template>
+                <template v-else-if="activeBackend === 'ollama'">
+                  · {{ groups.llm?.items?.ollama_model?.value || '-' }}
+                </template>
+                <template v-else-if="activeBackend === 'vllm'">
+                  · {{ groups.llm?.items?.vllm_model?.value || '-' }}
+                </template>
+              </span>
+              <n-space :size="8">
+                <n-button
+                  size="small"
+                  :loading="llmTesting"
+                  @click="handleLLMTest"
+                >
+                  测试连接
+                </n-button>
+              </n-space>
+            </div>
+          </template>
+          <template v-if="llmTestResult" #default>
+            <div class="llm-test-detail">
+              <span v-if="llmTestResult.success">
+                连接成功 · {{ llmTestResult.model }} · {{ llmTestResult.latency_ms }}ms
+              </span>
+              <span v-else>
+                连接失败<template v-if="llmTestResult.errors?.length">：{{ llmTestResult.errors.join('；') }}</template>
+              </span>
+            </div>
+          </template>
+        </n-alert>
+
         <n-card :title="group.label" :bordered="false" size="small">
           <n-form label-placement="left" label-width="180" :show-feedback="true">
             <n-form-item
@@ -119,15 +164,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import {
   NButton, NCard, NForm, NFormItem, NInput, NInputNumber,
   NSelect, NSpace, NSpin, NSwitch, NTabPane, NTabs, NModal,
-  NResult, useMessage,
+  NResult, NAlert, useMessage,
 } from 'naive-ui'
 import {
   getSettings, updateSettings, validateSettings, restartService,
-  type SettingsGroup,
+  testLLMConnection, type SettingsGroup, type LLMTestResponse,
 } from '@/api/settings'
 
 const message = useMessage()
@@ -140,6 +185,16 @@ const error = ref('')
 const showRestartModal = ref(false)
 const groups = ref<Record<string, SettingsGroup>>({})
 const pendingChanges = ref<Record<string, string | number | boolean>>({})
+
+// LLM 测试
+const llmTesting = ref(false)
+const llmTestResult = ref<LLMTestResponse | null>(null)
+
+/** 当前活跃的 LLM 后端标识 */
+const activeBackend = computed(() => {
+  const backend = groups.value?.llm?.items?.llm_backend?.value
+  return String(backend || '')
+})
 
 async function loadSettings() {
   loading.value = true
@@ -215,6 +270,34 @@ async function handleRestart() {
   }
 }
 
+/** 测试 LLM 后端连通性 */
+async function handleLLMTest() {
+  llmTesting.value = true
+  llmTestResult.value = null
+  try {
+    const res = await testLLMConnection()
+    llmTestResult.value = res
+    if (res.success) {
+      message.success(res.message)
+    } else {
+      message.error(res.message)
+    }
+  } catch (err: any) {
+    llmTestResult.value = {
+      success: false,
+      backend: activeBackend.value,
+      model: '',
+      base_url: '',
+      latency_ms: 0,
+      message: '测试请求失败',
+      errors: [err?.response?.data?.detail || err?.message || '网络错误'],
+    }
+    message.error('LLM 测试失败')
+  } finally {
+    llmTesting.value = false
+  }
+}
+
 onMounted(loadSettings)
 </script>
 
@@ -246,5 +329,22 @@ onMounted(loadSettings)
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 13px;
+}
+
+.llm-status-bar {
+  margin-bottom: 12px;
+}
+
+.llm-status-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.llm-test-detail {
+  font-size: 13px;
+  margin-top: 4px;
 }
 </style>

@@ -349,3 +349,81 @@ async def restart_service(
         "restart": True,
         "message": "已发送重启信号，服务将在数秒内重启",
     }
+
+
+# ────────── LLM 连通性测试 ──────────
+
+class LLMTestRequest(BaseModel):
+    """POST /settings/llm/test 请求体 — 可选覆盖配置项用于测试"""
+    backend: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+
+
+@router.post("/settings/llm/test")
+async def test_llm_connection(
+    body: LLMTestRequest = LLMTestRequest(),
+    identity: str = Depends(require_role("operator")),
+) -> dict:
+    """测试 LLM 后端连通性
+
+    权限：operator 及以上
+
+    行为：
+    - 不传参数：测试当前已保存的 LLM 配置
+    - 传入 backend/base_url/api_key/model：用传入值覆盖测试（不修改持久化配置）
+    """
+    settings = get_settings()
+
+    # 确定测试参数（传入值优先，否则用当前配置）
+    backend = body.backend or settings.llm_backend
+    base_url = body.base_url or settings.openai_compat_base_url
+    api_key = body.api_key or settings.openai_compat_api_key
+    model = body.model or settings.openai_compat_model
+
+    # 构建测试用客户端
+    import time
+    start = time.monotonic()
+
+    errors: list[str] = []
+    try:
+        from app.core.llm.openai_compat import OpenAICompatClient
+
+        test_client = OpenAICompatClient(
+            base_url=base_url,
+            api_key=api_key or "EMPTY",
+            model=model,
+            timeout=settings.llm_timeout,
+            default_temperature=settings.llm_temperature,
+            default_max_tokens=settings.llm_max_tokens,
+            label="test",
+        )
+        healthy = await test_client.health()
+        latency_ms = round((time.monotonic() - start) * 1000)
+
+        if healthy:
+            return {
+                "success": True,
+                "backend": backend,
+                "model": model,
+                "base_url": base_url,
+                "latency_ms": latency_ms,
+                "message": f"LLM 后端连通正常（{backend}/{model}，{latency_ms}ms）",
+            }
+        else:
+            errors.append("health() 返回 false")
+
+    except Exception as e:
+        latency_ms = round((time.monotonic() - start) * 1000)
+        errors.append(str(e))
+
+    return {
+        "success": False,
+        "backend": backend,
+        "model": model,
+        "base_url": base_url,
+        "latency_ms": latency_ms,
+        "errors": errors,
+        "message": "LLM 后端连接失败",
+    }

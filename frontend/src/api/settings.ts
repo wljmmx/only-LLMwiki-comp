@@ -59,3 +59,25 @@ export function validateSettings(data: SettingsUpdateRequest): Promise<SettingsV
 export function restartService(): Promise<{ restart: boolean; message: string }> {
   return api.post('/settings/restart')
 }
+
+/** LLM 连通性测试 */
+export interface LLMTestRequest {
+  backend?: string
+  base_url?: string
+  api_key?: string
+  model?: string
+}
+
+export interface LLMTestResponse {
+  success: boolean
+  backend: string
+  model: string
+  base_url: string
+  latency_ms: number
+  message: string
+  errors?: string[]
+}
+
+export function testLLMConnection(data?: LLMTestRequest): Promise<LLMTestResponse> {
+  return api.post('/settings/llm/test', data || {})
+}
