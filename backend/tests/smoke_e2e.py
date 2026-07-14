@@ -341,7 +341,7 @@ def s26():
     s26.target_inc = open_incs[0]
     inc_start = s26.target_inc["started_at"]
     # 变更时间 = incident 前 2 分钟
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
     inc_ts = datetime.fromisoformat(inc_start.replace("Z", "+00:00"))
     ch_ts = (inc_ts - timedelta(minutes=2)).isoformat()
     # 唯一 ID 避免去重

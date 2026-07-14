@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import DOMPurify from 'dompurify'
 import { searchKnowledge } from '@/api/search'
 import { getTypeLabel } from '@/utils/format'
+import LoadingState from '@/components/common/LoadingState.vue'
 import type { SearchResponse, SearchResult, SearchSuggestions } from '@/types/api'
 
 const router = useRouter()
@@ -146,9 +147,7 @@ function handleResultClick(item: SearchResult): void {
     </div>
 
     <div class="search-results">
-      <div v-if="loading" class="loading-container">
-        <n-spin size="large" />
-      </div>
+      <LoadingState v-if="loading" />
 
       <div v-else-if="!searched" class="empty-state">
         <div class="empty-icon">📚</div>
@@ -257,13 +256,6 @@ function handleResultClick(item: SearchResult): void {
 
 .search-btn {
   min-width: 100px;
-}
-
-.loading-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 80px 0;
 }
 
 .empty-state {

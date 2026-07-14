@@ -23,6 +23,8 @@ import {
 import { listChanges, getChange, correlateChanges, ingestChanges, type Change } from '@/api/aiops'
 import { formatDateTime } from '@/utils/format'
 import { changeTypeColor, tagSeverity } from '@/utils/statusMap'
+import PageHeader from '@/components/common/PageHeader.vue'
+import LoadingState from '@/components/common/LoadingState.vue'
 
 const message = useMessage()
 
@@ -209,10 +211,10 @@ onMounted(() => {
 
 <template>
   <div class="changes-view">
-    <div class="page-header">
-      <h2 class="page-title">变更关联</h2>
-      <p class="page-desc">接收变更事件、查询变更列表、关联变更与 Incident</p>
-    </div>
+    <PageHeader
+      title="变更关联"
+      description="接收变更事件、查询变更列表、关联变更与 Incident"
+    />
 
     <n-card :bordered="true">
       <template #header>
@@ -232,9 +234,7 @@ onMounted(() => {
         </n-space>
       </template>
 
-      <div v-if="loading" class="loading-container">
-        <n-spin size="large" />
-      </div>
+      <LoadingState v-if="loading" />
       <n-empty v-else-if="!changes.length" description="暂无变更记录" style="padding: 60px 0" />
       <n-data-table
         v-else
@@ -249,9 +249,7 @@ onMounted(() => {
     <!-- 详情抽屉 -->
     <n-drawer v-model:show="detailVisible" :width="720" placement="right">
       <n-drawer-content title="变更详情" closable>
-        <div v-if="detailLoading" class="loading-container">
-          <n-spin size="large" />
-        </div>
+        <LoadingState v-if="detailLoading" />
         <template v-else-if="currentChange">
           <n-descriptions :column="1" bordered label-placement="left" size="small">
             <n-descriptions-item label="变更 ID">
@@ -345,9 +343,7 @@ onMounted(() => {
         </n-form-item>
       </n-form>
 
-      <div v-if="correlateLoading" class="loading-container">
-        <n-spin size="large" />
-      </div>
+      <LoadingState v-if="correlateLoading" />
       <template v-else-if="correlateResult">
         <n-descriptions :column="2" bordered size="small" style="margin-top: 16px">
           <n-descriptions-item label="扫描变更数">
@@ -400,30 +396,5 @@ onMounted(() => {
 .changes-view {
   max-width: 1200px;
   margin: 0 auto;
-}
-
-.page-header {
-  margin-bottom: 24px;
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  margin: 0 0 8px;
-}
-
-.page-desc {
-  font-size: 14px;
-  color: var(--n-text-color-2, #6b7280);
-  margin: 0;
-}
-
-.loading-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 0;
-  gap: 16px;
 }
 </style>

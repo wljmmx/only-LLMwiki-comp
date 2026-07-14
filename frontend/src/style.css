@@ -212,33 +212,8 @@ a {
 
 /* ============================================================
  * 共享工具类（替代各视图重复 CSS）
- * P1-2: PageHeader / loading-container 等
+ * P1-2: 统一使用 PageHeader / LoadingState 组件，不再使用全局类
  * ============================================================ */
-
-.page-header {
-  margin-bottom: var(--opskg-sp-6);
-}
-
-.page-title {
-  font-size: var(--opskg-fs-2xl);
-  font-weight: 600;
-  color: var(--opskg-text-1);
-  margin: 0;
-}
-
-.page-desc {
-  font-size: var(--opskg-fs-sm);
-  color: var(--opskg-text-2);
-  margin-top: var(--opskg-sp-1);
-}
-
-.loading-container {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 200px;
-  width: 100%;
-}
 
 /* ── 路由过渡动画 ── */
 .fade-enter-active,

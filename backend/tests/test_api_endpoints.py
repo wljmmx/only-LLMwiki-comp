@@ -6,13 +6,10 @@ from __future__ import annotations
 
 import io
 import os
-import sys
-from pathlib import Path
 
 # 确保测试期间关闭认证
 os.environ.setdefault("OPSKG_API_TOKEN", "")
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app

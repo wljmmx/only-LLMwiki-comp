@@ -18,6 +18,8 @@ import {
   useMessage,
 } from 'naive-ui'
 import { generateRunbook, type RunbookGenerateResult } from '@/api/aiops'
+import PageHeader from '@/components/common/PageHeader.vue'
+import LoadingState from '@/components/common/LoadingState.vue'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
 
 const router = useRouter()
@@ -75,10 +77,10 @@ function goToWiki(slug: string) {
 
 <template>
   <div class="runbook-view">
-    <div class="page-header">
-      <h2 class="page-title">Runbook 工作台</h2>
-      <p class="page-desc">基于知识库自动生成故障处理 Runbook，可选发布为 Wiki</p>
-    </div>
+    <PageHeader
+      title="Runbook 工作台"
+      description="基于知识库自动生成故障处理 Runbook，可选发布为 Wiki"
+    />
 
     <n-card title="生成参数" :bordered="true" class="form-card">
       <n-form label-placement="top">
@@ -126,10 +128,7 @@ function goToWiki(slug: string) {
     </n-card>
 
     <div class="result-area">
-      <div v-if="loading" class="loading-container">
-        <n-spin size="large" />
-        <div class="loading-text">正在检索知识库并生成 Runbook...</div>
-      </div>
+      <LoadingState v-if="loading" />
 
       <div v-else-if="errorMsg" class="error-wrapper">
         <n-alert type="error" title="生成失败">{{ errorMsg }}</n-alert>
@@ -192,22 +191,6 @@ function goToWiki(slug: string) {
   margin: 0 auto;
 }
 
-.page-header {
-  margin-bottom: 24px;
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  margin: 0 0 8px;
-}
-
-.page-desc {
-  font-size: 14px;
-  color: var(--n-text-color-2, #6b7280);
-  margin: 0;
-}
-
 .form-card {
   margin-bottom: 24px;
 }
@@ -217,7 +200,6 @@ function goToWiki(slug: string) {
   margin-top: 16px;
 }
 
-.loading-container,
 .empty-wrapper {
   display: flex;
   flex-direction: column;

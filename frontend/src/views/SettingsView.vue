@@ -1,16 +1,17 @@
 <template>
   <div class="settings-page">
-    <div class="page-header">
-      <h2>系统配置</h2>
-      <n-space>
-        <n-button @click="handleValidate" :loading="validating" secondary>
-          验证配置
-        </n-button>
-        <n-button type="primary" @click="handleSave" :loading="saving">
-          保存配置
-        </n-button>
-      </n-space>
-    </div>
+    <PageHeader title="系统配置">
+      <template #actions>
+        <n-space>
+          <n-button @click="handleValidate" :loading="validating" secondary>
+            验证配置
+          </n-button>
+          <n-button type="primary" @click="handleSave" :loading="saving">
+            保存配置
+          </n-button>
+        </n-space>
+      </template>
+    </PageHeader>
 
     <n-card v-if="loading" class="loading-card">
       <n-spin size="large" />
@@ -129,6 +130,7 @@ import {
   getSettings, updateSettings, validateSettings, restartService,
   type SettingsGroup,
 } from '@/api/settings'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 const message = useMessage()
 
@@ -223,16 +225,6 @@ onMounted(loadSettings)
   padding: 16px 24px;
   max-width: 900px;
   margin: 0 auto;
-}
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-.page-header h2 {
-  margin: 0;
-  font-size: 20px;
 }
 .loading-card, .error-card {
   margin-top: 48px;
