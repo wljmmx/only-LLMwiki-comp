@@ -371,16 +371,26 @@ async def test_llm_connection(
     权限：operator 及以上
 
     行为：
-    - 不传参数：测试当前已保存的 LLM 配置
+    - 不传参数：测试当前已保存的 LLM 配置（根据 llm_backend 自动选择后端）
     - 传入 backend/base_url/api_key/model：用传入值覆盖测试（不修改持久化配置）
     """
     settings = get_settings()
 
-    # 确定测试参数（传入值优先，否则用当前配置）
+    # 确定测试参数（传入值优先，否则用当前活跃后端对应的配置）
     backend = body.backend or settings.llm_backend
-    base_url = body.base_url or settings.openai_compat_base_url
-    api_key = body.api_key or settings.openai_compat_api_key
-    model = body.model or settings.openai_compat_model
+
+    if backend == "ollama":
+        base_url = body.base_url or settings.ollama_base_url
+        api_key = body.api_key or ""
+        model = body.model or settings.ollama_model
+    elif backend == "vllm":
+        base_url = body.base_url or settings.vllm_base_url
+        api_key = body.api_key or ""
+        model = body.model or settings.vllm_model
+    else:  # openai_compat
+        base_url = body.base_url or settings.openai_compat_base_url
+        api_key = body.api_key or settings.openai_compat_api_key
+        model = body.model or settings.openai_compat_model
 
     # 构建测试用客户端
     import time
@@ -388,17 +398,31 @@ async def test_llm_connection(
 
     errors: list[str] = []
     try:
-        from app.core.llm.openai_compat import OpenAICompatClient
+        if backend == "ollama":
+            from app.core.llm.ollama import OllamaClient
 
-        test_client = OpenAICompatClient(
-            base_url=base_url,
-            api_key=api_key or "EMPTY",
-            model=model,
-            timeout=settings.llm_timeout,
-            default_temperature=settings.llm_temperature,
-            default_max_tokens=settings.llm_max_tokens,
-            label="test",
-        )
+            # 构造最小化 settings 对象供 OllamaClient 使用
+            class _TestSettings:
+                ollama_base_url = base_url
+                ollama_model = model
+                llm_timeout = settings.llm_timeout
+                llm_temperature = settings.llm_temperature
+                llm_max_tokens = settings.llm_max_tokens
+
+            test_client = OllamaClient(_TestSettings())
+        else:
+            from app.core.llm.openai_compat import OpenAICompatClient
+
+            test_client = OpenAICompatClient(
+                base_url=base_url + "/v1" if backend == "vllm" else base_url,
+                api_key=api_key or "EMPTY",
+                model=model,
+                timeout=settings.llm_timeout,
+                default_temperature=settings.llm_temperature,
+                default_max_tokens=settings.llm_max_tokens,
+                label=backend,
+            )
+
         healthy = await test_client.health()
         latency_ms = round((time.monotonic() - start) * 1000)
 
