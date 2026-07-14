@@ -121,8 +121,9 @@ ENV ENV=production \
     OPSKG_UVICORN_WORKERS=2 \
     OPSKG_VERSION=${OPSKG_VERSION}
 
-# P1-2: 全程以非 root 用户运行
-USER opskg
+# 以 root 用户运行（nginx 主进程需要 root 权限初始化）
+# nginx worker 进程通过 nginx.conf 的 user 指令切换到 opskg 用户
+# uvicorn 通过 supervisord.conf 的 user=opskg 以非特权用户运行
 
 # 入口：动态调整 worker 数 + 启动 supervisord
 ENTRYPOINT ["entrypoint.sh"]
