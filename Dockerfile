@@ -99,8 +99,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 RUN groupadd -r opskg && useradd -r -g opskg -d /app -s /sbin/nologin opskg \
     && mkdir -p /app/data /var/log/nginx /var/log/supervisor \
                 /var/lib/nginx/body /var/lib/nginx/proxy /var/lib/nginx/fastcgi \
-                /var/cache/nginx /var/cache/nginx/client_temp /var/cache/nginx/proxy_temp \
-                /run /run/nginx \
+                /var/cache/nginx /run \
     && chown -R opskg:opskg /app /var/log/nginx /var/log/supervisor \
                 /var/lib/nginx /var/cache/nginx /run
 
@@ -121,9 +120,8 @@ ENV ENV=production \
     OPSKG_UVICORN_WORKERS=2 \
     OPSKG_VERSION=${OPSKG_VERSION}
 
-# 以 root 用户运行（nginx 主进程需要 root 权限初始化）
-# nginx worker 进程通过 nginx.conf 的 user 指令切换到 opskg 用户
-# uvicorn 通过 supervisord.conf 的 user=opskg 以非特权用户运行
+# P1-2: 全程以非 root 用户运行
+USER opskg
 
 # 入口：动态调整 worker 数 + 启动 supervisord
 ENTRYPOINT ["entrypoint.sh"]

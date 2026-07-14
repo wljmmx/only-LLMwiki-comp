@@ -22,6 +22,7 @@ import { exportDocument, downloadBlob, exportFormatOptions, type ExportFormat } 
 import { listWikiDocs } from '@/api/versions'
 import { getTemplate } from '@/api/templates'
 import { getAuthToken } from '@/api/index'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 const message = useMessage()
 
@@ -219,12 +220,10 @@ onMounted(() => {
 
 <template>
   <div class="export-view">
-    <div class="page-header">
-      <h2 class="page-title">导出中心</h2>
-      <p class="page-desc">
-        将 Markdown 内容导出为 Markdown / HTML / 纯文本 / PDF（PDF 需服务端安装 wkhtmltopdf）
-      </p>
-    </div>
+    <PageHeader
+      title="导出中心"
+      description="将 Markdown 内容导出为 Markdown / HTML / 纯文本 / PDF（PDF 需服务端安装 wkhtmltopdf）"
+    />
 
     <n-alert v-if="!isAuthenticated" type="info" style="margin-bottom: 16px">
       导出需要登录 Token，未登录时按钮将禁用
@@ -352,22 +351,6 @@ onMounted(() => {
 .export-view {
   max-width: 1200px;
   margin: 0 auto;
-}
-
-.page-header {
-  margin-bottom: 24px;
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  margin: 0 0 8px;
-}
-
-.page-desc {
-  font-size: 14px;
-  color: var(--n-text-color-2, #6b7280);
-  margin: 0;
 }
 
 .preset-card {

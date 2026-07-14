@@ -74,7 +74,7 @@ function computeDelta(current: number, key: keyof Snapshot): { value: number; pc
 }
 
 /** P2-8: 生成 SVG sparkline 路径（使用历史快照数据点） */
-function sparklinePath(key: keyof Snapshot, color: string): string {
+function sparklinePath(key: keyof Snapshot, _color: string): string {
   const snaps = loadSnapshots()
   if (snaps.length === 0) return ''
   const values = snaps.map((s) => s[key])

@@ -1,7 +1,11 @@
 """集成测试：解析 → 抽取 全链路验证（基于 MarkItDown + 自研组合方案）"""
 from __future__ import annotations
 
-import pytest, sys, os
+import os
+import sys
+
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -131,8 +135,8 @@ class TestMarkItDownAdapter:
 class TestExtractionGating:
     @requires_openai
     def test_auto_accept(self):
-        from app.extraction.types import ExtractedEntity, ExtractionResult
         from app.extraction.extractor import KnowledgeExtractor
+        from app.extraction.types import ExtractedEntity, ExtractionResult
 
         settings = type("S", (), {"confidence_auto": 0.85, "confidence_review": 0.60})()
         extractor = KnowledgeExtractor()
@@ -162,7 +166,7 @@ if __name__ == "__main__":
 class TestKnowledgeCompiler:
     def test_deduplicate_exact(self):
         """测试精确去重：同名同类型实体合并"""
-        from app.knowledge import KnowledgeCompiler, GraphEntity
+        from app.knowledge import GraphEntity, KnowledgeCompiler
 
         compiler = KnowledgeCompiler()
         entities = [
@@ -175,7 +179,7 @@ class TestKnowledgeCompiler:
 
     def test_deduplicate_type_diff(self):
         """不同实体类型不合并"""
-        from app.knowledge import KnowledgeCompiler, GraphEntity
+        from app.knowledge import GraphEntity, KnowledgeCompiler
 
         compiler = KnowledgeCompiler()
         entities = [
@@ -187,7 +191,7 @@ class TestKnowledgeCompiler:
 
     def test_merge_properties(self):
         """合并时保留最高置信度，聚合属性"""
-        from app.knowledge import KnowledgeCompiler, GraphEntity
+        from app.knowledge import GraphEntity, KnowledgeCompiler
 
         compiler = KnowledgeCompiler()
         entities = [
@@ -203,7 +207,7 @@ class TestKnowledgeCompiler:
 
     def test_authority_scoring(self):
         """权威评分计算"""
-        from app.knowledge import KnowledgeCompiler, GraphEntity
+        from app.knowledge import GraphEntity, KnowledgeCompiler
 
         compiler = KnowledgeCompiler()
         e = GraphEntity(
@@ -217,7 +221,7 @@ class TestKnowledgeCompiler:
 
     def test_compile_pipeline(self):
         """完整编译流水线：3→2 去重（哈希去重处理精确重复）"""
-        from app.knowledge import KnowledgeCompiler, GraphEntity
+        from app.knowledge import GraphEntity, KnowledgeCompiler
 
         compiler = KnowledgeCompiler()
         entities = [

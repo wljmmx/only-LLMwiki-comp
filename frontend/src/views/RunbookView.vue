@@ -10,15 +10,15 @@ import {
   NSwitch,
   NTag,
   NSpace,
-  NSpin,
   NEmpty,
   NAlert,
   NDivider,
   NInputNumber,
-  NModal,
   useMessage,
 } from 'naive-ui'
-import { generateRunbook, previewRunbook, type RunbookGenerateResult } from '@/api/aiops'
+import { generateRunbook, type RunbookGenerateResult } from '@/api/aiops'
+import PageHeader from '@/components/common/PageHeader.vue'
+import LoadingState from '@/components/common/LoadingState.vue'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
 
 const router = useRouter()
@@ -34,19 +34,9 @@ const loading = ref(false)
 const result = ref<RunbookGenerateResult | null>(null)
 const errorMsg = ref('')
 
-// 预览模式
-const previewLoading = ref(false)
-const previewVisible = ref(false)
-const previewResult = ref<RunbookGenerateResult | null>(null)
-
 const renderedRunbook = computed(() => {
   if (!result.value?.runbook_md) return ''
   return renderWikiMarkdown(result.value.runbook_md)
-})
-
-const renderedPreview = computed(() => {
-  if (!previewResult.value?.runbook_md) return ''
-  return renderWikiMarkdown(previewResult.value.runbook_md)
 })
 
 function handleGenerate() {
@@ -82,34 +72,14 @@ function handleGenerate() {
 function goToWiki(slug: string) {
   router.push({ path: '/wiki', query: { slug } })
 }
-
-/** 预览 Runbook（不发布，仅返回生成内容供预览） */
-function handlePreview() {
-  const s = symptom.value.trim()
-  if (!s || previewLoading.value) return
-  previewLoading.value = true
-  previewResult.value = null
-  previewVisible.value = true
-  previewRunbook(s, service.value.trim(), host.value.trim(), maxDocs.value)
-    .then((res) => {
-      previewResult.value = res
-    })
-    .catch((err) => {
-      message.error(err?.response?.data?.detail || err?.message || '预览失败')
-      previewVisible.value = false
-    })
-    .finally(() => {
-      previewLoading.value = false
-    })
-}
 </script>
 
 <template>
   <div class="runbook-view">
-    <div class="page-header">
-      <h2 class="page-title">Runbook 工作台</h2>
-      <p class="page-desc">基于知识库自动生成故障处理 Runbook，可选发布为 Wiki</p>
-    </div>
+    <PageHeader
+      title="Runbook 工作台"
+      description="基于知识库自动生成故障处理 Runbook，可选发布为 Wiki"
+    />
 
     <n-card title="生成参数" :bordered="true" class="form-card">
       <n-form label-placement="top">
@@ -142,35 +112,22 @@ function handlePreview() {
             <n-switch v-model:value="publish" :disabled="loading" />
           </n-form-item>
           <n-form-item>
-            <n-space :size="8">
-              <n-button
-                type="primary"
-                size="large"
-                :loading="loading"
-                :disabled="!symptom.trim()"
-                @click="handleGenerate"
-              >
-                生成 Runbook
-              </n-button>
-              <n-button
-                size="large"
-                :loading="previewLoading"
-                :disabled="!symptom.trim()"
-                @click="handlePreview"
-              >
-                预览
-              </n-button>
-            </n-space>
+            <n-button
+              type="primary"
+              size="large"
+              :loading="loading"
+              :disabled="!symptom.trim()"
+              @click="handleGenerate"
+            >
+              生成 Runbook
+            </n-button>
           </n-form-item>
         </n-space>
       </n-form>
     </n-card>
 
     <div class="result-area">
-      <div v-if="loading" class="loading-container">
-        <n-spin size="large" />
-        <div class="loading-text">正在检索知识库并生成 Runbook...</div>
-      </div>
+      <LoadingState v-if="loading" />
 
       <div v-else-if="errorMsg" class="error-wrapper">
         <n-alert type="error" title="生成失败">{{ errorMsg }}</n-alert>
@@ -224,43 +181,6 @@ function handlePreview() {
         </n-card>
       </template>
     </div>
-
-    <!-- 预览弹窗 -->
-    <n-modal
-      v-model:show="previewVisible"
-      preset="card"
-      title="Runbook 预览"
-      style="width: 900px; max-width: 95vw"
-    >
-      <div v-if="previewLoading" class="loading-container">
-        <n-spin size="medium" />
-        <div class="loading-text">正在检索知识库并生成预览...</div>
-      </div>
-      <template v-else-if="previewResult">
-        <n-card
-          v-if="previewResult.sources?.length"
-          title="引用来源"
-          :bordered="true"
-          size="small"
-          class="sources-card"
-        >
-          <n-space vertical :size="8">
-            <div v-for="src in previewResult.sources" :key="src.doc_id" class="source-item">
-              <n-space align="center" :size="8">
-                <n-tag size="small" type="info">{{ src.doc_id.slice(0, 8) }}</n-tag>
-                <span class="source-title">{{ src.title }}</span>
-                <n-tag v-if="src.score != null" size="small">
-                  相似度 {{ (src.score * 100).toFixed(1) }}%
-                </n-tag>
-              </n-space>
-              <div v-if="src.snippet" class="source-snippet">{{ src.snippet }}</div>
-            </div>
-          </n-space>
-        </n-card>
-        <n-divider title-placement="left" class="section-divider">Runbook 内容</n-divider>
-        <div class="markdown-rendered" v-html="renderedPreview" />
-      </template>
-    </n-modal>
   </div>
 </template>
 
@@ -268,22 +188,6 @@ function handlePreview() {
 .runbook-view {
   max-width: 1000px;
   margin: 0 auto;
-}
-
-.page-header {
-  margin-bottom: 24px;
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  margin: 0 0 8px;
-}
-
-.page-desc {
-  font-size: 14px;
-  color: var(--n-text-color-2, #6b7280);
-  margin: 0;
 }
 
 .form-card {
@@ -295,7 +199,6 @@ function handlePreview() {
   margin-top: 16px;
 }
 
-.loading-container,
 .empty-wrapper {
   display: flex;
   flex-direction: column;

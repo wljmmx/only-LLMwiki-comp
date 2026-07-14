@@ -5,7 +5,6 @@ import {
   NTag,
   NSpace,
   NButton,
-  NSpin,
   NEmpty,
   NSelect,
   NInput,
@@ -39,6 +38,8 @@ import {
 } from '@/api/graph'
 import { useAppStore } from '@/stores/app'
 import { nodeTypeColor } from '@/utils/statusMap'
+import PageHeader from '@/components/common/PageHeader.vue'
+import LoadingState from '@/components/common/LoadingState.vue'
 
 const message = useMessage()
 const appStore = useAppStore()
@@ -350,12 +351,10 @@ onMounted(() => {
 
 <template>
   <div class="graph-view">
-    <div class="page-header">
-      <h2 class="page-title">知识图谱</h2>
-      <p class="page-desc">
-        基于 Neo4j 的实体-关系图（Host/Service/Concept 等 11 类实体），支持类型筛选、搜索、节点下钻
-      </p>
-    </div>
+    <PageHeader
+      title="知识图谱"
+      description="基于 Neo4j 的实体-关系图（Host/Service/Concept 等 11 类实体），支持类型筛选、搜索、节点下钻"
+    />
 
     <n-grid :cols="4" :x-gap="12" :y-gap="12" class="stats-grid">
       <n-gi v-for="card in statCards" :key="card.label">
@@ -413,9 +412,7 @@ onMounted(() => {
         Neo4j 不可用：{{ neo4jError }}
       </n-alert>
 
-      <div v-if="loading" class="loading-container">
-        <n-spin size="large" />
-      </div>
+      <LoadingState v-if="loading" />
 
       <n-empty
         v-else-if="!graphData.nodes.length && !neo4jError"
@@ -458,9 +455,7 @@ onMounted(() => {
     <!-- 实体详情抽屉 -->
     <n-drawer v-model:show="detailVisible" :width="720" placement="right">
       <n-drawer-content :title="`实体详情: ${selectedNodeName}`" closable>
-        <div v-if="detailLoading" class="loading-container">
-          <n-spin size="large" />
-        </div>
+        <LoadingState v-if="detailLoading" />
         <template v-else-if="selectedEntity">
           <n-descriptions :column="1" bordered label-placement="left" size="small">
             <n-descriptions-item label="名称">
@@ -545,22 +540,6 @@ onMounted(() => {
   margin: 0 auto;
 }
 
-.page-header {
-  margin-bottom: 20px;
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  margin: 0 0 8px;
-}
-
-.page-desc {
-  font-size: 14px;
-  color: var(--n-text-color-2, #6b7280);
-  margin: 0;
-}
-
 .stats-grid {
   margin-bottom: 16px;
 }
@@ -573,16 +552,7 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 
-.loading-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 80px 0;
-  gap: 16px;
-}
-
-.flow-container {
+.two-pane {
   position: relative;
   height: 600px;
   border: 1px solid var(--n-border-color, #e5e5e5);

@@ -30,8 +30,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 @pytest.fixture
 def isolated_ts_db(tmp_path, monkeypatch):
     """将时序数据库重定向到 tmp_path，并重置 store/detector 单例"""
-    import app.aiops.timeseries_store as ts_mod
     import app.aiops.anomaly_detector as ad_mod
+    import app.aiops.timeseries_store as ts_mod
 
     db_file = tmp_path / "timeseries.db"
     monkeypatch.setattr(ts_mod, "DB_PATH", db_file)
@@ -352,7 +352,7 @@ class TestEwma:
 
     def test_alpha_impact(self, isolated_ts_db):
         """不同 alpha 下 EWMA 跟随速度不同"""
-        from app.aiops.anomaly_detector import AnomalyDetector, get_anomaly_detector
+        from app.aiops.anomaly_detector import get_anomaly_detector
 
         store = get_store_for_detector()
         # 渐变序列：1 → 10

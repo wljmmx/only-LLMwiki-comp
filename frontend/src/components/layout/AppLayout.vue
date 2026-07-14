@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import {
+  NLayout,
   NLayoutSider,
+  NLayoutHeader,
+  NLayoutContent,
   NDropdown,
   NButton,
   NDrawer,
@@ -125,7 +128,7 @@ onMounted(() => {
   <!-- P1-4: skip-link 键盘可达性 -->
   <a href="#main-content" class="skip-link">跳到主内容</a>
 
-  <div class="app-shell">
+  <NLayout horizontal style="height: 100vh; display: flex; flex-direction: row;">
     <!-- P0-3: 桌面端固定侧栏 -->
     <NLayoutSider
       v-if="!isMobile"
@@ -133,7 +136,6 @@ onMounted(() => {
       :collapsed-width="64"
       :width="240"
       bordered
-      class="app-sider"
       @update:collapsed="handleToggle"
     >
       <div class="logo">
@@ -158,8 +160,8 @@ onMounted(() => {
       <AppSidebar @navigate="appStore.closeMobileDrawer()" />
     </NDrawer>
 
-    <div class="app-main">
-      <div class="header">
+    <NLayout style="flex: 1;">
+      <NLayoutHeader bordered class="header">
         <div class="header-left">
           <!-- P0-3: 移动端汉堡按钮 -->
           <NButton
@@ -212,42 +214,20 @@ onMounted(() => {
             </span>
           </NDropdown>
         </div>
-      </div>
+      </NLayoutHeader>
 
       <!-- P1-4: 主内容区 id + tabindex 焦点管理 -->
-      <div id="main-content" tabindex="-1" class="content">
+      <NLayoutContent id="main-content" tabindex="-1" class="content">
         <div class="content-inner">
           <router-view />
         </div>
-      </div>
-    </div>
-  </div>
+      </NLayoutContent>
+    </NLayout>
+  </NLayout>
   <OnboardingTour />
 </template>
 
 <style scoped>
-/* ────────── 左右布局：app-shell ────────── */
-.app-shell {
-  display: flex;
-  flex-direction: row;
-  height: 100vh;
-  overflow: hidden;
-}
-
-.app-sider {
-  flex-shrink: 0;
-  height: 100vh;
-  overflow: hidden;
-}
-
-.app-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
 .logo {
   display: flex;
   align-items: center;
@@ -272,8 +252,6 @@ onMounted(() => {
   padding: 0 var(--opskg-sp-6);
   height: 56px;
   gap: var(--opskg-sp-3);
-  border-bottom: 1px solid var(--opskg-border-color);
-  flex-shrink: 0;
 }
 .header-left {
   display: flex;
@@ -346,9 +324,21 @@ onMounted(() => {
 }
 .content-inner {
   width: 100%;
-  height: 100%;
   max-width: var(--opskg-content-max-width);
   margin: 0 auto;
+}
+
+/* 强制水平布局：确保侧栏和内容区左右排列 */
+:deep(.n-layout--horizontal) {
+  display: flex !important;
+  flex-direction: row !important;
+}
+:deep(.n-layout--horizontal .n-layout-sider) {
+  flex-shrink: 0;
+}
+:deep(.n-layout--horizontal .n-layout:not(.n-layout-sider)) {
+  flex: 1;
+  min-width: 0;
 }
 
 /* P0-3: 移动端调整 */

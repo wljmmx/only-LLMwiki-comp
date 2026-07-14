@@ -5,7 +5,6 @@ import {
   NTag,
   NSpace,
   NButton,
-  NSpin,
   NEmpty,
   NSelect,
   NInput,
@@ -26,6 +25,7 @@ import {
   type TopologyEdge,
 } from '@/api/aiops'
 import { nodeTypeColor } from '@/utils/statusMap'
+import LoadingState from '@/components/common/LoadingState.vue'
 
 const message = useMessage()
 
@@ -211,10 +211,10 @@ onMounted(() => {
 
 <template>
   <div class="topology-view">
-    <div class="page-header">
-      <h2 class="page-title">服务拓扑</h2>
-      <p class="page-desc">从知识库抽取的服务依赖关系图，支持节点详情、邻居查询、影响分析</p>
-    </div>
+    <PageHeader
+      title="服务拓扑"
+      description="从知识库抽取的服务依赖关系图，支持节点详情、邻居查询、影响分析"
+    />
 
     <n-card :bordered="true">
       <template #header>
@@ -250,9 +250,7 @@ onMounted(() => {
         </n-space>
       </template>
 
-      <div v-if="loading" class="loading-container">
-        <n-spin size="large" />
-      </div>
+      <LoadingState v-if="loading" />
 
       <n-empty
         v-else-if="!topology.nodes.length"
@@ -386,9 +384,7 @@ onMounted(() => {
     <!-- 节点详情抽屉 -->
     <n-drawer v-model:show="detailVisible" :width="720" placement="right">
       <n-drawer-content title="节点详情" closable>
-        <div v-if="detailLoading" class="loading-container">
-          <n-spin size="large" />
-        </div>
+        <LoadingState v-if="detailLoading" />
         <template v-else-if="selectedNode">
           <n-descriptions :column="1" bordered label-placement="left" size="small">
             <n-descriptions-item label="节点名">
@@ -443,9 +439,7 @@ onMounted(() => {
       :title="`影响分析: ${impactForNode}`"
       style="width: 700px; max-width: 95vw"
     >
-      <div v-if="impactLoading" class="loading-container">
-        <n-spin size="large" />
-      </div>
+      <LoadingState v-if="impactLoading" />
       <template v-else-if="impactResult">
         <n-alert v-if="impactResult.error" type="error" style="margin-bottom: 12px">
           {{ impactResult.error }}
@@ -492,31 +486,6 @@ onMounted(() => {
 .topology-view {
   max-width: 1400px;
   margin: 0 auto;
-}
-
-.page-header {
-  margin-bottom: 24px;
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  margin: 0 0 8px;
-}
-
-.page-desc {
-  font-size: 14px;
-  color: var(--n-text-color-2, #6b7280);
-  margin: 0;
-}
-
-.loading-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 0;
-  gap: 16px;
 }
 
 .topology-canvas {

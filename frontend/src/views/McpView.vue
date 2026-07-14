@@ -5,7 +5,6 @@ import {
   NTag,
   NSpace,
   NButton,
-  NSpin,
   NEmpty,
   NTabs,
   NTabPane,
@@ -33,6 +32,7 @@ import {
   type SseEvent,
 } from '@/api/mcp'
 import { getAuthToken } from '@/api/index'
+import LoadingState from '@/components/common/LoadingState.vue'
 
 const message = useMessage()
 
@@ -282,13 +282,10 @@ onMounted(() => {
 
 <template>
   <div class="mcp-view">
-    <div class="page-header">
-      <h2 class="page-title">MCP 工具浏览器</h2>
-      <p class="page-desc">
-        Model Context Protocol — 浏览 13 个工具 / 资源 / Prompt 模板，支持 JSON-RPC 调用与 SSE
-        流式响应
-      </p>
-    </div>
+    <PageHeader
+      title="MCP 工具浏览器"
+      description="Model Context Protocol — 浏览 13 个工具 / 资源 / Prompt 模板，支持 JSON-RPC 调用与 SSE 流式响应"
+    />
 
     <n-alert v-if="!isAuthenticated" type="info" style="margin-bottom: 16px">
       工具调用 / Prompt 渲染 / 资源读取需要登录 Token；列表查询在开发模式下放行
@@ -306,9 +303,7 @@ onMounted(() => {
                   刷新
                 </n-button>
               </div>
-              <div v-if="toolsLoading" class="loading-container">
-                <n-spin size="medium" />
-              </div>
+              <LoadingState v-if="toolsLoading" />
               <n-empty v-else-if="!tools.length" description="暂无工具" />
               <div v-else class="tool-list">
                 <div
@@ -507,9 +502,7 @@ onMounted(() => {
                   刷新
                 </n-button>
               </div>
-              <div v-if="resourcesLoading" class="loading-container">
-                <n-spin size="medium" />
-              </div>
+              <LoadingState v-if="resourcesLoading" />
               <n-empty v-else-if="!resources.length" description="暂无资源" />
               <div v-else class="tool-list">
                 <div
@@ -537,9 +530,7 @@ onMounted(() => {
                   资源:
                   <code>{{ selectedResourceUri }}</code>
                 </h4>
-                <div v-if="resourceLoading" class="loading-container">
-                  <n-spin size="medium" />
-                </div>
+                <LoadingState v-if="resourceLoading" />
                 <n-code
                   v-else
                   :code="resourceContent"
@@ -569,9 +560,7 @@ onMounted(() => {
                   刷新
                 </n-button>
               </div>
-              <div v-if="promptsLoading" class="loading-container">
-                <n-spin size="medium" />
-              </div>
+              <LoadingState v-if="promptsLoading" />
               <n-empty v-else-if="!prompts.length" description="暂无 prompt" />
               <div v-else class="tool-list">
                 <div
@@ -669,22 +658,6 @@ onMounted(() => {
   margin: 0 auto;
 }
 
-.page-header {
-  margin-bottom: 20px;
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  margin: 0 0 8px;
-}
-
-.page-desc {
-  font-size: 14px;
-  color: var(--n-text-color-2, #6b7280);
-  margin: 0;
-}
-
 .two-pane {
   display: grid;
   grid-template-columns: 360px 1fr;
@@ -706,12 +679,6 @@ onMounted(() => {
   margin-bottom: 8px;
   font-weight: 600;
   font-size: 14px;
-}
-
-.loading-container {
-  display: flex;
-  justify-content: center;
-  padding: 60px 0;
 }
 
 .tool-list {

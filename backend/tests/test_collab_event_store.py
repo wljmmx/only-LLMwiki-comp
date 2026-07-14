@@ -17,9 +17,6 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-import tempfile
-import time
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -30,17 +27,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.realtime import collab_event_store as ces_module  # noqa: E402
 from app.realtime.collab_event_store import (  # noqa: E402
-    CollabEventStore,
-    DEFAULT_LIMIT,
     MAX_LIMIT,
     PERSISTED_EVENT_TYPES,
+    CollabEventStore,
     get_collab_event_store,
 )
 from app.realtime.collab_hub import (  # noqa: E402
     CollabHub,
     _format_event_message,
 )
-
 
 # ═══════════════ MockWebSocket ═══════════════
 
@@ -501,6 +496,7 @@ class TestRealtimeEventsAPI:
 
     def test_api_list_empty(self):
         from fastapi.testclient import TestClient
+
         from app.main import app
 
         client = TestClient(app)
@@ -515,6 +511,7 @@ class TestRealtimeEventsAPI:
 
     def test_api_list_with_data(self):
         from fastapi.testclient import TestClient
+
         from app.main import app
 
         # 先写入数据
@@ -531,6 +528,7 @@ class TestRealtimeEventsAPI:
 
     def test_api_count_endpoint(self):
         from fastapi.testclient import TestClient
+
         from app.main import app
 
         store = get_collab_event_store()
@@ -544,6 +542,7 @@ class TestRealtimeEventsAPI:
 
     def test_api_limit_validation_ge_1(self):
         from fastapi.testclient import TestClient
+
         from app.main import app
 
         client = TestClient(app)
@@ -552,6 +551,7 @@ class TestRealtimeEventsAPI:
 
     def test_api_limit_validation_le_500(self):
         from fastapi.testclient import TestClient
+
         from app.main import app
 
         client = TestClient(app)
@@ -560,6 +560,7 @@ class TestRealtimeEventsAPI:
 
     def test_api_before_id_pagination(self):
         from fastapi.testclient import TestClient
+
         from app.main import app
 
         store = get_collab_event_store()
@@ -584,6 +585,7 @@ class TestRealtimeEventsAPI:
 
     def test_api_since_timestamp(self):
         from fastapi.testclient import TestClient
+
         from app.main import app
 
         store = get_collab_event_store()

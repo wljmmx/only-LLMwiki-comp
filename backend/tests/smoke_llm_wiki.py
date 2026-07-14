@@ -9,8 +9,9 @@
 6. raw 文档变化 → drift 检测 → stale 标注 → 自动重编译 → ReviewQueue（P1-1 + P1-4）
 7. Lint 检测死链 / orphan / stale / 矛盾（P1-3）
 """
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Mock LLM（避免依赖外部 API）
@@ -74,6 +75,7 @@ class MockLLM:
 llm_mod.get_llm_client = lambda: MockLLM()
 
 from fastapi.testclient import TestClient
+
 from app.main import app
 
 client = TestClient(app)
@@ -181,7 +183,8 @@ step("lint 含 missing_concept 类型", "missing_concept" in d["by_type"], "")
 
 # ───── P1-1 + P1-4: drift 检测 + 自动重编译闭环 ─────
 print("\n[STEP] 9. 模拟 raw 文档变化（篡改 checksum）→ drift 检测")
-from app.knowledge.wiki_drift import record_compiled_checksum, detect_drift, mark_pages_stale, list_stale_pages
+from app.knowledge.wiki_drift import detect_drift, mark_pages_stale, record_compiled_checksum
+
 # 篡改：把记录中的 checksum 改成假值，让 detect_drift 认为发生了变化
 record_compiled_checksum(doc_id, "fake_old_checksum_drift_test")
 report = detect_drift(doc_id)

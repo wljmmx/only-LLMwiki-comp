@@ -6,7 +6,7 @@ import type { TreeOption } from 'naive-ui'
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
 import { renderWikiMarkdown, parseSlugFromHash } from '@/utils/wikiRender'
 import { parseFrontmatter } from '@/utils/frontmatter'
-import { formatDate, getTypeLabel } from '@/utils/format'
+import { formatDate } from '@/utils/format'
 import type { WikiPage, BacklinkItem } from '@/types/api'
 // S16-1：协作面板（实时在线用户 + 编辑锁状态）
 import CollabPanel from '@/components/collab/CollabPanel.vue'
@@ -205,8 +205,8 @@ async function loadPage(slug: string) {
   }
 }
 
-function handleSelect(key: string | undefined) {
-  if (!key || key.startsWith('type-')) return
+function handleSelect(key: string) {
+  if (key.startsWith('type-')) return
   selectedKey.value = key
   loadPage(key)
 }
@@ -261,7 +261,7 @@ onMounted(() => {
             :default-expand-all="true"
             block-line
             class="wiki-tree"
-            @update:selected-keys="(keys) => handleSelect(keys[0])"
+            @update:selected-keys="(keys) => handleSelect(keys[0] as string)"
           />
           <NEmpty v-if="!treeLoading && pages.length === 0" description="暂无页面" />
         </NCard>

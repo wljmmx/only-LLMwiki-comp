@@ -23,7 +23,7 @@ import {
   useMessage,
 } from 'naive-ui'
 import type { UploadCustomRequestOptions } from 'naive-ui'
-import { listDocuments, deleteDocument, parseDocument, getDocumentContent, searchDocuments, getPipelineStatus, compileToWiki, getDocument } from '@/api/documents'
+import { listDocuments, deleteDocument, parseDocument, getDocumentContent, searchDocuments, getPipelineStatus, compileToWiki } from '@/api/documents'
 import { formatFileSize, formatDateTime as formatDateTimeUtil } from '@/utils/format'
 import { useSse } from '@/composables/useSse'
 import type { SseEvent } from '@/composables/useSse'
@@ -373,6 +373,7 @@ async function handleCompileToWiki(doc: DocumentMeta) {
 }
 
 async function handleView(doc: DocumentMeta) {
+  currentDoc.value = doc
   drawerVisible.value = true
   drawerTab.value = 'info'
   docContent.value = ''
@@ -380,15 +381,6 @@ async function handleView(doc: DocumentMeta) {
   pipelineSteps.value = []
   pipelineLoading.value = false
   pipelineResult.value = null
-
-  // 通过 getDocument 刷新最新元数据（避免使用表格行数据可能已过期）
-  try {
-    currentDoc.value = await getDocument(doc.id)
-  } catch {
-    // 降级：API 不可用时使用表格行数据
-    currentDoc.value = doc
-  }
-
   try {
     const res = await getDocumentContent(doc.id)
     docContent.value = res.content

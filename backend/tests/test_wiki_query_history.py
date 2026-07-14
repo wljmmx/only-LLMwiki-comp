@@ -83,7 +83,7 @@ class TestSanitizeHistory:
         assert len(cleaned) == MAX_HISTORY_MESSAGES
         # 保留最近 N 条（尾部）
         assert cleaned[-1]["content"] == f"老回答 {MAX_HISTORY_MESSAGES + 3}"
-        assert cleaned[0]["content"] == f"老问题 4"  # 最早被丢弃的是 0~3
+        assert cleaned[0]["content"] == "老问题 4"  # 最早被丢弃的是 0~3
 
 
 class TestBuildLlmMessages:

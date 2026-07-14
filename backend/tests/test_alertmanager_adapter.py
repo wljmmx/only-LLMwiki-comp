@@ -25,7 +25,6 @@ from app.aiops.alertmanager_adapter import (
     should_resolve_incident,
 )
 
-
 # ═══════════════ 测试 fixture ═══════════════
 
 

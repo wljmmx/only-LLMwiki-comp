@@ -9,12 +9,9 @@ set -e
 
 # ── 1. 准备运行时目录 ──
 # Dockerfile 已创建并 chown 这些目录；此处 mkdir -p 确保挂载卷场景下目录存在
-# nginx 需要 client_temp 和 proxy_temp 目录用于上传和代理临时文件
 mkdir -p /app/data /var/log/nginx /var/log/supervisor \
          /var/lib/nginx/body /var/lib/nginx/proxy /var/lib/nginx/fastcgi \
-         /var/cache/nginx /var/cache/nginx/client_temp /var/cache/nginx/proxy_temp /run/nginx
-chown -R opskg:opskg /app /var/log/nginx /var/log/supervisor \
-                     /var/lib/nginx /var/cache/nginx /run/nginx
+         /var/cache/nginx
 
 # ── 2. 动态调整 uvicorn workers ──
 WORKERS="${OPSKG_UVICORN_WORKERS:-2}"
