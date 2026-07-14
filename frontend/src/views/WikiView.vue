@@ -205,8 +205,8 @@ async function loadPage(slug: string) {
   }
 }
 
-function handleSelect(key: string) {
-  if (key.startsWith('type-')) return
+function handleSelect(key: string | undefined) {
+  if (!key || key.startsWith('type-')) return
   selectedKey.value = key
   loadPage(key)
 }
@@ -261,7 +261,7 @@ onMounted(() => {
             :default-expand-all="true"
             block-line
             class="wiki-tree"
-            @update:selected-keys="(keys) => handleSelect(keys[0] as string)"
+            @update:selected-keys="(keys) => handleSelect(keys[0])"
           />
           <NEmpty v-if="!treeLoading && pages.length === 0" description="暂无页面" />
         </NCard>

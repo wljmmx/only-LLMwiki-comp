@@ -25,7 +25,13 @@ import {
   incidentToRunbook,
   getIncidentChanges,
   getIncidentRollbackSuggestion,
+  getIncidentStates,
+  ackIncident,
+  investigateIncident,
+  mitigateIncident,
+  resolveIncident,
   type Incident,
+  type IncidentStateMachine,
 } from '@/api/aiops'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
 import { formatDateTime } from '@/utils/format'
@@ -51,6 +57,86 @@ const runbookMd = ref('')
 const runbookSlug = ref('')
 
 const closing = ref(false)
+
+// 状态机
+const stateMachine = ref<IncidentStateMachine | null>(null)
+const stateMachineLoading = ref(false)
+const transitioning = ref(false)
+
+/** 当前 incident 的可用状态迁移 */
+const availableTransitions = computed(() => {
+  if (!stateMachine.value || !currentIncident.value) return []
+  const currentState = currentIncident.value.status
+  return stateMachine.value.transitions[currentState] || []
+})
+
+/** 状态中文标签映射 */
+const stateLabelMap: Record<string, string> = {
+  open: '开放',
+  ack: '已确认',
+  investigating: '调查中',
+  mitigated: '已缓解',
+  resolved: '已解决',
+  closed: '已关闭',
+}
+
+/** 状态迁移按钮配置 */
+const transitionButtonConfig: Record<string, { label: string; type: 'primary' | 'warning' | 'info' | 'success' | 'error' }> = {
+  ack: { label: '确认', type: 'primary' },
+  investigate: { label: '开始调查', type: 'warning' },
+  mitigate: { label: '缓解', type: 'info' },
+  resolve: { label: '解决', type: 'success' },
+  close: { label: '关闭', type: 'error' },
+}
+
+async function handleTransition(targetState: string) {
+  if (!currentIncident.value || transitioning.value) return
+  transitioning.value = true
+  try {
+    const incidentId = currentIncident.value.incident_id
+    const options = { note: `通过前端迁移到 ${targetState}`, by: 'operator' }
+    switch (targetState) {
+      case 'ack':
+        await ackIncident(incidentId, options)
+        break
+      case 'investigating':
+        await investigateIncident(incidentId, options)
+        break
+      case 'mitigated':
+        await mitigateIncident(incidentId, options)
+        break
+      case 'resolved':
+      case 'closed':
+        await resolveIncident(incidentId, options)
+        break
+      default:
+        // 通用 transition
+        await closeIncident(incidentId, '通过前端迁移')
+        break
+    }
+    message.success(`状态已迁移到 ${stateLabelMap[targetState] || targetState}`)
+    // 刷新详情
+    if (currentIncident.value) {
+      await openDetail(currentIncident.value.incident_id)
+    }
+    await loadIncidents()
+  } catch (err: any) {
+    message.error(err?.response?.data?.detail || err?.message || '状态迁移失败')
+  } finally {
+    transitioning.value = false
+  }
+}
+
+async function loadStateMachine() {
+  stateMachineLoading.value = true
+  try {
+    stateMachine.value = await getIncidentStates()
+  } catch {
+    // 静默降级：状态机不可用时保留旧行为（仅关闭按钮）
+  } finally {
+    stateMachineLoading.value = false
+  }
+}
 
 const severityTagType: Record<string, 'default' | 'info' | 'success' | 'warning' | 'error'> = {
   info: 'default',
@@ -196,6 +282,7 @@ const renderedRunbook = computed(() => {
 
 onMounted(() => {
   loadIncidents()
+  loadStateMachine()
 })
 </script>
 
@@ -290,8 +377,22 @@ onMounted(() => {
               </n-descriptions>
 
               <n-space style="margin-top: 16px" :size="8">
+                <!-- 状态机驱动的迁移按钮 -->
+                <template v-if="stateMachine">
+                  <n-button
+                    v-for="target in availableTransitions"
+                    :key="target"
+                    size="small"
+                    :type="transitionButtonConfig[target]?.type || 'default'"
+                    :loading="transitioning"
+                    @click="handleTransition(target)"
+                  >
+                    {{ transitionButtonConfig[target]?.label || `迁移到 ${stateLabelMap[target] || target}` }}
+                  </n-button>
+                </template>
+                <!-- 降级：无状态机时保留旧版关闭按钮 -->
                 <n-button
-                  v-if="currentIncident.status === 'open'"
+                  v-else-if="currentIncident.status === 'open'"
                   type="error"
                   size="small"
                   :loading="closing"
@@ -386,6 +487,57 @@ onMounted(() => {
                 </n-card>
               </n-space>
             </n-tab-pane>
+
+            <!-- 状态机定义 -->
+            <n-tab-pane name="statemachine" tab="状态机">
+              <div v-if="stateMachine" class="statemachine-panel">
+                <n-descriptions :column="1" bordered label-placement="left" size="small">
+                  <n-descriptions-item label="状态列表">
+                    <n-space :size="4">
+                      <n-tag
+                        v-for="s in stateMachine.states"
+                        :key="s"
+                        size="small"
+                        :type="currentIncident?.status === s ? 'success' : 'default'"
+                      >
+                        {{ stateLabelMap[s] || s }}
+                      </n-tag>
+                    </n-space>
+                  </n-descriptions-item>
+                  <n-descriptions-item label="终止状态">
+                    <n-space :size="4">
+                      <n-tag
+                        v-for="s in stateMachine.terminal_states"
+                        :key="s"
+                        size="small"
+                        type="warning"
+                      >
+                        {{ stateLabelMap[s] || s }}
+                      </n-tag>
+                    </n-space>
+                  </n-descriptions-item>
+                  <n-descriptions-item label="当前状态">
+                    <n-tag type="success" size="small">
+                      {{ stateLabelMap[currentIncident?.status] || currentIncident?.status }}
+                    </n-tag>
+                  </n-descriptions-item>
+                  <n-descriptions-item label="可用迁移">
+                    <n-space :size="4">
+                      <n-tag
+                        v-for="t in availableTransitions"
+                        :key="t"
+                        size="small"
+                        :type="transitionButtonConfig[t]?.type || 'default'"
+                      >
+                        → {{ stateLabelMap[t] || t }}
+                      </n-tag>
+                      <span v-if="availableTransitions.length === 0" style="color: #999">无（已达终止状态）</span>
+                    </n-space>
+                  </n-descriptions-item>
+                </n-descriptions>
+              </div>
+              <n-empty v-else description="状态机不可用" size="small" />
+            </n-tab-pane>
           </n-tabs>
         </template>
       </n-drawer-content>
@@ -450,5 +602,9 @@ onMounted(() => {
 
 .n-button-group {
   display: inline-flex;
+}
+
+.statemachine-panel {
+  padding: 8px 0;
 }
 </style>
