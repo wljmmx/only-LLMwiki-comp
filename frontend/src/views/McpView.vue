@@ -5,7 +5,6 @@ import {
   NTag,
   NSpace,
   NButton,
-  NSpin,
   NEmpty,
   NTabs,
   NTabPane,

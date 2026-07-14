@@ -10,7 +10,6 @@ import {
   NSwitch,
   NTag,
   NSpace,
-  NSpin,
   NEmpty,
   NAlert,
   NDivider,

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NMenu, NDivider } from 'naive-ui'
+import { NMenu } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { buildMenuOptions } from '@/utils/menuBuilder'

@@ -6,7 +6,7 @@ import type { TreeOption } from 'naive-ui'
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
 import { renderWikiMarkdown, parseSlugFromHash } from '@/utils/wikiRender'
 import { parseFrontmatter } from '@/utils/frontmatter'
-import { formatDate, getTypeLabel } from '@/utils/format'
+import { formatDate } from '@/utils/format'
 import type { WikiPage, BacklinkItem } from '@/types/api'
 // S16-1：协作面板（实时在线用户 + 编辑锁状态）
 import CollabPanel from '@/components/collab/CollabPanel.vue'
