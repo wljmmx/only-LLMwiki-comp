@@ -28,7 +28,7 @@ import {
   type LintIssue,
   type LintReport,
 } from '@/api/wiki'
-import { formatDateTime } from '@/utils/format'
+import { formatDateTime, getTypeLabel } from '@/utils/format'
 import type { WikiPage } from '@/types/api'
 
 const message = useMessage()
@@ -323,7 +323,7 @@ const orphanColumns = [
     key: 'type',
     width: 120,
     render(row: WikiPage) {
-      return row.type
+      return getTypeLabel(row.type)
     },
   },
   {
@@ -359,7 +359,8 @@ watch(activeTab, (val) => {
 })
 
 onMounted(() => {
-  // Lint 报告由用户主动点击「运行检查」触发，不自动加载
+  // P2-14: 自动加载 Lint 报告
+  handleRunLint()
 })
 </script>
 

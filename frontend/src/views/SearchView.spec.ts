@@ -130,4 +130,80 @@ describe('SearchView.vue', () => {
     expect(vm.getScoreType(0.4)).toBe('warning')
     expect(vm.getScoreType(0.2)).toBe('default')
   })
+
+  // ===== P1-15：highlightSnippet 关键词高亮 + XSS 防护 =====
+
+  it('highlightSnippet：基本高亮，query 词被 mark 包裹', () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    const out = vm.highlightSnippet('nginx 502 bad gateway', 'nginx')
+    expect(out).toContain('<mark class="search-hit">nginx</mark>')
+  })
+
+  it('highlightSnippet：大小写不敏感匹配', () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    const out = vm.highlightSnippet('Nginx NGINX nginx', 'nginx')
+    // 三处均被包裹，且保留原文大小写
+    const matches = out.match(/<mark class="search-hit">/g)
+    expect(matches).toHaveLength(3)
+    expect(out).toContain('<mark class="search-hit">Nginx</mark>')
+    expect(out).toContain('<mark class="search-hit">NGINX</mark>')
+    expect(out).toContain('<mark class="search-hit">nginx</mark>')
+  })
+
+  it('highlightSnippet：多词按空格分词，全部高亮', () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    const out = vm.highlightSnippet('nginx 502 bad gateway', 'nginx 502')
+    expect(out).toContain('<mark class="search-hit">nginx</mark>')
+    expect(out).toContain('<mark class="search-hit">502</mark>')
+  })
+
+  it('highlightSnippet：XSS 防护 —— snippet 含 <script> 被转义，不产生可执行脚本', () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    const out = vm.highlightSnippet('<script>alert(1)</script> nginx', 'nginx')
+    // 不存在未转义的 <script> 标签
+    expect(out).not.toContain('<script>')
+    expect(out).not.toContain('</script>')
+    // 转义后的实体存在
+    expect(out).toContain('&lt;script&gt;')
+    // 关键词仍被高亮
+    expect(out).toContain('<mark class="search-hit">nginx</mark>')
+  })
+
+  it('highlightSnippet：XSS 防护 —— <img onerror> 标签被转义，不产生真实 img 元素', () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    const out = vm.highlightSnippet('<img src=x onerror=alert(1)>', 'x')
+    // 不存在真实的 <img 开始标签（已被转义为 &lt;img，onerror 仅作为无害纯文本）
+    expect(out).not.toMatch(/<img[\s>]/i)
+    // 转义实体存在
+    expect(out).toContain('&lt;img')
+    // 关键词仍被高亮
+    expect(out).toContain('<mark class="search-hit">x</mark>')
+  })
+
+  it('highlightSnippet：空 snippet 返回空字符串', () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    expect(vm.highlightSnippet('', 'nginx')).toBe('')
+  })
+
+  it('highlightSnippet：空 query 返回转义后的 snippet（不高亮）', () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    const out = vm.highlightSnippet('a < b & c', '')
+    expect(out).not.toContain('<mark')
+    expect(out).toContain('&lt;')
+    expect(out).toContain('&amp;')
+  })
+
+  it('highlightSnippet：query 含正则元字符不报错', () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    // 元字符被当作字面量匹配，不应抛异常
+    expect(() => vm.highlightSnippet('a.b*c', 'a.b*c')).not.toThrow()
+  })
 })

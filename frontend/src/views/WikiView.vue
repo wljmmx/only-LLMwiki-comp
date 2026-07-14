@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { NSplit, NTree, NCard, NTag, NSpace, NSpin, NEmpty, NThing, NButton, NTooltip } from 'naive-ui'
+import { NSplit, NTree, NCard, NTag, NSpace, NSkeleton, NEmpty, NThing, NButton, NTooltip, NInput } from 'naive-ui'
 import type { TreeOption } from 'naive-ui'
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
 import { renderWikiMarkdown, parseSlugFromHash } from '@/utils/wikiRender'
 import { parseFrontmatter } from '@/utils/frontmatter'
-import { formatDate } from '@/utils/format'
+import { formatDate, getTypeLabel } from '@/utils/format'
 import type { WikiPage, BacklinkItem } from '@/types/api'
 // S16-1：协作面板（实时在线用户 + 编辑锁状态）
 import CollabPanel from '@/components/collab/CollabPanel.vue'
@@ -16,6 +16,10 @@ import WikiEditor from '@/components/wiki/WikiEditor.vue'
 import WikiToc from '@/components/wiki/WikiToc.vue'
 // P1-11：版本历史抽屉
 import WikiVersionHistory from '@/components/wiki/WikiVersionHistory.vue'
+// P2-6: 最近访问追踪
+import { useRecentPages } from '@/composables/useRecentPages'
+
+const { trackPage } = useRecentPages()
 
 const treeLoading = ref(true)
 const contentLoading = ref(false)
@@ -27,6 +31,9 @@ const selectedKey = ref<string | null>(null)
 
 /** P1-12a: 读取 ?slug= query 支持外部跳转（如 WikiHealthView 的"编辑"按钮、WikiQueryView 的引用来源） */
 const route = useRoute()
+
+// P2-10: Wiki 树搜索过滤
+const treeSearchText = ref('')
 
 // S16-2：编辑模式状态
 const isEditing = ref(false)
@@ -100,16 +107,35 @@ const treeData = computed<TreeOption[]>(() => {
     grouped[page.type].push(page)
   })
 
-  return Object.keys(grouped).map((type) => ({
-    key: `type-${type}`,
-    label: typeLabelMap[type] || type,
-    isLeaf: false,
-    children: grouped[type].map((page) => ({
-      key: page.slug,
-      label: page.title,
-      isLeaf: true,
-    })),
-  }))
+  // P2-10: 按搜索文本过滤（标题或 slug 匹配）
+  const filter = treeSearchText.value.trim().toLowerCase()
+
+  return Object.keys(grouped).map((type) => {
+    const children = grouped[type]
+      .filter((page) => {
+        if (!filter) return true
+        return (
+          page.title.toLowerCase().includes(filter) ||
+          page.slug.toLowerCase().includes(filter) ||
+          (page.tags || []).some((t) => t.toLowerCase().includes(filter))
+        )
+      })
+      .map((page) => ({
+        key: page.slug,
+        label: page.title,
+        isLeaf: true,
+      }))
+
+    // 过滤后无子节点的分组不显示
+    if (children.length === 0) return null
+
+    return {
+      key: `type-${type}`,
+      label: `${typeLabelMap[type] || type} (${children.length})`,
+      isLeaf: false,
+      children,
+    }
+  }).filter(Boolean) as TreeOption[]
 })
 
 function renderSimpleMarkdown(text: string): string {
@@ -171,6 +197,8 @@ async function loadPage(slug: string) {
     const [page, bl] = await Promise.all([getWikiPage(slug), getWikiBacklinks(slug)])
     currentPage.value = page
     backlinks.value = bl
+    // P2-6: 记录最近访问
+    trackPage(page.slug, page.title, page.type)
   } finally {
     contentLoading.value = false
     backlinksLoading.value = false
@@ -214,7 +242,18 @@ onMounted(() => {
           <div class="tree-header">
             <span class="tree-title">Wiki 页面</span>
           </div>
-          <NSpin v-if="treeLoading" class="tree-loading" />
+          <!-- P2-10: Wiki 树搜索过滤 -->
+          <NInput
+            v-model:value="treeSearchText"
+            placeholder="搜索页面标题或标签..."
+            clearable
+            size="small"
+            class="tree-search"
+          />
+          <!-- P1-3: 左侧页面树加载用骨架列表占位 -->
+          <div v-if="treeLoading" class="tree-skeleton">
+            <NSkeleton text :repeat="8" :height="20" />
+          </div>
           <NTree
             v-else
             :data="treeData"
@@ -229,8 +268,12 @@ onMounted(() => {
       </template>
       <template #2>
         <NCard class="content-panel" size="large">
-          <div v-if="contentLoading" class="content-loading">
-            <NSpin size="large" />
+          <!-- P1-3: 右侧内容加载用骨架段落占位（标题 + 元信息 + 正文段落） -->
+          <div v-if="contentLoading" class="content-skeleton">
+            <NSkeleton text :width="280" :height="32" style="margin-bottom: 16px" />
+            <NSkeleton text :width="200" :height="14" style="margin-bottom: 24px" />
+            <NSkeleton text :repeat="6" style="margin-bottom: 12px" />
+            <NSkeleton text width="60%" />
           </div>
           <template v-else-if="currentPage">
             <div class="page-header">
@@ -401,10 +444,13 @@ onMounted(() => {
   padding-right: 4px;
 }
 
-.tree-loading {
-  display: flex;
-  justify-content: center;
-  padding: 40px 0;
+.tree-skeleton {
+  padding: 8px 0;
+}
+
+/* P2-10: Wiki 树搜索输入框 */
+.tree-search {
+  margin-bottom: 8px;
 }
 
 .content-panel {
@@ -417,11 +463,8 @@ onMounted(() => {
   padding: 32px 40px;
 }
 
-.content-loading {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 300px;
+.content-skeleton {
+  padding: 8px 0;
 }
 
 .page-header {

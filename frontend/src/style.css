@@ -11,6 +11,20 @@
   --opskg-color-danger: #d03050;
   --opskg-color-info: #70c0e8;
 
+  /* ── 节点类型色（11 种实体色，P1-19 令牌化）── */
+  /* 浅色下与 GraphView 原硬编码值保持一致，确保视觉无回归 */
+  --opskg-node-host: #2080f0;
+  --opskg-node-service: #f0a020;
+  --opskg-node-component: #18a058;
+  --opskg-node-parameter: #7c4dff;
+  --opskg-node-command: #00bcd4;
+  --opskg-node-procedure: #ff5722;
+  --opskg-node-incident: #d03050;
+  --opskg-node-symptom: #e91e63;
+  --opskg-node-experience: #ff9800;
+  --opskg-node-concept: #607d8b;
+  --opskg-node-document: #9c27b0;
+
   /* ── 文本（对比度达 WCAG AA 4.5:1+）── */
   --opskg-text-1: #1f2937;   /* 主文本 */
   --opskg-text-2: #6b7280;   /* 次文本（4.6:1） */
@@ -95,6 +109,19 @@
   --opskg-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3);
   --opskg-shadow-popover: 0 8px 32px rgba(0, 0, 0, 0.5);
   --opskg-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.4);
+
+  /* ── 节点类型色：深色背景下适当调亮（饱和度/明度提高）以保持对比度 ── */
+  --opskg-node-host: #4098fc;
+  --opskg-node-service: #f5b54d;
+  --opskg-node-component: #36b76d;
+  --opskg-node-parameter: #9a7dff;
+  --opskg-node-command: #29d6e8;
+  --opskg-node-procedure: #ff7551;
+  --opskg-node-incident: #e54871;
+  --opskg-node-symptom: #f04389;
+  --opskg-node-experience: #ffb030;
+  --opskg-node-concept: #8198a8;
+  --opskg-node-document: #b249cc;
 }
 
 /* ============================================================

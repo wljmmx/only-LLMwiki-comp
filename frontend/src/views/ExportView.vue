@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, reactive, onMounted } from 'vue'
 import {
   NCard,
   NTag,
@@ -10,7 +10,13 @@ import {
   NAlert,
   NDivider,
   NCode,
+  NForm,
+  NFormItem,
+  NRadioGroup,
+  NRadio,
   useMessage,
+  type FormInst,
+  type FormRules,
 } from 'naive-ui'
 import { exportDocument, downloadBlob, exportFormatOptions, type ExportFormat } from '@/api/export'
 import { listWikiDocs } from '@/api/versions'
@@ -21,9 +27,47 @@ const message = useMessage()
 
 const isAuthenticated = computed(() => !!getAuthToken())
 
-const title = ref('untitled')
-const content = ref('# 标题\n\n在此输入 Markdown 内容...')
-const format = ref<ExportFormat>('markdown')
+// 表单模型（NForm 单一数据源）：标题 / 内容 / 格式 / 选中的 Wiki 与模板 slug
+const formModel = reactive({
+  title: 'untitled',
+  content: '# 标题\n\n在此输入 Markdown 内容...',
+  format: 'markdown' as ExportFormat,
+  selectedWikiSlug: null as string | null,
+  selectedTemplateSlug: null as string | null,
+})
+
+// 向后兼容访问器：以 computed 代理 formModel，便于现有逻辑与测试通过 vm.title 等访问
+const title = computed({
+  get: () => formModel.title,
+  set: (v: string) => {
+    formModel.title = v
+  },
+})
+const content = computed({
+  get: () => formModel.content,
+  set: (v: string) => {
+    formModel.content = v
+  },
+})
+const format = computed({
+  get: () => formModel.format,
+  set: (v: ExportFormat) => {
+    formModel.format = v
+  },
+})
+const selectedWikiSlug = computed({
+  get: () => formModel.selectedWikiSlug,
+  set: (v: string | null) => {
+    formModel.selectedWikiSlug = v
+  },
+})
+const selectedTemplateSlug = computed({
+  get: () => formModel.selectedTemplateSlug,
+  set: (v: string | null) => {
+    formModel.selectedTemplateSlug = v
+  },
+})
+
 const exporting = ref(false)
 
 // 预设内容来源
@@ -32,11 +76,23 @@ const wikiDocsLoading = ref(false)
 const templates = ref<{ slug: string; name: string }[]>([])
 const templatesLoading = ref(false)
 
-const selectedWikiSlug = ref<string | null>(null)
-const selectedTemplateSlug = ref<string | null>(null)
+// 表单校验规则：标题（影响导出文件名）与导出内容必填
+const formRef = ref<FormInst | null>(null)
+const rules: FormRules = {
+  title: {
+    required: true,
+    message: '请输入标题',
+    trigger: ['blur', 'input'],
+  },
+  content: {
+    required: true,
+    message: '请输入导出内容',
+    trigger: ['blur', 'input'],
+  },
+}
 
 const formatDesc = computed(
-  () => exportFormatOptions.find((o) => o.value === format.value)?.desc || '',
+  () => exportFormatOptions.find((o) => o.value === formModel.format)?.desc || '',
 )
 
 async function loadWikiDocs() {
@@ -134,6 +190,17 @@ async function doExport() {
   }
 }
 
+// 提交按钮：先校验表单，校验失败给出 warning；通过后再调用 doExport
+async function handleExport() {
+  try {
+    await formRef.value?.validate()
+  } catch {
+    message.warning('请完善表单必填项后再提交')
+    return
+  }
+  await doExport()
+}
+
 function handleWikiSelect(slug: string) {
   selectedWikiSlug.value = slug
   loadWikiContent(slug)
@@ -173,18 +240,18 @@ onMounted(() => {
           <n-space v-if="wikiDocsLoading" :size="6">
             <n-tag size="small">加载中...</n-tag>
           </n-space>
-          <n-space v-else-if="wikiDocs.length" :size="6">
-            <n-tag
-              v-for="doc in wikiDocs"
-              :key="doc.slug"
-              size="small"
-              checkable
-              :checked="selectedWikiSlug === doc.slug"
-              @click="handleWikiSelect(doc.slug)"
-            >
-              {{ doc.slug }} · v{{ doc.version }}
-            </n-tag>
-          </n-space>
+          <!-- 单选场景：一次导出一个 wiki，绑定 formModel.selectedWikiSlug -->
+          <NRadioGroup
+            v-else-if="wikiDocs.length"
+            v-model:value="formModel.selectedWikiSlug"
+            @update:value="handleWikiSelect"
+          >
+            <n-space :size="6">
+              <NRadio v-for="doc in wikiDocs" :key="doc.slug" :value="doc.slug">
+                {{ doc.slug }} · v{{ doc.version }}
+              </NRadio>
+            </n-space>
+          </NRadioGroup>
           <span v-else class="empty-hint">暂无已发布 Wiki 文档</span>
         </div>
 
@@ -195,18 +262,18 @@ onMounted(() => {
           <n-space v-if="templatesLoading" :size="6">
             <n-tag size="small">加载中...</n-tag>
           </n-space>
-          <n-space v-else-if="templates.length" :size="6">
-            <n-tag
-              v-for="tpl in templates"
-              :key="tpl.slug"
-              size="small"
-              checkable
-              :checked="selectedTemplateSlug === tpl.slug"
-              @click="handleTemplateSelect(tpl.slug)"
-            >
-              {{ tpl.name }}
-            </n-tag>
-          </n-space>
+          <!-- 单选场景：绑定 formModel.selectedTemplateSlug -->
+          <NRadioGroup
+            v-else-if="templates.length"
+            v-model:value="formModel.selectedTemplateSlug"
+            @update:value="handleTemplateSelect"
+          >
+            <n-space :size="6">
+              <NRadio v-for="tpl in templates" :key="tpl.slug" :value="tpl.slug">
+                {{ tpl.name }}
+              </NRadio>
+            </n-space>
+          </NRadioGroup>
           <span v-else class="empty-hint">暂无模板</span>
         </div>
       </n-space>
@@ -217,48 +284,47 @@ onMounted(() => {
         <span>导出内容</span>
       </template>
 
-      <div class="form-row">
-        <label class="form-label">标题</label>
-        <n-input
-          v-model:value="title"
-          placeholder="文档标题（影响导出文件名）"
-          style="max-width: 500px"
-        />
-      </div>
+      <NForm ref="formRef" :model="formModel" :rules="rules" label-placement="top">
+        <NFormItem label="标题" path="title">
+          <n-input
+            v-model:value="formModel.title"
+            placeholder="文档标题（影响导出文件名）"
+            style="max-width: 500px"
+          />
+        </NFormItem>
 
-      <div class="form-row">
-        <label class="form-label">格式</label>
-        <n-select
-          v-model:value="format"
-          :options="exportFormatOptions.map((o) => ({ label: o.label, value: o.value }))"
-          style="max-width: 280px"
-        />
-        <span class="format-desc">{{ formatDesc }}</span>
-      </div>
+        <NFormItem label="格式" path="format">
+          <n-select
+            v-model:value="formModel.format"
+            :options="exportFormatOptions.map((o) => ({ label: o.label, value: o.value }))"
+            style="max-width: 280px"
+          />
+          <span class="format-desc">{{ formatDesc }}</span>
+        </NFormItem>
 
-      <div class="form-row" style="align-items: flex-start">
-        <label class="form-label">内容</label>
-        <n-input
-          v-model:value="content"
-          type="textarea"
-          :rows="16"
-          placeholder="支持 Markdown 语法"
-          style="flex: 1; font-family: monospace; font-size: 13px"
-        />
-      </div>
+        <NFormItem label="内容" path="content">
+          <n-input
+            v-model:value="formModel.content"
+            type="textarea"
+            :rows="16"
+            placeholder="支持 Markdown 语法"
+            style="font-family: monospace; font-size: 13px"
+          />
+        </NFormItem>
 
-      <div class="form-row" style="margin-top: 12px">
-        <n-button
-          type="primary"
-          size="large"
-          :loading="exporting"
-          :disabled="!isAuthenticated"
-          @click="doExport"
-        >
-          导出并下载
-        </n-button>
-        <span class="hint">点击后浏览器将自动下载文件</span>
-      </div>
+        <n-space align="center" :size="12" style="margin-top: 4px">
+          <n-button
+            type="primary"
+            size="large"
+            :loading="exporting"
+            :disabled="!isAuthenticated"
+            @click="handleExport"
+          >
+            导出并下载
+          </n-button>
+          <span class="hint">点击后浏览器将自动下载文件</span>
+        </n-space>
+      </NForm>
     </n-card>
 
     <n-card :bordered="true" style="margin-top: 16px" size="small">
@@ -318,20 +384,6 @@ onMounted(() => {
   font-size: 12px;
   color: var(--n-text-color-3, #999);
   font-style: italic;
-}
-
-.form-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.form-label {
-  width: 60px;
-  font-size: 13px;
-  color: var(--n-text-color-2, #6b7280);
-  flex-shrink: 0;
 }
 
 .format-desc {

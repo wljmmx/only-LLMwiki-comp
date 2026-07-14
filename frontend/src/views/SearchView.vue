@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import DOMPurify from 'dompurify'
 import { searchKnowledge } from '@/api/search'
+import { getTypeLabel } from '@/utils/format'
 import type { SearchResponse, SearchResult, SearchSuggestions } from '@/types/api'
 
 const router = useRouter()
@@ -60,6 +62,61 @@ function getScoreType(score: number): 'success' | 'info' | 'warning' | 'default'
   if (score >= 0.3) return 'warning'
   return 'default'
 }
+
+// P1-15：转义 HTML 实体，防止 snippet 中的 HTML 被当作标签解析（XSS 防护第一道）
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+/**
+ * P1-15：在 snippet 中用 <mark> 标签包裹匹配 query 的关键词
+ *
+ * XSS 防护双重保障：
+ * 1. 先 escape HTML 实体 → snippet 退化为纯文本，无法注入标签
+ * 2. 插入 mark 后再用 DOMPurify 清洗 → 兜底移除任何残留危险内容
+ *
+ * 单次合并替换：把所有 term 合成一个正则一次匹配，避免重复替换时
+ * 误伤已插入的 <mark class="search-hit"> 标签属性。
+ */
+function highlightSnippet(snippet: string, q: string): string {
+  if (!snippet) return ''
+  const escaped = escapeHtml(snippet)
+  const trimmedQuery = q.trim()
+  if (!trimmedQuery) return escaped
+  // 按空格分词，过滤空 term
+  const terms = trimmedQuery.split(/\s+/).filter(Boolean)
+  if (terms.length === 0) return escaped
+  // 转义每个 term 的正则元字符，避免破坏正则
+  const safeTerms = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  // 合并为单个正则，大小写不敏感，一次替换所有匹配
+  const combined = new RegExp(`(${safeTerms.join('|')})`, 'gi')
+  const highlighted = escaped.replace(combined, '<mark class="search-hit">$1</mark>')
+  // DOMPurify 兜底清洗（XSS 防护第二道），mark 与 class 默认放行
+  return DOMPurify.sanitize(highlighted)
+}
+
+/**
+ * P1-15：点击搜索结果卡片跳转
+ * - 有 doc_id → 跳转文档管理并定位该文档
+ * - 有 slug（wiki 类型）→ 跳转 Wiki 浏览并选中该页面
+ * - 兜底 → 跳转文档管理
+ */
+function handleResultClick(item: SearchResult): void {
+  if (item.doc_id) {
+    router.push({ path: '/documents', query: { doc_id: item.doc_id } })
+    return
+  }
+  if (item.slug) {
+    router.push({ path: '/wiki', query: { slug: item.slug } })
+    return
+  }
+  router.push('/documents')
+}
 </script>
 
 <template>
@@ -109,17 +166,27 @@ function getScoreType(score: number): 'success' | 'info' | 'warning' | 'default'
         </div>
 
         <n-space vertical :size="16" class="results-list">
-          <n-card v-for="item in results" :key="item.id" hoverable class="result-card">
+          <n-card
+            v-for="item in results"
+            :key="item.id"
+            hoverable
+            class="result-card"
+            tabindex="0"
+            role="button"
+            :aria-label="`打开搜索结果：${item.title}`"
+            @click="handleResultClick(item)"
+            @keydown.enter="handleResultClick(item)"
+          >
             <div class="card-header">
               <span class="result-title">{{ item.title }}</span>
               <n-tag :type="getScoreType(item.score)" size="small">
                 匹配度 {{ formatScore(item.score) }}
               </n-tag>
             </div>
-            <p class="result-snippet">{{ item.snippet }}</p>
+            <p class="result-snippet" v-html="highlightSnippet(item.snippet, query)"></p>
             <div class="card-footer">
               <n-tag size="small" type="info">
-                {{ item.type }}
+                {{ getTypeLabel(item.type) }}
               </n-tag>
             </div>
           </n-card>
@@ -241,6 +308,7 @@ function getScoreType(score: number): 'success' | 'info' | 'warning' | 'default'
 }
 
 .result-card {
+  cursor: pointer;
   transition:
     transform 0.2s ease,
     box-shadow 0.2s ease;
@@ -248,6 +316,19 @@ function getScoreType(score: number): 'success' | 'info' | 'warning' | 'default'
 
 .result-card:hover {
   transform: translateY(-2px);
+}
+
+/* P1-15：键盘聚焦可见，辅助键盘导航 */
+.result-card:focus-visible {
+  outline: 2px solid var(--opskg-color-primary);
+  outline-offset: 2px;
+}
+
+/* P1-15：关键词高亮 —— v-html 内容需用 :deep() 穿透 scoped 限制 */
+.result-snippet :deep(.search-hit) {
+  background: var(--opskg-color-warning);
+  padding: 0 2px;
+  border-radius: 2px;
 }
 
 .card-header {

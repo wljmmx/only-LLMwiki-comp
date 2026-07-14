@@ -55,6 +55,9 @@ export interface SearchResult {
   snippet: string
   score: number
   type: string
+  // P1-15：可选字段，支持搜索结果点击跳转（文档结果带 doc_id，wiki 结果带 slug）
+  doc_id?: string
+  slug?: string
 }
 
 // P2-1.6：空结果兜底建议

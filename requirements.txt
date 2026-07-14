@@ -102,6 +102,8 @@ iniconfig==2.3.0
     # via pytest
 isodate==0.7.2
     # via python3-saml
+jieba==0.42.1
+    # via -r requirements.in
 jiter==0.16.0
     # via openai
 joblib==1.5.3

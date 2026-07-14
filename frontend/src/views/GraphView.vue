@@ -37,8 +37,11 @@ import {
   type GraphStats,
   type GraphEntityDetail,
 } from '@/api/graph'
+import { useAppStore } from '@/stores/app'
+import { nodeTypeColor } from '@/utils/statusMap'
 
 const message = useMessage()
+const appStore = useAppStore()
 
 const loading = ref(false)
 const graphData = ref<{ nodes: GraphNode[]; links: GraphLink[] }>({ nodes: [], links: [] })
@@ -64,20 +67,7 @@ const entityTypeOptions = [
   { label: 'Document (文档)', value: 'Document' },
 ]
 
-// 节点类型 -> 颜色
-const nodeTypeColor: Record<string, string> = {
-  Host: '#2080f0',
-  Service: '#f0a020',
-  Component: '#18a058',
-  Parameter: '#7c4dff',
-  Command: '#00bcd4',
-  Procedure: '#ff5722',
-  Incident: '#d03050',
-  Symptom: '#e91e63',
-  Experience: '#ff9800',
-  Concept: '#607d8b',
-  Document: '#9c27b0',
-}
+// 节点类型 -> 颜色（P1-19: 已迁移至 @/utils/statusMap，引用 CSS 变量）
 
 const nodeTypeLabel: Record<string, string> = {
   Host: '主机',
@@ -106,6 +96,11 @@ const relationColor: Record<string, string> = {
   DERIVED_FROM: '#ff9800',
   RELATED_TO: '#607d8b',
 }
+
+// P0-2: 深色模式响应式颜色（背景网格点 + 边标签文字/底色）
+const patternColor = computed(() => (appStore.darkMode ? '#2a2a2e' : '#e5e5e5'))
+const edgeLabelFill = computed(() => (appStore.darkMode ? '#9ca3af' : '#666'))
+const edgeLabelBgFill = computed(() => (appStore.darkMode ? '#1f1f23' : '#fff'))
 
 // Vue Flow 节点与边
 const vfNodes = ref<Node[]>([])
@@ -251,8 +246,8 @@ function buildEdges(links: GraphLink[]): Edge[] {
       stroke: relationColor[l.type] || '#999',
       strokeWidth: 1.5,
     },
-    labelStyle: { fontSize: 10, fill: '#666' },
-    labelBgStyle: { fill: '#fff' },
+    labelStyle: { fontSize: 10, fill: edgeLabelFill.value },
+    labelBgStyle: { fill: edgeLabelBgFill.value },
   }))
 }
 
@@ -329,6 +324,16 @@ async function openEntityDetail(name: string) {
 }
 
 watch(entityTypeFilter, () => loadGraph())
+
+// P0-2: 深色模式切换时重建边，使标签文字/底色响应式生效
+watch(
+  () => appStore.darkMode,
+  () => {
+    if (graphData.value.links.length) {
+      vfEdges.value = buildEdges(graphData.value.links)
+    }
+  },
+)
 
 const statCards = computed(() => [
   { label: '实体总数', value: stats.value?.total_entities ?? 0, color: '#2080f0' },
@@ -420,7 +425,7 @@ onMounted(() => {
 
       <div v-else-if="graphData.nodes.length" class="flow-container">
         <VueFlow :nodes="vfNodes" :edges="vfEdges" :min-zoom="0.1" :max-zoom="3">
-          <Background pattern-color="#e5e5e5" :gap="20" />
+          <Background :pattern-color="patternColor" :gap="20" />
           <Controls />
           <MiniMap
             :node-color="(n: any) => nodeTypeColor[n.data?.nodeType] || '#999'"
@@ -451,7 +456,7 @@ onMounted(() => {
     </n-card>
 
     <!-- 实体详情抽屉 -->
-    <n-drawer v-model:show="detailVisible" :width="640" placement="right">
+    <n-drawer v-model:show="detailVisible" :width="720" placement="right">
       <n-drawer-content :title="`实体详情: ${selectedNodeName}`" closable>
         <div v-if="detailLoading" class="loading-container">
           <n-spin size="large" />
@@ -589,7 +594,7 @@ onMounted(() => {
   position: absolute;
   top: 12px;
   right: 12px;
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--opskg-bg-elevated);
   border: 1px solid var(--n-border-color, #e5e5e5);
   border-radius: 6px;
   padding: 10px 12px;

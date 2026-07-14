@@ -292,7 +292,7 @@ onMounted(() => {
               <n-space style="margin-top: 16px" :size="8">
                 <n-button
                   v-if="currentIncident.status === 'open'"
-                  type="warning"
+                  type="error"
                   size="small"
                   :loading="closing"
                   @click="handleClose"

@@ -38,6 +38,19 @@ export function deleteDocument(docId: string) {
   return api.delete(`/documents/${docId}`)
 }
 
+/**
+ * 编译单个文档为 Wiki（非流式，全流水线：解析 → 抽取 → LLM 编译 wiki 页面）
+ * POST /llm-wiki/recompile/{docId}?force=true
+ * 与 SSE 流式版本相比，适合批量编译场景（无实时进度展示）。
+ */
+export function compileToWiki(docId: string, force = true) {
+  return api.post<unknown, { pages_created?: number; pages_updated?: number }>(
+    `/llm-wiki/recompile/${docId}`,
+    null,
+    { params: { force } },
+  )
+}
+
 export function parseDocument(fmt: string, formData: FormData) {
   return api.post<unknown, { doc_id: string; status: string }>(`/parsers/parse/${fmt}`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },

@@ -22,6 +22,7 @@ import {
 } from 'naive-ui'
 import { listChanges, getChange, correlateChanges, ingestChanges, type Change } from '@/api/aiops'
 import { formatDateTime } from '@/utils/format'
+import { changeTypeColor, tagSeverity } from '@/utils/statusMap'
 
 const message = useMessage()
 
@@ -56,33 +57,7 @@ const ingestJson = ref(`[
   }
 ]`)
 
-const severityTagType: Record<string, 'default' | 'info' | 'success' | 'warning' | 'error'> = {
-  normal: 'default',
-  warning: 'warning',
-  high: 'error',
-  info: 'info',
-  low: 'info',
-  critical: 'error',
-  fatal: 'error',
-}
-
-function tagSeverity(s?: string) {
-  return severityTagType[s || ''] || 'default'
-}
-
-const changeTypeColor: Record<
-  string,
-  'default' | 'info' | 'success' | 'warning' | 'error' | 'primary'
-> = {
-  deployment: 'primary',
-  config_change: 'warning',
-  migration: 'info',
-  scaling: 'info',
-  restart: 'default',
-  rollback: 'error',
-  patch: 'success',
-  other: 'default',
-}
+// P1-19: severityTagType / changeTypeColor / tagSeverity 已迁移至 @/utils/statusMap
 
 const columns = computed<DataTableColumns<Change>>(() => [
   {
@@ -272,7 +247,7 @@ onMounted(() => {
     </n-card>
 
     <!-- 详情抽屉 -->
-    <n-drawer v-model:show="detailVisible" :width="600" placement="right">
+    <n-drawer v-model:show="detailVisible" :width="720" placement="right">
       <n-drawer-content title="变更详情" closable>
         <div v-if="detailLoading" class="loading-container">
           <n-spin size="large" />
