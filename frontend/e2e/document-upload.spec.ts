@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
+import { skipIfBackendDown, login } from './helpers/auth'
 
 /**
  * E2E 旅程 4：文档上传流程（P4-5）
@@ -12,9 +13,6 @@ import { test, expect, type Page } from '@playwright/test'
  *
  * 前置条件：已登录，后端可用
  */
-
-const TEST_USER = 'admin'
-const TEST_PASS = 'admin123'
 
 const SAMPLE_MARKDOWN = `# Nginx 502 故障排查
 
@@ -30,24 +28,6 @@ Nginx 502 Bad Gateway 表示上游服务不可达。
 - proxy_read_timeout: 60s
 - proxy_connect_timeout: 60s
 `
-
-async function skipIfBackendDown(page: Page) {
-  const resp = await page.request.get('/api/auth/me').catch(() => null)
-  if (!resp || resp.status() >= 500) {
-    test.skip(true, '后端不可用，跳过 E2E 测试')
-  }
-}
-
-async function login(page: Page) {
-  await page.goto('/login')
-  const usernameInput = page.locator('input[type="text"], input[placeholder*="用户"]').first()
-  const passwordInput = page.locator('input[type="password"]').first()
-  await usernameInput.fill(TEST_USER)
-  await passwordInput.fill(TEST_PASS)
-  const submitBtn = page.locator('button[type="submit"], button:has-text("登录")').first()
-  await submitBtn.click()
-  await expect(page).toHaveURL(/\/dashboard/, { timeout: 15_000 })
-}
 
 test.describe('文档上传旅程', () => {
   test.beforeEach(async ({ page }) => {
@@ -80,7 +60,6 @@ test.describe('文档上传旅程', () => {
   })
 
   test('上传后文档可通过搜索检索', async ({ page }) => {
-    // 先上传
     const uploadResp = await page.request.post('/api/parsers/parse/markdown', {
       multipart: {
         file: {
@@ -91,11 +70,7 @@ test.describe('文档上传旅程', () => {
       },
     })
     expect(uploadResp.status()).toBe(200)
-
-    // 等待索引刷新
     await page.waitForTimeout(1000)
-
-    // 搜索应能召回
     const searchResp = await page.request.get('/api/search?q=nginx+502&limit=5')
     expect(searchResp.status()).toBe(200)
     const searchData = await searchResp.json()
@@ -113,12 +88,10 @@ test.describe('文档上传旅程', () => {
       },
       timeout: 30_000,
     })
-    // LLM 不可用时编译可能部分失败，但 HTTP 应返回 200
     expect(resp.status()).toBe(200)
     const data = await resp.json()
     expect(data.doc_id).toBeTruthy()
     expect(data.compile).toBeTruthy()
-    // 编译结果应包含 slugs（即使为空也是合法的——无实体时）
     expect(Array.isArray(data.compile.slugs)).toBe(true)
   })
 })

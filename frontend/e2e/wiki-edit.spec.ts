@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
+import { skipIfBackendDown, login } from './helpers/auth'
 
 /**
  * E2E 旅程 5：Wiki 编辑流程（P4-5）
@@ -14,30 +15,8 @@ import { test, expect, type Page } from '@playwright/test'
  * 前置条件：已登录，后端可用，至少有一个 wiki 页面
  */
 
-const TEST_USER = 'admin'
-const TEST_PASS = 'admin123'
-
-async function skipIfBackendDown(page: Page) {
-  const resp = await page.request.get('/api/auth/me').catch(() => null)
-  if (!resp || resp.status() >= 500) {
-    test.skip(true, '后端不可用，跳过 E2E 测试')
-  }
-}
-
-async function login(page: Page) {
-  await page.goto('/login')
-  const usernameInput = page.locator('input[type="text"], input[placeholder*="用户"]').first()
-  const passwordInput = page.locator('input[type="password"]').first()
-  await usernameInput.fill(TEST_USER)
-  await passwordInput.fill(TEST_PASS)
-  const submitBtn = page.locator('button[type="submit"], button:has-text("登录")').first()
-  await submitBtn.click()
-  await expect(page).toHaveURL(/\/dashboard/, { timeout: 15_000 })
-}
-
 /** 确保有至少一个 wiki 页面可用（通过 ingest 创建） */
 async function ensureWikiPage(page: Page): Promise<string | null> {
-  // 直接通过 ingest 创建 wiki 页面
   const resp = await page.request.post('/api/llm-wiki/ingest', {
     multipart: {
       file: {
@@ -71,26 +50,22 @@ test.describe('Wiki 编辑旅程', () => {
   })
 
   test('PUT API 编辑 wiki 页面内容', async ({ page }) => {
-    // 确保有页面
     const slug = await ensureWikiPage(page)
     if (!slug) {
       test.skip(true, '无法创建测试 wiki 页面，跳过')
       return
     }
 
-    // 获取当前页面
     const getResp = await page.request.get(`/api/llm-wiki/page/${slug}`)
     expect(getResp.status()).toBe(200)
     const pageData = await getResp.json()
     const originalVersion = pageData.version
 
-    // 构造编辑后的内容（在正文末尾追加一段）
     const updatedContent = pageData.content.replace(
       /$/,
       '\n## E2E 编辑补充\n\n由 E2E 测试追加的内容。\n',
     )
 
-    // PUT 编辑
     const putResp = await page.request.put(`/api/llm-wiki/page/${slug}`, {
       data: {
         content: updatedContent,
@@ -109,11 +84,9 @@ test.describe('Wiki 编辑旅程', () => {
       return
     }
 
-    // 获取 backlinks
     const blResp = await page.request.get(`/api/llm-wiki/backlinks/${slug}`)
     expect(blResp.status()).toBe(200)
 
-    // 获取 index
     const idxResp = await page.request.get('/api/llm-wiki/index')
     expect(idxResp.status()).toBe(200)
     const idxData = await idxResp.json()
@@ -127,7 +100,6 @@ test.describe('Wiki 编辑旅程', () => {
       return
     }
 
-    // 多次编辑以产生版本历史
     for (let i = 0; i < 2; i++) {
       const getResp = await page.request.get(`/api/llm-wiki/page/${slug}`)
       if (getResp.status() !== 200) continue
@@ -140,7 +112,6 @@ test.describe('Wiki 编辑旅程', () => {
       })
     }
 
-    // 查看版本历史
     const histResp = await page.request.get(`/api/versions/wiki:${slug}`)
     expect(histResp.status()).toBe(200)
   })

@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
+import { skipIfBackendDown, login } from './helpers/auth'
 
 /**
  * E2E 旅程 6：Wiki Lint 健康检查流程（P4-5）
@@ -12,27 +13,6 @@ import { test, expect, type Page } from '@playwright/test'
  *
  * 前置条件：已登录，后端可用
  */
-
-const TEST_USER = 'admin'
-const TEST_PASS = 'admin123'
-
-async function skipIfBackendDown(page: Page) {
-  const resp = await page.request.get('/api/auth/me').catch(() => null)
-  if (!resp || resp.status() >= 500) {
-    test.skip(true, '后端不可用，跳过 E2E 测试')
-  }
-}
-
-async function login(page: Page) {
-  await page.goto('/login')
-  const usernameInput = page.locator('input[type="text"], input[placeholder*="用户"]').first()
-  const passwordInput = page.locator('input[type="password"]').first()
-  await usernameInput.fill(TEST_USER)
-  await passwordInput.fill(TEST_PASS)
-  const submitBtn = page.locator('button[type="submit"], button:has-text("登录")').first()
-  await submitBtn.click()
-  await expect(page).toHaveURL(/\/dashboard/, { timeout: 15_000 })
-}
 
 test.describe('Wiki Lint 健康检查旅程', () => {
   test.beforeEach(async ({ page }) => {
@@ -51,9 +31,7 @@ test.describe('Wiki Lint 健康检查旅程', () => {
     const resp = await page.request.post('/api/llm-wiki/lint')
     expect(resp.status()).toBe(200)
     const data = await resp.json()
-    // lint 结果应有问题列表（即使为空也是合法的）
     expect(data).toBeTruthy()
-    // 可能含 issues / summary / counts 等字段
     const jsonStr = JSON.stringify(data)
     expect(jsonStr.length).toBeGreaterThan(0)
   })

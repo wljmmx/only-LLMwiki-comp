@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
+import { skipIfBackendDown, login } from './helpers/auth'
 
 /**
  * E2E 旅程 3：搜索与导航流程（S14-6）
@@ -13,27 +14,6 @@ import { test, expect, type Page } from '@playwright/test'
  *
  * 前置条件：已登录
  */
-
-const TEST_USER = 'admin'
-const TEST_PASS = 'admin123'
-
-async function skipIfBackendDown(page: Page) {
-  const resp = await page.request.get('/api/auth/me').catch(() => null)
-  if (!resp || resp.status() >= 500) {
-    test.skip(true, '后端不可用，跳过 E2E 测试')
-  }
-}
-
-async function login(page: Page) {
-  await page.goto('/login')
-  const usernameInput = page.locator('input[type="text"], input[placeholder*="用户"]').first()
-  const passwordInput = page.locator('input[type="password"]').first()
-  await usernameInput.fill(TEST_USER)
-  await passwordInput.fill(TEST_PASS)
-  const submitBtn = page.locator('button[type="submit"], button:has-text("登录")').first()
-  await submitBtn.click()
-  await expect(page).toHaveURL(/\/dashboard/, { timeout: 15_000 })
-}
 
 test.describe('搜索与导航旅程', () => {
   test.beforeEach(async ({ page }) => {
@@ -50,16 +30,13 @@ test.describe('搜索与导航旅程', () => {
   test('输入查询并提交', async ({ page }) => {
     await page.goto('/search')
     await page.waitForLoadState('networkidle')
-    // 查找搜索输入框
     const searchInput = page
       .locator('input[type="text"], input[placeholder*="搜索"], input[placeholder*="查询"]')
       .first()
     if (await searchInput.isVisible({ timeout: 5000 }).catch(() => false)) {
       await searchInput.fill('nginx')
-      // 按 Enter 或点击搜索按钮
       await searchInput.press('Enter')
       await page.waitForTimeout(2000)
-      // 页面不应崩溃
       await expect(page.locator('body')).toBeVisible()
     }
   })
@@ -88,11 +65,9 @@ test.describe('搜索与导航旅程', () => {
   test('访问不存在路由显示 404 页面', async ({ page }) => {
     await page.goto('/this-does-not-exist-xyz')
     await page.waitForLoadState('networkidle')
-    // 应显示 404 相关文案或重定向
     const body = page.locator('body')
     await expect(body).toBeVisible()
     const text = (await body.textContent()) || ''
-    // 404 页面或被重定向
     expect(
       text.includes('404') ||
         text.includes('不存在') ||
