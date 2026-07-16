@@ -2,7 +2,7 @@
 
 包装原始 LLMClient，提供：
 1. 重试：指数退避，区分可重试/不可重试错误（LLMError.retryable）
-2. 限流：asyncio.Semaphore 限制并发请求数
+2. 限流：asyncio.Semaphore 限制并发请求数 + Token Bucket 限流器
 3. 降级：主后端失败后切换到 fallback 后端链
 
 用法：
@@ -11,6 +11,7 @@
         fallbacks=[OpenAICompatClient(...)],
         max_retries=3,
         concurrency_limit=5,
+        rate_limit=10.0,  # 10 req/s
     )
     resp = await client.chat(messages)
 """
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import time as _time
 from typing import Any, AsyncIterator
 
 import structlog
@@ -119,6 +121,53 @@ def _record_token_usage(backend: str, resp: LLMResponse) -> None:
         pass
 
 
+class TokenBucket:
+    """P2-2: Token Bucket 限流器 — 控制 LLM API 请求速率
+
+    基于 asyncio 的异步 token bucket 实现：
+    - max_tokens: 桶容量（突发容忍度）
+    - refill_rate: 每秒补充的 token 数（稳态速率）
+    - 每次请求消耗 1 token，桶空时 await 等待
+
+    用法：
+        limiter = TokenBucket(rate=10.0, burst=5)
+        async with limiter:
+            await llm.chat(...)
+    """
+
+    def __init__(self, rate: float = 10.0, burst: int = 5) -> None:
+        self._rate = rate
+        self._burst = burst
+        self._tokens = float(burst)
+        self._last_refill = _time.monotonic()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        """获取 1 个 token，若桶空则等待"""
+        async with self._lock:
+            now = _time.monotonic()
+            elapsed = now - self._last_refill
+            self._tokens = min(self._burst, self._tokens + elapsed * self._rate)
+            self._last_refill = now
+
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return
+
+            # 需要等待
+            wait = (1.0 - self._tokens) / self._rate
+            self._tokens = 0.0
+
+        await asyncio.sleep(wait)
+
+    async def __aenter__(self) -> "TokenBucket":
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        pass
+
+
 class ResilientLLMClient:
     """弹性 LLM 客户端 — 重试 + 限流 + 降级
 
@@ -134,6 +183,7 @@ class ResilientLLMClient:
         retry_base_delay: float = 1.0,
         retry_max_delay: float = 30.0,
         concurrency_limit: int = 10,
+        rate_limit: float = 0.0,
     ) -> None:
         self._primary = primary
         self._fallbacks = fallbacks or []
@@ -141,6 +191,12 @@ class ResilientLLMClient:
         self._retry_base_delay = retry_base_delay
         self._retry_max_delay = retry_max_delay
         self._semaphore = asyncio.Semaphore(concurrency_limit)
+        # P2-2: Token Bucket 限流器（rate_limit=0 表示不限流）
+        self._rate_limiter: TokenBucket | None = (
+            TokenBucket(rate=rate_limit, burst=max(1, int(rate_limit * 0.5)))
+            if rate_limit > 0
+            else None
+        )
 
     @property
     def backend_name(self) -> str:
@@ -191,6 +247,9 @@ class ResilientLLMClient:
 
         for attempt in range(self._max_retries + 1):
             try:
+                # P2-2: Token Bucket 限流（在 Semaphore 之前，避免占着并发槽等待）
+                if self._rate_limiter is not None:
+                    await self._rate_limiter.acquire()
                 async with self._semaphore:
                     resp = await client.chat(
                         messages,
@@ -291,6 +350,9 @@ class ResilientLLMClient:
 
         for attempt in range(self._max_retries + 1):
             try:
+                # P2-2: Token Bucket 限流（在 Semaphore 之前，避免占着并发槽等待）
+                if self._rate_limiter is not None:
+                    await self._rate_limiter.acquire()
                 async with self._semaphore:
                     return await client.embed(texts, model=model, **kwargs)
             except Exception as e:

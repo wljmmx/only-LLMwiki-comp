@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     llm_retry_max_delay: float = 30.0
     # 并发限流（同时进行的 LLM 请求数）
     llm_concurrency_limit: int = 10
+    # P2-2: Token Bucket 限流（req/s，0 表示不限流）
+    llm_rate_limit: float = 0.0
     # 降级后端链（逗号分隔，如 "ollama,vllm"）
     # 主后端失败后按顺序尝试 fallback 后端
     # 留空则不启用降级

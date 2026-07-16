@@ -65,4 +65,5 @@ def get_llm_client() -> LLMClient:
         retry_base_delay=settings.llm_retry_base_delay,
         retry_max_delay=settings.llm_retry_max_delay,
         concurrency_limit=settings.llm_concurrency_limit,
+        rate_limit=settings.llm_rate_limit,
     )
