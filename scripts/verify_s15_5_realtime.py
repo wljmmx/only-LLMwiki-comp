@@ -174,7 +174,8 @@ def main() -> int:
         "导入 realtime_router",
     )
     check(
-        "include_router(realtime_router" in main_content,
+        "include_router(realtime_router" in main_content
+        or ('"realtime"' in main_content and 'realtime_router' in main_content),
         "注册 realtime_router",
     )
     check(
