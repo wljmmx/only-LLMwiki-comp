@@ -176,6 +176,65 @@ async def llm_wiki_recompile(doc_id: str, force: bool = True) -> dict:
     }
 
 
+# ────────── 管道追踪：章节级 LLM 处理前后对比 ──────────
+
+@router.get("/llm-wiki/compile-trace/{doc_id}", dependencies=[Depends(verify_token)])
+async def llm_wiki_compile_trace(doc_id: str, force: bool = False) -> dict:
+    """获取指定文档的 LLM 编译管道追踪（章节级处理前后对比）
+
+    返回 PipelineTrace：
+    - 每个章节的原始内容 vs LLM 编译后内容对比
+    - 各章节处理耗时、LLM 成功/失败状态
+    - 汇总统计：拆分章节数、总字符数、成功率等
+
+    若 force=True 则先触发重编译再返回追踪；否则仅返回已有编译结果。
+    """
+    compiler = get_wiki_compiler()
+    if force:
+        result = await compiler.compile_raw_to_wiki(doc_id, force=True)
+    else:
+        # 尝试获取已有编译结果；若无则触发编译
+        result = await compiler.compile_raw_to_wiki(doc_id, force=False)
+
+    pt = result.pipeline_trace
+    if pt is None:
+        return {
+            "doc_id": doc_id,
+            "available": False,
+            "message": "该文档无管道追踪数据（可能未使用结构化编译或编译失败）",
+        }
+
+    return {
+        "doc_id": pt.doc_id,
+        "doc_title": pt.doc_title,
+        "available": True,
+        "summary": {
+            "duration_ms": pt.duration_ms,
+            "total_sections": pt.total_sections,
+            "total_raw_chars": pt.total_raw_chars,
+            "total_compiled_chars": pt.total_compiled_chars,
+            "sections_with_children": pt.sections_with_children,
+            "llm_success_count": pt.llm_success_count,
+            "llm_fail_count": pt.llm_fail_count,
+        },
+        "sections": [
+            {
+                "title": s.title,
+                "level": s.level,
+                "slug": s.slug,
+                "raw_content": s.raw_content,
+                "raw_chars": s.raw_chars,
+                "compiled_content": s.compiled_content,
+                "compiled_chars": s.compiled_chars,
+                "llm_success": s.llm_success,
+                "processing_time_ms": s.processing_time_ms,
+                "children_count": s.children_count,
+            }
+            for s in pt.sections
+        ],
+    }
+
+
 # ────────── P1-5: SSE 流式重编译 ──────────
 
 @router.post("/llm-wiki/recompile/{doc_id}/stream", dependencies=[Depends(verify_token)])

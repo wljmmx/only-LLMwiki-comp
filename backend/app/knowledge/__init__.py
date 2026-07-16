@@ -77,6 +77,8 @@ from app.knowledge.runbook_generator import (
     get_runbook_generator,
 )
 from app.knowledge.wiki_compiler import (
+    PipelineTrace,
+    SectionTrace,
     WikiCompiler,
     WikiCompileResult,
     WikiPage,
@@ -202,6 +204,8 @@ __all__ = [
     "WikiCompiler",
     "WikiPage",
     "WikiCompileResult",
+    "PipelineTrace",
+    "SectionTrace",
     "get_wiki_compiler",
     "make_slug",
     "make_hierarchical_slug",

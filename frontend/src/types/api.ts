@@ -134,3 +134,37 @@ export interface SearchStats {
   vectorized_docs: number
   numpy_enabled: boolean
 }
+
+// ────────── 管道追踪：章节级 LLM 处理前后对比 ──────────
+
+export interface SectionTrace {
+  title: string
+  level: number
+  slug: string
+  raw_content: string
+  raw_chars: number
+  compiled_content: string
+  compiled_chars: number
+  llm_success: boolean
+  processing_time_ms: number
+  children_count: number
+}
+
+export interface PipelineTraceSummary {
+  duration_ms: number
+  total_sections: number
+  total_raw_chars: number
+  total_compiled_chars: number
+  sections_with_children: number
+  llm_success_count: number
+  llm_fail_count: number
+}
+
+export interface CompileTraceResponse {
+  doc_id: string
+  doc_title: string
+  available: boolean
+  message?: string
+  summary?: PipelineTraceSummary
+  sections?: SectionTrace[]
+}

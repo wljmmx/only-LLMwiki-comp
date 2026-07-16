@@ -116,16 +116,22 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '健康检查', icon: 'health', menuGroup: '质量治理', menuOrder: 0 },
       },
       {
+        path: 'pipeline-trace',
+        name: 'pipeline-trace',
+        component: () => import('@/views/PipelineTraceView.vue'),
+        meta: { title: '管道追踪', icon: 'pipeline', menuGroup: '质量治理', menuOrder: 1 },
+      },
+      {
         path: 'review',
         name: 'review',
         component: () => import('@/views/ReviewView.vue'),
-        meta: { title: '审查队列', icon: 'review', menuGroup: '质量治理', menuOrder: 1 },
+        meta: { title: '审查队列', icon: 'review', menuGroup: '质量治理', menuOrder: 2 },
       },
       {
         path: 'versions',
         name: 'versions',
         component: () => import('@/views/VersionsView.vue'),
-        meta: { title: '版本控制', icon: 'versions', menuGroup: '质量治理', menuOrder: 2 },
+        meta: { title: '版本控制', icon: 'versions', menuGroup: '质量治理', menuOrder: 3 },
       },
       {
         path: 'incidents',

@@ -28,6 +28,7 @@ import {
   CubeOutline,
   SpeedometerOutline,
   NotificationsOutline,
+  AnalyticsOutline,
   // 通用操作图标
   AddOutline,
   RefreshOutline,
@@ -56,6 +57,7 @@ export const iconRegistry = {
   'wiki-query': ChatbubblesOutline,
   graph: GitNetworkOutline,
   health: HeartCircleOutline,
+  pipeline: AnalyticsOutline,
   review: CheckmarkDoneOutline,
   versions: TimeOutline,
   incidents: AlertCircleOutline,

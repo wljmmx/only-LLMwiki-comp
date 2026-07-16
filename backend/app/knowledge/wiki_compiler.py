@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -209,6 +210,40 @@ class WikiCompileResult:
     graph_compiled: bool = False
     # S1: 段落分类统计
     paragraph_count: int = 0
+    # Pipeline trace: 章节级管道追踪
+    pipeline_trace: PipelineTrace | None = None
+
+
+@dataclass
+class SectionTrace:
+    """单个章节的 LLM 处理追踪记录"""
+
+    title: str                          # 章节标题
+    level: int                          # 标题层级
+    slug: str                           # 生成的 slug
+    raw_content: str                    # 处理前原始内容
+    raw_chars: int                      # 原始字符数
+    compiled_content: str               # LLM 编译后内容
+    compiled_chars: int                 # 编译后字符数
+    llm_success: bool                   # LLM 是否成功
+    processing_time_ms: float           # 处理耗时(ms)
+    children_count: int                 # 子章节数
+
+
+@dataclass
+class PipelineTrace:
+    """一次编译的完整管道追踪"""
+
+    doc_id: str
+    doc_title: str
+    duration_ms: float
+    sections: list[SectionTrace] = field(default_factory=list)
+    total_raw_chars: int = 0
+    total_compiled_chars: int = 0
+    total_sections: int = 0
+    sections_with_children: int = 0
+    llm_success_count: int = 0
+    llm_fail_count: int = 0
 
 
 # ────────── 命名约定（AGENTS.md §五）──────────
@@ -949,18 +984,40 @@ class WikiCompiler:
 
         tree_with_slugs = generate_slug_for_heading_tree(heading_tree_dicts)
 
+        t_start = time.monotonic()
+        trace_buffer: list[SectionTrace] = []
         page_count = await self._compile_tree_node_with_llm(
             tree_with_slugs,
             doc,
             source_entry,
             result,
             force=force,
+            trace_buffer=trace_buffer,
         )
+        duration_ms = (time.monotonic() - t_start) * 1000
+
+        # 构建 PipelineTrace
+        pt = PipelineTrace(
+            doc_id=doc.doc_id,
+            doc_title=doc.metadata.get("title", doc.doc_id) if doc.metadata else doc.doc_id,
+            duration_ms=round(duration_ms, 1),
+            sections=trace_buffer,
+        )
+        pt.total_sections = len(trace_buffer)
+        pt.total_raw_chars = sum(s.raw_chars for s in trace_buffer)
+        pt.total_compiled_chars = sum(s.compiled_chars for s in trace_buffer)
+        pt.sections_with_children = sum(1 for s in trace_buffer if s.children_count > 0)
+        pt.llm_success_count = sum(1 for s in trace_buffer if s.llm_success)
+        pt.llm_fail_count = sum(1 for s in trace_buffer if not s.llm_success)
+        result.pipeline_trace = pt
 
         logger.info(
             "wiki_compiler_struct_done",
             doc_id=doc.doc_id,
             pages=page_count,
+            sections=pt.total_sections,
+            raw_chars=pt.total_raw_chars,
+            compiled_chars=pt.total_compiled_chars,
         )
         return result
 
@@ -973,8 +1030,12 @@ class WikiCompiler:
         *,
         force: bool = False,
         parent_slug: str | None = None,
+        trace_buffer: list[SectionTrace] | None = None,
     ) -> int:
-        """递归编译标题树节点为 wiki 页面（使用 LLM 生成内容）"""
+        """递归编译标题树节点为 wiki 页面（使用 LLM 生成内容）
+
+        trace_buffer: 可选列表，收集章节级管道追踪数据
+        """
         count = 0
         for node in nodes:
             slug = node.get("slug")
@@ -984,15 +1045,41 @@ class WikiCompiler:
             if not slug or level > 3:
                 if node.get("children"):
                     count += await self._compile_tree_node_with_llm(
-                        node["children"], doc, source_entry, result, force=force, parent_slug=slug
+                        node["children"], doc, source_entry, result, force=force, parent_slug=slug, trace_buffer=trace_buffer
                     )
                 continue
 
+            # 准备原始内容
+            elements = node.get("elements", [])
+            raw_content = self._render_elements_to_text(elements)
+            raw_chars = len(raw_content)
+
+            llm_success = True
+            processing_time_ms = 0.0
             try:
+                t_start = time.monotonic()
                 body_md = await self._llm_compile_section(node, parent_slug)
+                processing_time_ms = (time.monotonic() - t_start) * 1000
             except Exception as e:
                 logger.warning("llm_compile_section_failed", slug=slug, error=str(e))
                 body_md = self._build_section_body(node, parent_slug)
+                llm_success = False
+                processing_time_ms = 0.0
+
+            # 收集管道追踪数据
+            if trace_buffer is not None:
+                trace_buffer.append(SectionTrace(
+                    title=title,
+                    level=level,
+                    slug=slug,
+                    raw_content=raw_content,
+                    raw_chars=raw_chars,
+                    compiled_content=body_md,
+                    compiled_chars=len(body_md),
+                    llm_success=llm_success,
+                    processing_time_ms=round(processing_time_ms, 1),
+                    children_count=len(node.get("children", [])),
+                ))
 
             page = WikiPage(
                 slug=slug,
@@ -1034,7 +1121,7 @@ class WikiCompiler:
 
             if node.get("children"):
                 count += await self._compile_tree_node_with_llm(
-                    node["children"], doc, source_entry, result, force=force, parent_slug=slug
+                    node["children"], doc, source_entry, result, force=force, parent_slug=slug, trace_buffer=trace_buffer
                 )
 
         return count

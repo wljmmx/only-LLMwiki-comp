@@ -6,6 +6,7 @@ import type {
   BacklinkItem,
   WikiPageUpdatePayload,
   WikiPageUpdateResult,
+  CompileTraceResponse,
 } from '@/types/api'
 
 export function getWikiIndex() {
@@ -224,4 +225,11 @@ export function checkDrift(docId: string) {
 
 export function rebuildIndex() {
   return api.post<unknown, any>('/llm-wiki/index/rebuild')
+}
+
+// 管道追踪：获取文档编译的章节级 LLM 处理前后对比
+export function getCompileTrace(docId: string, force = false) {
+  return api.get<unknown, CompileTraceResponse>(`/llm-wiki/compile-trace/${docId}`, {
+    params: { force },
+  })
 }
