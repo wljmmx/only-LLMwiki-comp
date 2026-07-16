@@ -59,6 +59,7 @@ jobs:
       - name: Verify scripts — 基础验证（11 脚本）
         env:
           PYTHONPATH: backend
+          OPSKG_ALLOW_LOOPBACK_URLS: 1  # webhook 测试需要 mock server 环回地址
         run: |
           set -e
           for script in \

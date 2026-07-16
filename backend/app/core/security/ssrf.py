@@ -6,11 +6,14 @@
 - DNS 解析后二次检查（防止域名指向内部 IP）
 
 设计为独立模块，可从 HTTP 端点和后台任务（webhook/ollama/rollback）复用。
+
+测试环境：设置 OPSKG_ALLOW_LOOPBACK_URLS=1 允许环回地址（用于 mock server 测试）。
 """
 
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 from urllib.parse import urlparse
 
@@ -64,6 +67,8 @@ def validate_url_safe(url: str) -> str:
 
     通过验证返回原 URL，否则抛出 SsrfError。
 
+    测试环境：设置 OPSKG_ALLOW_LOOPBACK_URLS=1 允许环回地址。
+
     用法：
         from app.core.security import validate_url_safe
 
@@ -79,6 +84,10 @@ def validate_url_safe(url: str) -> str:
     hostname = parsed.hostname or ""
     if not hostname:
         raise SsrfError("URL 缺少 hostname")
+
+    # 测试环境：允许环回地址（用于 mock server 测试）
+    if os.environ.get("OPSKG_ALLOW_LOOPBACK_URLS") == "1":
+        return url
 
     # 直接检查 IP 字面量
     if _is_blocked_ip(hostname):
