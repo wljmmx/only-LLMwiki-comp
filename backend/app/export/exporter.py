@@ -196,7 +196,7 @@ class Exporter:
         html_rows = []
         for i, row in enumerate(rows):
             # 跳过分隔行 |---|---|
-            if re.match(r"^\|[\s-:]+\|", row):
+            if re.match(r"^\|[\s:\-]+\|", row):
                 continue
             cells = [c.strip() for c in row.strip("|").split("|")]
             tag = "th" if i == 0 else "td"

@@ -106,7 +106,7 @@ class ReviewQueue:
             """INSERT INTO review_items
                (item_type, relation_type, from_entity, to_entity, properties,
                 confidence, evidence_span, source_doc_id, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 "relation",
                 relation_type,

@@ -31,6 +31,7 @@ from app.routers.llm_wiki_router import router as llm_wiki_router
 from app.routers.mcp_router import router as mcp_router
 from app.routers.oidc_router import router as oidc_router
 from app.routers.okf_router import router as okf_router
+from app.routers.cost_router import router as cost_router
 from app.routers.parsers_router import router as parsers_router
 from app.routers.realtime_router import router as realtime_router
 from app.routers.review_router import router as review_router
@@ -198,6 +199,20 @@ from app.middleware.rate_limit import configure_rate_limit  # noqa: E402
 configure_rate_limit(app)
 app.add_middleware(AuditLogMiddleware)
 
+# 安全响应头（CSP, X-Content-Type-Options, X-Frame-Options 等）
+from app.core.security.headers import SecurityHeadersMiddleware  # noqa: E402
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# API 版本废弃中间件（当前无废弃端点，预留）
+from app.middleware.deprecation import DeprecationMiddleware  # noqa: E402
+
+app.add_middleware(
+    DeprecationMiddleware,
+    deprecated_paths={},
+    migration_map={},
+)
+
 
 @app.get("/health")
 async def health() -> dict[str, object]:
@@ -276,6 +291,7 @@ _BUSINESS_ROUTERS: list[tuple[str, object]] = [
     ("settings-mgmt", settings_mgmt_router),
     ("okf", okf_router),
     ("backup", backup_router),
+    ("cost", cost_router),
 ]
 
 for _name, _router in _BUSINESS_ROUTERS:

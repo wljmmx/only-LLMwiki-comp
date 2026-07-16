@@ -38,6 +38,7 @@ from app.core.llm.base import (
     LLMServerError,
     LLMTimeoutError,
 )
+from app.core.llm.cache import LlmCache
 
 logger = structlog.get_logger()
 
@@ -103,7 +104,7 @@ def _classify_error(exc: Exception) -> LLMError:
 
 
 def _record_token_usage(backend: str, resp: LLMResponse) -> None:
-    """P2-3: 上报 token 用量到 Prometheus"""
+    """P2-3: 上报 token 用量到 Prometheus + 成本追踪"""
     try:
         from app.observability.metrics import METRICS
 
@@ -118,6 +119,19 @@ def _record_token_usage(backend: str, resp: LLMResponse) -> None:
             )
     except Exception:  # noqa: BLE001
         # 指标上报失败不应影响业务
+        pass
+
+    # 成本追踪（异步记录，不阻塞 LLM 调用）
+    try:
+        from app.observability.cost_tracker import get_cost_tracker
+
+        get_cost_tracker().record(
+            backend=backend,
+            model=resp.model or "unknown",
+            input_tokens=resp.prompt_tokens,
+            output_tokens=resp.completion_tokens,
+        )
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -184,6 +198,7 @@ class ResilientLLMClient:
         retry_max_delay: float = 30.0,
         concurrency_limit: int = 10,
         rate_limit: float = 0.0,
+        cache: LlmCache | None = None,
     ) -> None:
         self._primary = primary
         self._fallbacks = fallbacks or []
@@ -191,6 +206,7 @@ class ResilientLLMClient:
         self._retry_base_delay = retry_base_delay
         self._retry_max_delay = retry_max_delay
         self._semaphore = asyncio.Semaphore(concurrency_limit)
+        self._cache = cache
         # P2-2: Token Bucket 限流器（rate_limit=0 表示不限流）
         self._rate_limiter: TokenBucket | None = (
             TokenBucket(rate=rate_limit, burst=max(1, int(rate_limit * 0.5)))
@@ -242,7 +258,19 @@ class ResilientLLMClient:
         max_tokens: int | None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """对单个后端执行带重试的 chat"""
+        """对单个后端执行带重试的 chat（含缓存检查）"""
+        # 缓存检查（在重试循环之前，避免重复 LLM 调用）
+        if self._cache is not None:
+            cached = self._cache.get(
+                client.backend_name, messages, temperature, max_tokens
+            )
+            if cached is not None:
+                logger.debug(
+                    "llm.cache_hit",
+                    backend=client.backend_name,
+                )
+                return cached
+
         last_error: Exception | None = None
 
         for attempt in range(self._max_retries + 1):
@@ -259,6 +287,11 @@ class ResilientLLMClient:
                     )
                 # P2-3: 上报 token 用量到 Prometheus
                 _record_token_usage(client.backend_name, resp)
+                # 缓存成功的响应
+                if self._cache is not None:
+                    self._cache.set(
+                        client.backend_name, messages, temperature, max_tokens, resp
+                    )
                 return resp
             except Exception as e:
                 # P2-1: 分类错误，决定是否可重试

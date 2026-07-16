@@ -58,6 +58,16 @@ def get_llm_client() -> LLMClient:
     # P2-1: 用 ResilientLLMClient 包装
     from app.core.llm.resilient import ResilientLLMClient
 
+    # LLM 调用缓存
+    cache = None
+    if settings.llm_cache_enabled:
+        from app.core.llm.cache import LlmCache
+
+        cache = LlmCache(
+            ttl=settings.llm_cache_ttl,
+            max_size=settings.llm_cache_max_size,
+        )
+
     return ResilientLLMClient(
         primary,
         fallbacks=fallbacks or None,
@@ -66,4 +76,5 @@ def get_llm_client() -> LLMClient:
         retry_max_delay=settings.llm_retry_max_delay,
         concurrency_limit=settings.llm_concurrency_limit,
         rate_limit=settings.llm_rate_limit,
+        cache=cache,
     )

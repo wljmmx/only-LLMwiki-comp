@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     # 留空则不启用降级
     llm_fallback_backends: str = ""
 
+    # LLM 调用缓存（减少重复 API 调用）
+    # 设为 False 可关闭缓存
+    llm_cache_enabled: bool = True
+    # 缓存条目 TTL（秒），默认 300 秒（5 分钟）
+    llm_cache_ttl: int = 300
+    # 最大缓存条目数，默认 1000
+    llm_cache_max_size: int = 1000
+
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:7b"

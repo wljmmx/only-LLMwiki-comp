@@ -1,5 +1,24 @@
 import { config } from '@vue/test-utils'
 
+// Naive UI 依赖 vueuc/vooks 在模块加载时访问 window.matchMedia
+// 必须在 importOriginal() 之前 mock，因此放在 setupFiles 中
+if (typeof window !== 'undefined') {
+  if (typeof window.matchMedia !== 'function') {
+    // eslint-disable-next-line no-console
+    console.log('[setup] mocking window.matchMedia')
+    window.matchMedia = (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }) as any
+  }
+}
+
 // 测试环境默认 stub naive-ui 组件，避免在 jsdom 中进行真实渲染。
 // renderStubDefaultSlot 让 stub 仍渲染默认插槽内容，便于文本断言。
 config.global.renderStubDefaultSlot = true
