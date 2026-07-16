@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, h } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   NDataTable,
   NButton,
@@ -25,12 +26,10 @@ import {
 import type { UploadCustomRequestOptions } from 'naive-ui'
 import { listDocuments, deleteDocument, parseDocument, getDocumentContent, searchDocuments, getPipelineStatus, compileToWiki } from '@/api/documents'
 import { formatFileSize, formatDateTime as formatDateTimeUtil } from '@/utils/format'
-import { useSse } from '@/composables/useSse'
-import type { SseEvent } from '@/composables/useSse'
 import type { DocumentMeta } from '@/types/api'
 
 const message = useMessage()
-const { subscribe } = useSse()
+const router = useRouter()
 
 const loading = ref(false)
 const documents = ref<DocumentMeta[]>([])
@@ -39,7 +38,6 @@ const limit = ref(10)
 const offset = ref(0)
 const searchText = ref('')
 const isSearching = ref(false)
-const compilingId = ref<string | null>(null)
 const formatFilter = ref<string>('')
 const statusFilter = ref<string>('')
 
@@ -173,9 +171,7 @@ const columns = [
                 size: 'small',
                 type: 'info',
                 quaternary: true,
-                loading: compilingId.value === row.id,
-                disabled: compilingId.value !== null && compilingId.value !== row.id,
-                onClick: () => handleCompileToWiki(row),
+                onClick: () => router.push({ name: 'pipeline', query: { doc_id: row.id } }),
               },
               { default: () => '编译为Wiki' },
             ),
@@ -271,105 +267,6 @@ function handleUpload({ file, onFinish, onError }: UploadCustomRequestOptions) {
       console.error(err)
       onError()
     })
-}
-
-async function handleCompileToWiki(doc: DocumentMeta) {
-  compilingId.value = doc.id
-  pipelineLoading.value = true
-  pipelineProgress.value = 0
-  pipelineResult.value = null
-  pipelineSteps.value = [
-    { name: 'parse', label: '解析', status: 'pending' },
-    { name: 'extract', label: '知识抽取', status: 'pending' },
-    { name: 'compile', label: '编译 Wiki', status: 'pending' },
-    { name: 'index', label: '重建索引', status: 'pending' },
-  ]
-
-  // P3-2: 使用 SSE 流式编译，实时展示步骤进度
-  const stepIndex: Record<string, number> = {
-    parse: 0, extract: 1, compile: 2, index: 3,
-  }
-
-  subscribe(`/llm-wiki/recompile/${doc.id}/stream?force=true`, {
-    onEvent: (evt: SseEvent) => {
-      if (evt.type === 'step_start') {
-        const step = evt.data.step as string
-        const idx = stepIndex[step] ?? 0
-        if (step in stepIndex) {
-          pipelineSteps.value[idx].status = 'running'
-          pipelineProgress.value = (idx / 4) * 100
-        }
-      } else if (evt.type === 'step_done') {
-        const step = evt.data.step as string
-        // P2-5.5: wiki_compiler 取消时发 step_done("cancelled")，不应更新任何步骤
-        if (step === 'cancelled') return
-        const idx = stepIndex[step]
-        if (idx !== undefined) {
-          pipelineSteps.value[idx].status = 'done'
-          pipelineSteps.value[idx].duration_ms = evt.data.duration_ms ?? null
-          pipelineProgress.value = ((idx + 1) / 4) * 100
-          if (step === 'compile') {
-            pipelineResult.value = evt.data
-          }
-        }
-      } else if (evt.type === 'page_start') {
-        // P2-5.5: compile 步骤逐实体编译开始
-        const data = evt.data
-        pipelineSteps.value[2].subProgress = {
-          current: (data.index ?? 0),
-          total: data.total ?? 0,
-          currentEntity: data.entity ?? '',
-        }
-      } else if (evt.type === 'page_done') {
-        // P2-5.5: 单实体编译完成，更新子进度
-        const data = evt.data
-        const sp = pipelineSteps.value[2].subProgress
-        if (sp) {
-          sp.current = (data.index ?? sp.current) + 1
-          sp.currentEntity = ''
-        }
-      } else if (evt.type === 'progress') {
-        // P2-5.5: wiki_compiler 精确百分比进度（compile 步骤内）
-        const percent = evt.data.percent as number | undefined
-        if (typeof percent === 'number' && percent > 0) {
-          // compile 是第 3 步（索引 2），映射到 50%-75% 区间
-          pipelineProgress.value = 50 + (percent / 100) * 25
-        }
-      } else if (evt.type === 'done') {
-        pipelineProgress.value = 100
-        pipelineLoading.value = false
-        compilingId.value = null
-        // 清理子进度
-        pipelineSteps.value[2].subProgress = null
-        const created = evt.data.pages_created ?? 0
-        const updated = evt.data.pages_updated ?? 0
-        const errors = evt.data.errors ?? []
-        if (errors.length > 0) {
-          message.warning(`编译完成（${created} 创建 / ${updated} 更新），但有 ${errors.length} 个错误`)
-        } else if (created === 0 && updated === 0) {
-          message.info('编译完成，无新页面生成')
-        } else {
-          message.success(`编译成功：${created} 个页面创建，${updated} 个页面更新`)
-        }
-        fetchDocuments()
-      } else if (evt.type === 'error') {
-        pipelineLoading.value = false
-        compilingId.value = null
-        message.error('编译失败：' + (evt.data.message || '未知错误'))
-        const step = evt.data.step as string
-        const idx = stepIndex[step]
-        if (idx !== undefined) {
-          pipelineSteps.value[idx].status = 'error'
-          pipelineSteps.value[idx].error = evt.data.message
-        }
-      }
-    },
-    onError: (err: string) => {
-      pipelineLoading.value = false
-      compilingId.value = null
-      message.error('编译连接失败：' + err)
-    },
-  })
 }
 
 async function handleView(doc: DocumentMeta) {

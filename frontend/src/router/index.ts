@@ -110,6 +110,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '知识图谱', icon: 'graph', menuGroup: '知识管理', menuOrder: 4 },
       },
       {
+        path: 'pipeline',
+        name: 'pipeline',
+        component: () => import('@/views/PipelineView.vue'),
+        meta: { title: '编译流水线', icon: 'pipeline', menuGroup: '知识管理', menuOrder: 5 },
+      },
+      {
         path: 'wiki-health',
         name: 'wiki-health',
         component: () => import('@/views/WikiHealthView.vue'),
