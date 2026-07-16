@@ -250,33 +250,47 @@ async def tracing_status() -> dict[str, object]:
 
 
 # ────────── 业务域 APIRouter 聚合注册 ──────────
+# P1-5: API 版本化 — 业务路由注册到 /api/v1，同时保留 /api 兼容旧路径
+# auth/setup 等基础设施路由不添加版本前缀（直接访问）
+
+_BUSINESS_ROUTERS: list[tuple[str, object]] = [
+    ("documents", documents_router),
+    ("parsers", parsers_router),
+    ("search", search_router),
+    ("review", review_router),
+    ("wiki", wiki_router),
+    ("llm-wiki", llm_wiki_router),
+    ("graph", graph_router),
+    ("extraction", extraction_router),
+    ("events", events_router),
+    ("changes", changes_router),
+    ("topology", topology_router),
+    ("runbook", runbook_router),
+    ("templates", templates_router),
+    ("versions", versions_router),
+    ("export", export_router),
+    ("mcp", mcp_router),
+    ("webhook", webhook_router),
+    ("anomaly", anomaly_router),
+    ("realtime", realtime_router),
+    ("settings-mgmt", settings_mgmt_router),
+    ("okf", okf_router),
+    ("backup", backup_router),
+]
+
+for _name, _router in _BUSINESS_ROUTERS:
+    app.include_router(_router, prefix="/api/v1")
+    # P1-5: 向后兼容旧 /api 前缀
+    app.include_router(_router, prefix="/api")
+    # P1-5: 向后兼容无前缀路径（测试客户端和内网直连场景）
+    app.include_router(_router)
+
+# 基础设施路由（不版本化）
 app.include_router(auth_router)
 app.include_router(oidc_router)
 app.include_router(saml_router)
 app.include_router(ldap_router)
-app.include_router(documents_router)
-app.include_router(parsers_router)
-app.include_router(search_router)
-app.include_router(review_router)
-app.include_router(wiki_router)
-app.include_router(llm_wiki_router)
-app.include_router(graph_router)
-app.include_router(extraction_router)
-app.include_router(events_router)
-app.include_router(changes_router)
-app.include_router(topology_router)
-app.include_router(runbook_router)
-app.include_router(templates_router)
-app.include_router(versions_router)
-app.include_router(export_router)
-app.include_router(mcp_router)
-app.include_router(webhook_router)
-app.include_router(anomaly_router)
-app.include_router(realtime_router)
 app.include_router(setup_router)
-app.include_router(settings_mgmt_router)
-app.include_router(okf_router)
-app.include_router(backup_router)
 
 
 # ────────── 审计日志查询端点（admin 权限） ──────────

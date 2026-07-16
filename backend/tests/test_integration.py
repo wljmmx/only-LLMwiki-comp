@@ -204,6 +204,8 @@ class TestKnowledgeCompiler:
         assert "ip" in merged.properties
         assert "role" in merged.properties
         assert merged.confidence == 0.9  # 保留高置信度
+        # 验证去重结果
+        assert result.duplicates_found >= 1
 
     def test_authority_scoring(self):
         """权威评分计算"""

@@ -879,7 +879,7 @@ class TestAPIEndpoints:
     def test_rules_crud_via_api(self, client):
         # 创建
         resp = client.post(
-            "/webhooks/rules",
+            "/api/v1/webhooks/rules",
             json={
                 "name": "test-rule",
                 "event_type_pattern": "incident.*",
@@ -895,20 +895,20 @@ class TestAPIEndpoints:
         rule_id = rule["id"]
 
         # 列表
-        resp = client.get("/webhooks/rules")
+        resp = client.get("/api/v1/webhooks/rules")
         assert resp.status_code == 200
         data = resp.json()
         assert data["count"] >= 1
         assert any(r["id"] == rule_id for r in data["rules"])
 
         # 获取
-        resp = client.get(f"/webhooks/rules/{rule_id}")
+        resp = client.get(f"/api/v1/webhooks/rules/{rule_id}")
         assert resp.status_code == 200
         assert resp.json()["id"] == rule_id
 
         # 更新
         resp = client.put(
-            f"/webhooks/rules/{rule_id}",
+            f"/api/v1/webhooks/rules/{rule_id}",
             json={"severity": "warning", "priority": 5},
         )
         assert resp.status_code == 200
@@ -916,26 +916,26 @@ class TestAPIEndpoints:
         assert resp.json()["priority"] == 5
 
         # 删除
-        resp = client.delete(f"/webhooks/rules/{rule_id}")
+        resp = client.delete(f"/api/v1/webhooks/rules/{rule_id}")
         assert resp.status_code == 200
         assert resp.json()["deleted"] is True
         # 再获取 404
-        resp = client.get(f"/webhooks/rules/{rule_id}")
+        resp = client.get(f"/api/v1/webhooks/rules/{rule_id}")
         assert resp.status_code == 404
 
     def test_rules_create_validation(self, client):
         # 缺 name
-        resp = client.post("/webhooks/rules", json={"event_type_pattern": "*"})
+        resp = client.post("/api/v1/webhooks/rules", json={"event_type_pattern": "*"})
         assert resp.status_code == 400
         # 缺 pattern
-        resp = client.post("/webhooks/rules", json={"name": "x"})
+        resp = client.post("/api/v1/webhooks/rules", json={"name": "x"})
         assert resp.status_code == 400
 
     def test_silence_crud_via_api(self, client):
         now = _now_iso()
         later = _iso_offset(3600)
         resp = client.post(
-            "/webhooks/silence",
+            "/api/v1/webhooks/silence",
             json={
                 "name": "maint",
                 "event_type_pattern": "*",
@@ -949,22 +949,22 @@ class TestAPIEndpoints:
         win_id = win["id"]
 
         # 列表
-        resp = client.get("/webhooks/silence")
+        resp = client.get("/api/v1/webhooks/silence")
         assert resp.status_code == 200
         assert resp.json()["count"] >= 1
 
         # 获取
-        resp = client.get(f"/webhooks/silence/{win_id}")
+        resp = client.get(f"/api/v1/webhooks/silence/{win_id}")
         assert resp.status_code == 200
         assert resp.json()["id"] == win_id
 
         # 更新
-        resp = client.put(f"/webhooks/silence/{win_id}", json={"reason": "updated"})
+        resp = client.put(f"/api/v1/webhooks/silence/{win_id}", json={"reason": "updated"})
         assert resp.status_code == 200
         assert resp.json()["reason"] == "updated"
 
         # 删除
-        resp = client.delete(f"/webhooks/silence/{win_id}")
+        resp = client.delete(f"/api/v1/webhooks/silence/{win_id}")
         assert resp.status_code == 200
 
     def test_rules_test_dry_run(self, client):
@@ -974,7 +974,7 @@ class TestAPIEndpoints:
             json={"url": "https://a.com", "events": ["incident.*"]},
         )
         client.post(
-            "/webhooks/rules",
+            "/api/v1/webhooks/rules",
             json={
                 "name": "critical-pd",
                 "event_type_pattern": "incident.*",
@@ -984,7 +984,7 @@ class TestAPIEndpoints:
         )
         # dry-run 测试
         resp = client.post(
-            "/webhooks/rules/test",
+            "/api/v1/webhooks/rules/test",
             json={
                 "event_type": "incident.created",
                 "payload": {"severity": "critical"},
@@ -1000,7 +1000,7 @@ class TestAPIEndpoints:
     def test_rules_test_silenced(self, client):
         # 建静默窗口
         client.post(
-            "/webhooks/silence",
+            "/api/v1/webhooks/silence",
             json={
                 "name": "maint",
                 "event_type_pattern": "*",
@@ -1009,7 +1009,7 @@ class TestAPIEndpoints:
             },
         )
         resp = client.post(
-            "/webhooks/rules/test",
+            "/api/v1/webhooks/rules/test",
             json={"event_type": "incident.created", "payload": {}},
         )
         assert resp.status_code == 200
