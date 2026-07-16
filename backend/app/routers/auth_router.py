@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from app.auth.models import ROLES, get_auth_store
 from app.auth.token_auth import get_current_user, require_role
+from app.middleware.rate_limit import apply_rate_limit
 
 router = APIRouter()
 
@@ -62,9 +63,11 @@ class ChangePasswordRequest(BaseModel):
 
 
 @router.post("/auth/login", response_model=LoginResponse)
-async def login(req: LoginRequest) -> LoginResponse:
+@apply_rate_limit("5/minute")
+async def login(request: Request, req: LoginRequest) -> LoginResponse:
     """用户名密码登录，返回 session token
 
+    P0-5: 登录限流 5次/分钟/IP（防暴力破解）
     P0-5: 账户锁定后返回 423 Locked
     P0-9: 返回 must_change_password 标志供前端引导改密
     """

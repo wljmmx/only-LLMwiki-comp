@@ -141,17 +141,17 @@ STATE_TTL = 600  # 10 分钟
 
 
 def save_state(
-    provider: str, code_verifier: str, redirect: str = ""
+    provider: str, code_verifier: str, redirect: str = "", nonce: str = ""
 ) -> str:
-    """生成 state 并持久化到 DB"""
+    """生成 state 并持久化到 DB（P0-2: 包含 nonce 用于 OIDC 防重放）"""
     state = secrets.token_urlsafe(32)
     created_at = time.time()
     conn = _get_mapping_db()
     try:
         conn.execute(
-            "INSERT INTO oidc_states (state, provider, code_verifier, redirect, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (state, provider, code_verifier, redirect, created_at),
+            "INSERT INTO oidc_states (state, provider, code_verifier, nonce, redirect, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (state, provider, code_verifier, nonce, redirect, created_at),
         )
         conn.commit()
     finally:
@@ -162,7 +162,10 @@ def save_state(
 
 
 def pop_state(state: str) -> dict[str, Any] | None:
-    """取出并删除 state（一次性，DB 原子操作）"""
+    """取出并删除 state（一次性，DB 原子操作）
+
+    P0-2: 返回 nonce 字段供 id_token 验证。
+    """
     conn = _get_mapping_db()
     try:
         row = conn.execute(
@@ -181,6 +184,7 @@ def pop_state(state: str) -> dict[str, Any] | None:
         return {
             "provider": row["provider"],
             "code_verifier": row["code_verifier"],
+            "nonce": row["nonce"] if "nonce" in row.keys() else "",
             "redirect": row["redirect"],
             "created_at": row["created_at"],
         }
@@ -233,11 +237,16 @@ def _get_mapping_db() -> sqlite3.Connection:
             state TEXT PRIMARY KEY,
             provider TEXT NOT NULL,
             code_verifier TEXT NOT NULL,
+            nonce TEXT DEFAULT '',
             redirect TEXT,
             created_at REAL NOT NULL
         )
         """
     )
+    # P0-2: 为旧表添加 nonce 列（增量迁移）
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(oidc_states)").fetchall()}
+    if "nonce" not in cols:
+        conn.execute("ALTER TABLE oidc_states ADD COLUMN nonce TEXT DEFAULT ''")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_oidc_states_created ON oidc_states(created_at)"
     )
@@ -331,8 +340,12 @@ async def exchange_code(
     code: str,
     code_verifier: str,
     redirect_uri: str,
+    nonce: str | None = None,
 ) -> dict[str, Any]:
-    """用 authorization code 换取 token + 用户信息"""
+    """用 authorization code 换取 token + 用户信息
+
+    P0-2: nonce 参数用于防重放，传递给 id_token 验证。
+    """
     async with httpx.AsyncClient(timeout=15) as client:
         # 交换 token
         token_resp = await client.post(
@@ -357,7 +370,7 @@ async def exchange_code(
         id_token_claims: dict[str, Any] = {}
         if id_token:
             try:
-                id_token_claims = _decode_id_token_claims(id_token, provider)
+                id_token_claims = _decode_id_token_claims(id_token, provider, nonce)
             except Exception as e:  # noqa: BLE001
                 logger.error(
                     "oidc.id_token_verify_failed",
@@ -406,16 +419,16 @@ def _get_jwks_client(jwks_uri: str) -> Any:
 
 
 def _decode_id_token_claims(
-    id_token: str, provider: OIDCProvider | None = None
+    id_token: str, provider: OIDCProvider | None = None, nonce: str | None = None
 ) -> dict[str, Any]:
-    """从 JWT id_token 中提取 claims（P0-2: 验证签名后提取）
+    """从 JWT id_token 中提取 claims（P0-2: 验证签名 + nonce）
 
     安全策略：
     - 若 provider 已 discover 且 jwks_uri 可用 → 必须验证签名（fail closed）
     - 验签失败抛出异常，调用方决定是否降级
     - 若 provider 未提供或 jwks_uri 不可用 → 降级为仅解码（记录警告，仅限开发模式）
 
-    验证项：签名、aud（client_id）、exp、iat、iss（若 discovery 返回 issuer）
+    验证项：签名、aud（client_id）、exp、iat、iss（若 discovery 返回 issuer）、nonce（防重放）
     """
     # P0-2: 优先验签
     if provider is not None and provider._jwks_uri:
@@ -445,6 +458,8 @@ def _decode_id_token_claims(
             issuer=issuer,
             options=decode_options,
         )
+        # P0-2: nonce 验证（防重放攻击）
+        _verify_nonce(claims, nonce)
         return claims
 
     # 降级：无 provider/jwks_uri → 仅解码（开发模式，记录警告）
@@ -461,4 +476,22 @@ def _decode_id_token_claims(
     if padding != 4:
         payload += "=" * padding
     decoded = base64.urlsafe_b64decode(payload)
-    return json.loads(decoded)
+    claims = json.loads(decoded)
+    # P0-2: nonce 验证（防重放攻击，降级路径也执行）
+    _verify_nonce(claims, nonce)
+    return claims
+
+
+def _verify_nonce(claims: dict[str, Any], expected_nonce: str | None) -> None:
+    """P0-2: 验证 id_token 中的 nonce 与预期值一致
+
+    nonce 用于防止重放攻击。如果生成时传入了 nonce，则 id_token 必须包含
+    相同的 nonce；如果未传入 nonce（向后兼容旧流程），则跳过验证。
+    """
+    if not expected_nonce:
+        return  # 向后兼容：未使用 nonce 的流程
+    token_nonce = claims.get("nonce")
+    if not token_nonce:
+        raise ValueError("id_token 缺少 nonce claim（预期 nonce 已设置）")
+    if not secrets.compare_digest(token_nonce, expected_nonce):
+        raise ValueError("id_token nonce 不匹配，可能为重放攻击")

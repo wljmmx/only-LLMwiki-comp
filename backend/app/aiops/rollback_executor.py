@@ -20,6 +20,7 @@ import httpx
 import structlog
 
 from app.config import get_settings
+from app.core.security import validate_url_safe
 
 logger = structlog.get_logger()
 
@@ -179,6 +180,8 @@ class RollbackExecutor:
             }
 
         url = f"{settings.argocd_url.rstrip('/')}/api/v1/applications/{app_name}/rollback"
+        # P0-3: SSRF 防护 — 验证 ArgoCD URL
+        validate_url_safe(url)
         headers = {"Authorization": f"Bearer {settings.argocd_token}"}
         payload = {"name": app_name, "revision": revision}
 
@@ -281,6 +284,8 @@ class RollbackExecutor:
         incident_id = plan.get("incident_id", "")
 
         url = f"{settings.jenkins_url.rstrip('/')}/job/{job_name}/buildWithParameters"
+        # P0-3: SSRF 防护 — 验证 Jenkins URL
+        validate_url_safe(url)
         auth = (settings.jenkins_user, settings.jenkins_token)
         # Jenkins buildWithParameters 通过 query string 传参
         params = {

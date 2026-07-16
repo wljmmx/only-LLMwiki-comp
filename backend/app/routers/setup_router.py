@@ -18,12 +18,9 @@
 
 from __future__ import annotations
 
-import ipaddress
 import os
 import secrets
-import socket
 from typing import Literal
-from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -31,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from app.auth.token_auth import get_current_user
 from app.config import get_settings
+from app.core.security import SsrfError, validate_url_safe
 
 logger = structlog.get_logger()
 
@@ -40,72 +38,12 @@ router = APIRouter()
 # ────────── P0-3: SSRF 防护 + 条件认证 ──────────
 
 
-# 禁止访问的 IP 段（私有/环回/链路本地/保留地址）
-_BLOCKED_IP_PREFIXES = (
-    "127.",  # IPv4 loopback
-    "10.",  # private A
-    "172.16.", "172.17.", "172.18.", "172.19.", "172.20.",
-    "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
-    "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",  # private B
-    "192.168.",  # private C
-    "169.254.",  # link-local
-    "::1",  # IPv6 loopback
-    "fc", "fd",  # IPv6 ULA
-    "fe80",  # IPv6 link-local
-)
-
-
-def _is_blocked_ip(ip_str: str) -> bool:
-    """检查 IP 是否在禁止访问的私有/内部段"""
+def _validate_url_with_http(url: str) -> str:
+    """调用共享 SSRF 验证，将 SsrfError 转为 HTTPException 400"""
     try:
-        ip = ipaddress.ip_address(ip_str)
-        return (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-        )
-    except ValueError:
-        # 非 IP 地址（如 hostname），做前缀检查兜底
-        return any(ip_str.startswith(p) for p in _BLOCKED_IP_PREFIXES)
-
-
-def validate_url_ssrf(url: str) -> str:
-    """验证 URL 安全性，防止 SSRF（服务端请求伪造）
-
-    检查项：
-    1. scheme 必须是 http 或 https
-    2. 解析 hostname，若为 IP 则检查是否在私有/内部段
-    3. 若为域名，做 DNS 解析后检查所有解析结果
-
-    通过验证返回原 URL，否则抛 400。
-    """
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(400, f"不允许的 URL scheme: {parsed.scheme}")
-
-    hostname = parsed.hostname or ""
-    if not hostname:
-        raise HTTPException(400, "URL 缺少 hostname")
-
-    # 直接检查 IP 字面量
-    if _is_blocked_ip(hostname):
-        raise HTTPException(400, f"禁止访问私有/内部地址: {hostname}")
-
-    # DNS 解析检查（防止域名指向内部 IP）
-    try:
-        addr_infos = socket.getaddrinfo(hostname, None)
-        for ai in addr_infos:
-            ip = ai[4][0]
-            if _is_blocked_ip(ip):
-                raise HTTPException(
-                    400, f"域名 {hostname} 解析到内部地址 {ip}，禁止访问"
-                )
-    except socket.gaierror:
-        pass  # DNS 解析失败，允许通过（连接时会自然失败）
-
-    return url
+        return validate_url_safe(url)
+    except SsrfError as e:
+        raise HTTPException(400, e.message) from e
 
 
 async def _setup_auth_guard(
@@ -348,7 +286,7 @@ async def test_llm(
         )
 
     # P0-3: SSRF 防护 — 验证 base_url 不指向私有/内部地址
-    validate_url_ssrf(base_url)
+    _validate_url_with_http(base_url)
 
     # 用 openai SDK 测试（openai_compat / vllm / ollama 均兼容 OpenAI 协议）
     try:
@@ -406,7 +344,7 @@ async def test_neo4j(
         if uri_host.startswith(prefix):
             uri_host = "http://" + uri_host[len(prefix):]
             break
-    validate_url_ssrf(uri_host)
+    _validate_url_with_http(uri_host)
 
     try:
         from neo4j import GraphDatabase

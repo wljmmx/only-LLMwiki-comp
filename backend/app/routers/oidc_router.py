@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import secrets
 import urllib.parse
 from typing import Any
 
@@ -82,6 +83,8 @@ async def oidc_authorize(
 
     Query 参数：
     - redirect: 登录后前端跳转目标（如 /dashboard）
+
+    P0-2: 生成 nonce 并包含在 authorization request 中，防止重放攻击。
     """
     p = _get_provider(provider)
     if not p:
@@ -93,11 +96,12 @@ async def oidc_authorize(
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"OIDC discovery 失败: {e}") from e
 
-    # 2. 生成 PKCE + state
+    # 2. 生成 PKCE + state + nonce
     code_verifier, code_challenge = generate_pkce()
-    state = save_state(provider, code_verifier, redirect)
+    nonce = secrets.token_urlsafe(24)  # P0-2: 防重放 nonce
+    state = save_state(provider, code_verifier, redirect, nonce=nonce)
 
-    # 3. 构造授权 URL
+    # 3. 构造授权 URL（包含 nonce）
     callback = _redirect_uri(request, provider)
     params = {
         "response_type": "code",
@@ -107,6 +111,7 @@ async def oidc_authorize(
         "state": state,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
+        "nonce": nonce,  # P0-2: nonce 参数
     }
     auth_url = f"{p.authorization_endpoint}?{urllib.parse.urlencode(params)}"
     return RedirectResponse(url=auth_url, status_code=302)
@@ -185,7 +190,10 @@ async def oidc_callback(
     # 交换 token
     redirect_uri = _redirect_uri(request, provider)
     try:
-        result = await exchange_code(p, code, state_data["code_verifier"], redirect_uri)
+        result = await exchange_code(
+            p, code, state_data["code_verifier"], redirect_uri,
+            nonce=state_data.get("nonce") or None,  # P0-2: 传递 nonce
+        )
     except Exception as e:  # noqa: BLE001
         return _redirect_to_frontend_error(
             settings.frontend_base_url,

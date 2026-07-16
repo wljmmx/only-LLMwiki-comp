@@ -8,6 +8,7 @@ import httpx
 import structlog
 
 from app.core.llm.base import ChatMessage, LLMResponse
+from app.core.security import validate_url_safe
 
 logger = structlog.get_logger()
 
@@ -17,6 +18,8 @@ class OllamaClient:
 
     def __init__(self, settings) -> None:
         self._base_url = settings.ollama_base_url.rstrip("/")
+        # P0-3: SSRF 防护 — 验证 Ollama base URL 不指向内部地址
+        validate_url_safe(self._base_url)
         self._model = settings.ollama_model
         self._embedding_model = getattr(settings, "embedding_model", None) or settings.ollama_model
         self._timeout = settings.llm_timeout

@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 import structlog
 
+from app.core.security import validate_url_safe
 from app.observability import span
 from app.storage.webhook_store import WebhookStore, get_webhook_store
 
@@ -237,6 +238,8 @@ class WebhookManager:
 
             attempts = deliv["attempts"]
             try:
+                # P0-3: SSRF 防护 — 验证订阅 URL 不指向内部地址
+                validate_url_safe(url)
                 client = await self._get_client()
                 resp = await client.post(url, content=payload_raw, headers=headers)
                 code = resp.status_code
