@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import time
+import types
 from typing import Any
 
 from fastapi import Request
@@ -28,6 +29,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response as StarletteResponse
 
 from app.config import get_settings
 
@@ -84,6 +86,25 @@ def _build_limiter() -> Limiter:
 
 # 模块级单例：导入即创建，main.py 注册到 app.state.limiter
 limiter: Limiter = _build_limiter()
+
+# ── slowapi + Starlette 1.x 兼容性 monkey-patch ──
+# slowapi 0.1.10 的 _inject_headers 假设所有响应都是 starlette.responses.Response 实例，
+# 但 FastAPI 0.139+ / Starlette 1.x 在处理 Pydantic model 响应时，slowapi wrapper 层
+# 拿到的是原始 model 对象而非 Response 对象，导致 isinstance(response, Response) 失败。
+# 修复：当 response 不是 Response 实例时，跳过 header 注入（限流检查本身不受影响）。
+_original_inject_headers = limiter._inject_headers
+
+
+def _patched_inject_headers(
+    self: Limiter, response: Any, current_limit: Any
+) -> Any:
+    """注入限流响应头，对非 Response 对象安全跳过"""
+    if response is None or not isinstance(response, StarletteResponse):
+        return response
+    return _original_inject_headers(response, current_limit)
+
+
+limiter._inject_headers = types.MethodType(_patched_inject_headers, limiter)
 
 # 全局限流项（parse 一次复用，所有非豁免路径共享）
 _global_limit_item = parse_limit(get_settings().rate_limit_default)
