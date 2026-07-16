@@ -72,6 +72,13 @@ def section(title: str) -> None:
     print(f"\n── {title} ──")
 
 
+# ── 模块级 mock 类（被多个测试函数共用） ──
+
+class MockTls:
+    def __init__(self, **kwargs):
+        pass
+
+
 # ────────── 测试 1：LDAPProvider 配置 ──────────
 
 
@@ -343,6 +350,7 @@ def test_authenticate_mock() -> None:
         ALL = "ALL"
         Server = MockServer
         Connection = MockConnection
+        Tls = MockTls
 
         class core:
             class exceptions:
@@ -785,6 +793,7 @@ def test_ldap_login_e2e() -> None:
         ALL = "ALL"
         Server = MockServer
         Connection = MockConnection
+        Tls = MockTls
 
     class MockCore:
         class exceptions:
