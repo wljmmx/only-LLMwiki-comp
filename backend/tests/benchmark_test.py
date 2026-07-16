@@ -179,8 +179,8 @@ def output_summary():
     print("=" * 80)
 
     # 按工具分组
-    md_results = [r for r in results if r["tool"] == "MarkItDown"]
-    mu_results = [r for r in results if r["tool"] == "MinerU"]
+    md_results = [r for r in results if r["tool"] == "MarkItDown"]  # noqa: F841
+    mu_results = [r for r in results if r["tool"] == "MinerU"]  # noqa: F841
 
     print(f"\n{'工具':<12} {'文件':<35} {'状态':<10} {'耗时':>10} {'行数':>8} {'字符':>8}")
     print("-" * 110)

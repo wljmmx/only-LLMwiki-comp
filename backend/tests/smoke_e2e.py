@@ -324,7 +324,7 @@ def s25():
     )
     assert r.status_code == 200, r.text
     # 验证已关闭
-    r2 = requests.get(f"{BASE}/events/incidents/{s23.first_incident}", timeout=TIMEOUT)
+    r2 = requests.get(f"{BASE}/events/incidents/{s23.first_incident}", timeout=TIMEOUT)  # noqa: F841
     # 关闭后仍可查询（通过 incidents 列表 status=closed）
     r3 = requests.get(f"{BASE}/events/incidents?status=closed", timeout=TIMEOUT)
     assert any(i["incident_id"] == s23.first_incident for i in r3.json()["incidents"])

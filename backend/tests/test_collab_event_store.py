@@ -450,7 +450,7 @@ class TestCollabHubPersistenceIntegration:
         monkeypatch.setattr(CollabEventStore, "append_event", fake_append)
 
         hub = CollabHub()
-        ws = MockWebSocket()
+        _ws = MockWebSocket()
         # 广播不应抛异常
         delivered = asyncio.run(
             hub.broadcast("s", {"type": "user_joined", "user": {"user_id": "u1"}})
@@ -461,7 +461,7 @@ class TestCollabHubPersistenceIntegration:
     def test_timestamp_persisted_from_message(self):
         """持久化使用 message 中注入的 timestamp"""
         hub = CollabHub()
-        ws = MockWebSocket()
+        _ws = MockWebSocket()
         # 显式传 timestamp
         asyncio.run(
             hub.broadcast(

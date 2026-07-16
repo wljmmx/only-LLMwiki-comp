@@ -833,8 +833,8 @@ class TestDispatchIntegration:
         from app.webhooks.manager import get_webhook_manager
 
         store = get_webhook_store()
-        sub_a = store.create_subscription(url="https://a.com", events=["incident.*"])
-        sub_b = store.create_subscription(url="https://b.com", events=["incident.*"])
+        _sub_a = store.create_subscription(url="https://a.com", events=["incident.*"])
+        _sub_b = store.create_subscription(url="https://b.com", events=["incident.*"])
         mgr = get_webhook_manager()
         n = mgr.dispatch_event("incident.created", {"x": 1})
         assert n == 2
@@ -846,7 +846,7 @@ class TestDispatchIntegration:
 
         store = get_webhook_store()
         sub_pd = store.create_subscription(url="https://pd.com", events=["incident.*"])
-        sub_slack = store.create_subscription(url="https://slack.com", events=["incident.*"])
+        _sub_slack = store.create_subscription(url="https://slack.com", events=["incident.*"])
         # critical → PagerDuty
         store.create_alert_rule(
             name="critical-to-pd",
