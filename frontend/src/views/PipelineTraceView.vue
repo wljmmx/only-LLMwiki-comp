@@ -21,8 +21,8 @@ import {
 } from 'naive-ui'
 import { getCompileTrace } from '@/api/wiki'
 import type { CompileTraceResponse, SectionTrace } from '@/types/api'
-import PageHeader from '@/components/layout/PageHeader.vue'
-import LoadingState from '@/components/layout/LoadingState.vue'
+import PageHeader from '@/components/common/PageHeader.vue'
+import LoadingState from '@/components/common/LoadingState.vue'
 
 const route = useRoute()
 const message = useMessage()
@@ -72,9 +72,9 @@ function getLevelLabel(level: number): string {
   return `H${level}`
 }
 
-function getLevelColor(level: number): string {
-  const colors: Record<number, string> = { 1: '#18a058', 2: '#2080f0', 3: '#f0a020' }
-  return colors[level] || '#909399'
+function getLevelType(level: number): 'success' | 'info' | 'warning' {
+  const types: Record<number, 'success' | 'info' | 'warning'> = { 1: 'success', 2: 'info', 3: 'warning' }
+  return types[level] || 'info'
 }
 
 function formatMs(ms: number): string {
@@ -198,8 +198,8 @@ function calcReduction(raw: number, compiled: number): string {
               <NTag
                 :bordered="false"
                 size="small"
-                :color="getLevelColor(section.level)"
-                style="color: #fff; font-weight: 600"
+                :type="getLevelType(section.level)"
+                style="font-weight: 600"
               >
                 {{ getLevelLabel(section.level) }}
               </NTag>
