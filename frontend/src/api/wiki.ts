@@ -233,3 +233,17 @@ export function getCompileTrace(docId: string, force = false) {
     params: { force },
   })
 }
+
+// 单章节重编译：调整 LLM 参数重新生成指定章节
+export function recompileSection(params: {
+  doc_id: string
+  slug: string
+  temperature?: number
+  system_prompt?: string
+  user_prompt?: string
+}) {
+  return api.post<unknown, { slug: string; compiled_content: string; raw_chars: number; compiled_chars: number; outcome: string }>(
+    '/llm-wiki/recompile-section',
+    params,
+  )
+}

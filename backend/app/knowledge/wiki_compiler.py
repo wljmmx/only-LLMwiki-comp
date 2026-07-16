@@ -850,6 +850,194 @@ class WikiCompiler:
             also_compile_graph=True,
         )
 
+    async def recompile_section(
+        self,
+        doc_id: str,
+        slug: str,
+        *,
+        temperature: float | None = None,
+        system_prompt: str | None = None,
+        user_prompt: str | None = None,
+    ) -> dict:
+        """重新编译单个章节并保存为 wiki 页面
+
+        Args:
+            doc_id: 原始文档 ID
+            slug: 章节 slug
+            temperature: 自定义 LLM temperature（None 使用默认 0.2）
+            system_prompt: 自定义系统提示词（None 使用默认）
+            user_prompt: 自定义用户提示词（None 使用默认）
+
+        Returns:
+            { slug, compiled_content, raw_chars, compiled_chars, outcome }
+        """
+        # 1. 加载原始文档
+        meta = self.store.get(doc_id)
+        if not meta:
+            return {"error": f"文档不存在: {doc_id}"}
+
+        raw_bytes = self.store.read_content(doc_id)
+        if not raw_bytes:
+            return {"error": "原始文件读取失败"}
+
+        # 2. 解析文档
+        try:
+            parser = get_parser(meta.get("format", "markdown"))
+            doc = parser.parse(meta.get("stored_path", ""), doc_id)
+        except Exception as e:
+            return {"error": f"解析失败: {e}"}
+
+        if not doc or not doc.heading_tree:
+            return {"error": "文档无法解析或标题树为空"}
+
+        # 3. 从 heading_tree 中查找 slug 对应的节点
+        slug_tree = generate_slug_for_heading_tree(doc.get_heading_tree_dict())
+        node = self._find_node_by_slug(slug_tree, slug)
+        if not node:
+            return {"error": f"未找到章节: {slug}"}
+
+        raw_content = self._render_elements_to_text(node.get("elements", []))
+        raw_chars = len(raw_content)
+
+        parent_slug = None
+        parent_node = self._find_parent_node(slug_tree, slug, node)
+        if parent_node:
+            parent_slug = parent_node.get("slug")
+
+        # 4. 使用自定义或默认参数编译
+        try:
+            if user_prompt or system_prompt:
+                # 自定义 prompt 绕过 _llm_compile_section，直接调用 _llm_complete
+                compiled = await self._llm_complete(
+                    user_prompt or f"请编译以下章节：\n{raw_content[:4000]}",
+                    system=system_prompt or "",
+                    temperature=temperature if temperature is not None else 0.2,
+                )
+                compiled = self._strip_codefence(compiled).strip()
+            else:
+                compiled = await self._llm_compile_section(node, parent_slug)
+                if temperature is not None:
+                    # 仅 temperature 覆盖：重新调用 _llm_complete
+                    compiled = await self._llm_complete(
+                        user_prompt=self._build_section_prompt(node, parent_slug),
+                        system=self._SECTION_SYSTEM_PROMPT,
+                        temperature=temperature,
+                    )
+                    compiled = self._strip_codefence(compiled).strip()
+        except Exception as e:
+            logger.error("recompile_section_llm_error", slug=slug, error=str(e))
+            return {"error": f"LLM 编译失败: {e}"}
+
+        compiled_chars = len(compiled)
+
+        # 5. 保存为 wiki 页面
+        page_type = "concept"
+        if slug.startswith("runbook-"):
+            page_type = "runbook"
+        elif slug.startswith("incident-"):
+            page_type = "incident"
+
+        page = WikiPage(
+            slug=slug,
+            title=node.get("title", slug),
+            type=page_type,
+            tags=[],
+            sources=[{"doc_id": doc_id, "title": meta.get("filename", doc_id), "checksum": ""}],
+            body_md=compiled,
+            review_status="auto",
+            source_doc_id=doc_id,
+        )
+        outcome = self._save_page(page, force=True)
+
+        return {
+            "slug": slug,
+            "compiled_content": compiled,
+            "raw_chars": raw_chars,
+            "compiled_chars": compiled_chars,
+            "outcome": outcome,
+        }
+
+    @staticmethod
+    def _find_node_by_slug(tree: list[dict], slug: str) -> dict | None:
+        """递归在标题树中查找 slug 匹配的节点"""
+        for node in tree:
+            if node.get("slug") == slug:
+                return node
+            if node.get("children"):
+                found = WikiCompiler._find_node_by_slug(node["children"], slug)
+                if found:
+                    return found
+        return None
+
+    @staticmethod
+    def _find_parent_node(tree: list[dict], slug: str, target: dict) -> dict | None:
+        """查找目标节点的父节点"""
+        for node in tree:
+            if node.get("children"):
+                for child in node["children"]:
+                    if child.get("slug") == slug:
+                        return node
+                found = WikiCompiler._find_parent_node(node["children"], slug, target)
+                if found:
+                    return found
+        return None
+
+    _SECTION_SYSTEM_PROMPT = """你是 OpsKG Wiki 管理员。把文档章节编译为结构化 Markdown wiki 页面。
+
+严格遵循 AGENTS.md 规定的页面骨架。使用 [[slug]] 双向链接到相关概念。
+
+页面类型：概念页（concept）
+必含章节：概述、原理、应用场景、来源
+
+注意：
+1. 只输出 Markdown 正文，不要 YAML frontmatter，不要 ```md 包裹
+2. 在首次提及相关概念/服务/主机时，用 [[kebab-case-slug]] 形式建链
+3. 不要编造未在原文中出现的具体数值
+4. 保留原文的表格和代码块格式
+5. 使用合适的标题层级（从 ## 开始）"""
+
+    def _build_section_prompt(self, node: dict, parent_slug: str | None = None) -> str:
+        """构建章节编译 prompt"""
+        title = node.get("title", "")
+        level = node.get("level", 1)
+        elements = node.get("elements", [])
+        content_text = self._render_elements_to_text(elements)
+
+        children_info = []
+        for child in node.get("children", []):
+            child_slug = child.get("slug")
+            child_title = child.get("title", "")
+            if child_slug:
+                children_info.append(f"- [[{child_slug}|{child_title}]]")
+            else:
+                children_info.append(f"- {child_title}")
+
+        parent_info = f"父级章节：[[{parent_slug}]]" if parent_slug else ""
+
+        return f"""请把以下文档章节编译为一个 wiki 页面。
+
+# 章节标题
+{title}
+
+# 章节层级
+H{level}
+
+# 父级章节
+{parent_info}
+
+# 子章节
+{chr(10).join(children_info) if children_info else "（无）"}
+
+# 原文内容
+{content_text[:4000]}
+
+# 编译要求
+1. 严格按概念页骨架输出 Markdown 章节（## 概述、## 原理、## 应用场景、## 来源）
+2. 在首次提及相关概念时，用 [[kebab-case-slug]] 形式建链
+3. 保留原文中的表格和代码块
+4. 「## 来源」章节引用本页来源即可
+5. 标题用 `# {title}` 起首"""
+
     @staticmethod
     def _compile_to_graph(doc_id: str, extraction: ExtractionResult) -> None:
         """P3-4: 把抽取结果写入知识图谱（复用已有 extraction，避免重复 parse+extract）

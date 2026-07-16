@@ -23,11 +23,15 @@ import {
   NTabs,
   NTabPane,
   NDataTable,
+  NModal,
+  NForm,
+  NFormItem,
+  NSlider,
   useMessage,
 } from 'naive-ui'
 import type { UploadCustomRequestOptions, DataTableColumns } from 'naive-ui'
 import { listDocuments, parseDocument } from '@/api/documents'
-import { getCompileTrace } from '@/api/wiki'
+import { getCompileTrace, recompileSection, updateWikiPage } from '@/api/wiki'
 import { useSse } from '@/composables/useSse'
 import type { SseEvent } from '@/composables/useSse'
 import { formatFileSize } from '@/utils/format'
@@ -339,6 +343,100 @@ function resetAll() {
   resetSteps()
 }
 
+// ========== 章节操作：重新生成 + 编辑保存 ==========
+
+// 当前编辑的章节 slug
+const editingSlug = ref<string | null>(null)
+const editingContent = ref('')
+
+// 重新生成弹窗
+const recompileDialogVisible = ref(false)
+const recompileTarget = ref<{ slug: string; title: string } | null>(null)
+const recompileTemperature = ref(0.2)
+const recompileSystemPrompt = ref('')
+const recompileUserPrompt = ref('')
+const recompilingSlug = ref<string | null>(null)
+
+function startEdit(section: SectionTrace) {
+  editingSlug.value = section.slug
+  editingContent.value = section.compiled_content
+}
+
+function cancelEdit() {
+  editingSlug.value = null
+  editingContent.value = ''
+}
+
+async function saveEdit(section: SectionTrace) {
+  if (!editingSlug.value) return
+  const slug = editingSlug.value
+  try {
+    // 构建含 frontmatter 的完整内容
+    const fm = `---
+slug: ${slug}
+title: ${section.title}
+type: concept
+tags: []
+review_status: auto
+edited_by_human: true
+---
+`
+    const fullContent = fm + editingContent.value
+    await updateWikiPage(slug, {
+      content: fullContent,
+      title: section.title,
+      change_summary: '用户手工编辑',
+    })
+    message.success('保存成功')
+    // 更新本地数据
+    section.compiled_content = editingContent.value
+    section.compiled_chars = editingContent.value.length
+    cancelEdit()
+  } catch (e: any) {
+    message.error('保存失败：' + (e?.response?.data?.detail || e?.message || '未知错误'))
+  }
+}
+
+function openRecompileDialog(section: SectionTrace) {
+  recompileTarget.value = { slug: section.slug, title: section.title }
+  recompileTemperature.value = 0.2
+  recompileSystemPrompt.value = ''
+  recompileUserPrompt.value = ''
+  recompileDialogVisible.value = true
+}
+
+function closeRecompileDialog() {
+  recompileDialogVisible.value = false
+  recompileTarget.value = null
+}
+
+async function doRecompile() {
+  if (!recompileTarget.value || !selectedDocId.value) return
+  const { slug } = recompileTarget.value
+  recompilingSlug.value = slug
+  try {
+    const result = await recompileSection({
+      doc_id: selectedDocId.value,
+      slug,
+      temperature: recompileTemperature.value || undefined,
+      system_prompt: recompileSystemPrompt.value || undefined,
+      user_prompt: recompileUserPrompt.value || undefined,
+    })
+    message.success(`重新生成成功（${result.outcome}）`)
+    // 更新本地数据
+    const section = traceData.value?.sections?.find((s) => s.slug === slug)
+    if (section) {
+      section.compiled_content = result.compiled_content
+      section.compiled_chars = result.compiled_chars
+    }
+    closeRecompileDialog()
+  } catch (e: any) {
+    message.error('重新生成失败：' + (e?.response?.data?.detail || e?.message || '未知错误'))
+  } finally {
+    recompilingSlug.value = null
+  }
+}
+
 // ========== 初始化 ==========
 onMounted(() => {
   // 从 URL 参数读取 doc_id（从 DocumentsView 跳转时带入）
@@ -628,6 +726,24 @@ watch(sourceTab, (val) => {
               >
                 有变更
               </NTag>
+              <div style="flex: 1" />
+              <!-- 操作按钮 -->
+              <NButton
+                size="tiny"
+                quaternary
+                :loading="recompilingSlug === section.slug"
+                @click.stop="openRecompileDialog(section)"
+              >
+                重新生成
+              </NButton>
+              <NButton
+                size="tiny"
+                quaternary
+                :type="editingSlug === section.slug ? 'warning' : 'default'"
+                @click.stop="editingSlug === section.slug ? cancelEdit() : startEdit(section)"
+              >
+                {{ editingSlug === section.slug ? '取消编辑' : '编辑' }}
+              </NButton>
             </NSpace>
           </template>
 
@@ -648,8 +764,26 @@ watch(sourceTab, (val) => {
             <NGi>
               <div style="margin-bottom: 4px; font-weight: 600; color: #18a058">
                 处理后（LLM 编译）
+                <span v-if="editingSlug === section.slug" style="color: #f0a020; font-size: 12px">
+                  （编辑模式）
+                </span>
               </div>
+              <template v-if="editingSlug === section.slug">
+                <NInput
+                  v-model:value="editingContent"
+                  type="textarea"
+                  :autosize="{ minRows: 8, maxRows: 20 }"
+                  style="margin-bottom: 8px"
+                />
+                <NSpace>
+                  <NButton size="small" type="primary" @click="saveEdit(section)">
+                    保存
+                  </NButton>
+                  <NButton size="small" @click="cancelEdit()">取消</NButton>
+                </NSpace>
+              </template>
               <NCode
+                v-else
                 :code="section.compiled_content || '(空)'"
                 language="markdown"
                 word-wrap
@@ -679,4 +813,67 @@ watch(sourceTab, (val) => {
       </NButton>
     </NSpace>
   </template>
+
+  <!-- ==================== 重新生成弹窗 ==================== -->
+  <NModal
+    v-model:show="recompileDialogVisible"
+    title="重新生成章节"
+    style="width: 600px"
+    preset="card"
+  >
+    <template v-if="recompileTarget">
+      <p style="margin-bottom: 16px; color: #666">
+        章节：<strong>{{ recompileTarget.title }}</strong>（{{ recompileTarget.slug }}）
+      </p>
+
+      <NForm label-placement="top" size="small">
+        <NFormItem label="Temperature（创造性）">
+          <NSpace align="center">
+            <NSlider
+              v-model:value="recompileTemperature"
+              :min="0"
+              :max="2"
+              :step="0.05"
+              style="flex: 1"
+            />
+            <span style="width: 40px; text-align: right">{{ recompileTemperature.toFixed(2) }}</span>
+          </NSpace>
+          <div style="font-size: 11px; color: #999; margin-top: 4px">
+            0 = 确定性输出，1 = 创造性，2 = 高度随机
+          </div>
+        </NFormItem>
+
+        <NFormItem label="自定义系统提示词（可选）">
+          <NInput
+            v-model:value="recompileSystemPrompt"
+            type="textarea"
+            :autosize="{ minRows: 3, maxRows: 8 }"
+            placeholder="留空使用默认系统提示词"
+          />
+        </NFormItem>
+
+        <NFormItem label="自定义用户提示词（可选）">
+          <NInput
+            v-model:value="recompileUserPrompt"
+            type="textarea"
+            :autosize="{ minRows: 3, maxRows: 8 }"
+            placeholder="留空使用默认用户提示词（含章节原文）"
+          />
+        </NFormItem>
+      </NForm>
+    </template>
+
+    <template #footer>
+      <NSpace justify="end">
+        <NButton @click="closeRecompileDialog">取消</NButton>
+        <NButton
+          type="primary"
+          :loading="!!recompilingSlug"
+          @click="doRecompile"
+        >
+          重新生成
+        </NButton>
+      </NSpace>
+    </template>
+  </NModal>
 </template>

@@ -81,6 +81,16 @@ class WikiPageUpdate(BaseModel):
     bypass_lock: bool = Field(False, description="admin 强制覆盖编辑锁")
 
 
+class RecompileSectionRequest(BaseModel):
+    """POST /llm-wiki/recompile-section 请求体"""
+
+    doc_id: str = Field(..., description="原始文档 ID")
+    slug: str = Field(..., description="章节 slug")
+    temperature: float | None = Field(None, description="LLM temperature（0.0-2.0）", ge=0.0, le=2.0)
+    system_prompt: str | None = Field(None, description="自定义系统提示词")
+    user_prompt: str | None = Field(None, description="自定义用户提示词")
+
+
 def _split_frontmatter(content: str) -> tuple[dict, str]:
     """解析 YAML frontmatter，返回 (meta, body)"""
     if not content.startswith("---"):
@@ -174,6 +184,33 @@ async def llm_wiki_recompile(doc_id: str, force: bool = True) -> dict:
         "errors": result.errors,
         "index_rebuilt": result.index_rebuilt,
     }
+
+
+# ────────── 单章节重编译 ──────────
+
+@router.post("/llm-wiki/recompile-section", dependencies=[Depends(verify_token)])
+async def llm_wiki_recompile_section(body: RecompileSectionRequest) -> dict:
+    """重新编译单个章节并保存为 wiki 页面
+
+    支持：
+    - 调整 temperature 控制创造性
+    - 覆盖 system_prompt / user_prompt 自定义编译行为
+    - 编译后自动保存到 VersionControl
+
+    返回：
+    - slug, compiled_content, raw_chars, compiled_chars, outcome
+    """
+    compiler = get_wiki_compiler()
+    result = await compiler.recompile_section(
+        doc_id=body.doc_id,
+        slug=body.slug,
+        temperature=body.temperature,
+        system_prompt=body.system_prompt,
+        user_prompt=body.user_prompt,
+    )
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
 
 
 # ────────── 管道追踪：章节级 LLM 处理前后对比 ──────────
