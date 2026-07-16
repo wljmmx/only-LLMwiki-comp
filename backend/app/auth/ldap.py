@@ -176,13 +176,16 @@ def authenticate(
         return LDAPAuthResult(success=False, error="用户名和密码不能为空")
 
     # 延迟导入：仅在调用时需要 ldap3
-    from ldap3 import Connection, Server
+    from ldap3 import Connection, Server, Tls
     from ldap3.core.exceptions import LDAPException
+
+    # 构建 TLS 配置（use_tls 时用于 STARTTLS 升级）
+    tls_config = Tls() if provider.use_tls else None
 
     server = Server(
         provider.server_url,
         use_ssl=provider.use_ssl,
-        tls=None,  # use_tls 单独处理（STARTTLS）
+        tls=tls_config,
     )
 
     user_dn: str | None = None
@@ -195,8 +198,19 @@ def authenticate(
                 server,
                 user=provider.bind_dn,
                 password=provider.bind_password,
-                auto_bind=True,
+                auto_bind=not provider.use_tls,  # use_tls 时手动 bind
             ) as conn:
+                # STARTTLS 升级（若配置了 use_tls）
+                if provider.use_tls:
+                    if not conn.start_tls():
+                        return LDAPAuthResult(
+                            success=False, error="STARTTLS 升级失败"
+                        )
+                    if not conn.bind():
+                        return LDAPAuthResult(
+                            success=False, error="service account bind 失败（TLS 后）"
+                        )
+
                 if not conn.bound:
                     return LDAPAuthResult(
                         success=False, error="service account bind 失败"
@@ -245,8 +259,19 @@ def authenticate(
                 server,
                 user=user_dn,
                 password=password,
-                auto_bind=True,
+                auto_bind=not provider.use_tls,  # use_tls 时手动 bind
             ) as user_conn:
+                # STARTTLS 升级（若配置了 use_tls）
+                if provider.use_tls:
+                    if not user_conn.start_tls():
+                        return LDAPAuthResult(
+                            success=False, error="用户 STARTTLS 升级失败"
+                        )
+                    if not user_conn.bind():
+                        return LDAPAuthResult(
+                            success=False, error="用户名或密码错误（TLS 后）"
+                        )
+
                 if not user_conn.bound:
                     return LDAPAuthResult(
                         success=False, error="用户名或密码错误"
@@ -265,8 +290,19 @@ def authenticate(
                 server,
                 user=user_dn,
                 password=password,
-                auto_bind=True,
+                auto_bind=not provider.use_tls,  # use_tls 时手动 bind
             ) as user_conn:
+                # STARTTLS 升级（若配置了 use_tls）
+                if provider.use_tls:
+                    if not user_conn.start_tls():
+                        return LDAPAuthResult(
+                            success=False, error="STARTTLS 升级失败"
+                        )
+                    if not user_conn.bind():
+                        return LDAPAuthResult(
+                            success=False, error="用户名或密码错误（TLS 后）"
+                        )
+
                 if not user_conn.bound:
                     return LDAPAuthResult(
                         success=False, error="用户名或密码错误"

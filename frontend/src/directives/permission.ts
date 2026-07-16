@@ -42,4 +42,14 @@ export const permission: Directive<HTMLElement, Role | Role[]> = {
       el.parentNode?.removeChild(el)
     }
   },
+
+  // P0-Low: 角色动态变化时重新评估（如管理员切换角色、切换账号）
+  updated(el, binding) {
+    const hasPermission = checkPermission(binding)
+    // 已经隐藏的元素权限恢复时，需要重新插入 DOM
+    // 注意：mounted 中已移除的元素无法恢复，此处仅处理仍可见的元素
+    if (!hasPermission && el.parentNode) {
+      el.parentNode.removeChild(el)
+    }
+  },
 }

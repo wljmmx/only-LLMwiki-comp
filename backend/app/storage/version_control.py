@@ -66,58 +66,86 @@ class VersionControl:
             content: 完整内容
             author: 作者
             change_summary: 变更摘要
+
+        并发安全：
+        - 使用 BEGIN IMMEDIATE 事务在 WAL 模式下获取排他写锁
+        - 防止 SELECT MAX(version) → INSERT 之间的 TOCTOU 竞态
+        - UNIQUE(doc_key, version) 约束作为兜底保护
         """
         conn = _get_db()
         now = datetime.now(timezone.utc).isoformat()
 
-        # 获取当前最大版本号
-        row = conn.execute(
-            "SELECT MAX(version) as max_ver FROM document_versions WHERE doc_key = ?",
-            (doc_key,),
-        ).fetchone()
-        next_version = (row["max_ver"] or 0) + 1
-
-        checksum = hashlib.sha256(content.encode()).hexdigest()[:16]
-
-        # 检查内容是否变化（与上一版本对比）
-        if row["max_ver"]:
-            prev = conn.execute(
-                "SELECT checksum FROM document_versions WHERE doc_key = ? AND version = ?",
-                (doc_key, row["max_ver"]),
+        # BEGIN IMMEDIATE：在 WAL 模式下获取排他写锁，序列化并发写入
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # 获取当前最大版本号
+            row = conn.execute(
+                "SELECT MAX(version) as max_ver FROM document_versions WHERE doc_key = ?",
+                (doc_key,),
             ).fetchone()
-            if prev and prev["checksum"] == checksum:
-                # 内容无变化，不创建新版本
+            next_version = (row["max_ver"] or 0) + 1
+
+            checksum = hashlib.sha256(content.encode()).hexdigest()[:16]
+
+            # 检查内容是否变化（与上一版本对比）
+            if row["max_ver"]:
+                prev = conn.execute(
+                    "SELECT checksum FROM document_versions WHERE doc_key = ? AND version = ?",
+                    (doc_key, row["max_ver"]),
+                ).fetchone()
+                if prev and prev["checksum"] == checksum:
+                    conn.execute("COMMIT")
+                    return {
+                        "doc_key": doc_key,
+                        "version": row["max_ver"],
+                        "skipped": True,
+                        "reason": "内容无变化",
+                    }
+
+            conn.execute(
+                """INSERT OR IGNORE INTO document_versions
+                   (doc_key, version, title, content, checksum, author, change_summary, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    doc_key,
+                    next_version,
+                    title,
+                    content,
+                    checksum,
+                    author,
+                    change_summary,
+                    now,
+                ),
+            )
+
+            # 如果 INSERT OR IGNORE 因为 UNIQUE 冲突被跳过（极端并发竞态），
+            # 重读当前最新版本号
+            if conn.total_changes == 0:
+                row = conn.execute(
+                    "SELECT MAX(version) as max_ver FROM document_versions WHERE doc_key = ?",
+                    (doc_key,),
+                ).fetchone()
+                next_version = row["max_ver"] if row else 0
+                conn.execute("COMMIT")
                 return {
                     "doc_key": doc_key,
-                    "version": row["max_ver"],
+                    "version": next_version,
                     "skipped": True,
-                    "reason": "内容无变化",
+                    "reason": "并发写入冲突，已自动解决",
                 }
 
-        conn.execute(
-            """INSERT INTO document_versions
-               (doc_key, version, title, content, checksum, author, change_summary, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                doc_key,
-                next_version,
-                title,
-                content,
-                checksum,
-                author,
-                change_summary,
-                now,
-            ),
-        )
-        conn.commit()
-        logger.info("version_saved", doc_key=doc_key, version=next_version)
-        return {
-            "doc_key": doc_key,
-            "version": next_version,
-            "title": title,
-            "checksum": checksum,
-            "created_at": now,
-        }
+            conn.commit()
+            logger.info("version_saved", doc_key=doc_key, version=next_version)
+            return {
+                "doc_key": doc_key,
+                "version": next_version,
+                "title": title,
+                "checksum": checksum,
+                "created_at": now,
+            }
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
     def get_version(self, doc_key: str, version: int) -> dict | None:
         """获取指定版本"""
@@ -175,8 +203,8 @@ class VersionControl:
         )
 
         # 统计
-        added = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
-        removed = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
+        added = sum(1 for line in diff if line.startswith("+") and not line.startswith("+++"))
+        removed = sum(1 for line in diff if line.startswith("-") and not line.startswith("---"))
 
         return {
             "doc_key": doc_key,
@@ -204,11 +232,16 @@ class VersionControl:
     def delete_all(self, doc_key: str) -> int:
         """删除文档的所有版本"""
         conn = _get_db()
-        cursor = conn.execute(
-            "DELETE FROM document_versions WHERE doc_key = ?", (doc_key,)
-        )
-        conn.commit()
-        return cursor.rowcount
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = conn.execute(
+                "DELETE FROM document_versions WHERE doc_key = ?", (doc_key,)
+            )
+            conn.commit()
+            return cursor.rowcount
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
     def list_by_prefix(self, prefix: str, limit: int = 500) -> list[dict]:
         """按 doc_key 前缀列出最新版本（用于 wiki:* 列表）

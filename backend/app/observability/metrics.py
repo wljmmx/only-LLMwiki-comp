@@ -32,7 +32,7 @@ import time
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
@@ -42,6 +42,9 @@ from prometheus_client import (
     generate_latest,
     make_asgi_app,
 )
+
+from app.auth import verify_token
+from app.config import get_settings
 
 logger = structlog.get_logger()
 
@@ -273,9 +276,18 @@ def setup_metrics_middleware(app: FastAPI) -> None:
                 logger.error("observability.middleware_record_failed", err=str(e))
 
     # /metrics 端点：返回 Prometheus 文本格式
+    # P0-M9: 认证与 MCP 一致，OPSKG_API_TOKEN 存在时要求 Bearer token
     @app.get("/metrics", tags=["observability"])
-    async def metrics_endpoint() -> Response:
-        """Prometheus 指标抓取端点"""
+    async def metrics_endpoint(
+        request: Request,
+        _username: str = Depends(verify_token),
+    ) -> Response:
+        """Prometheus 指标抓取端点
+
+        认证（与 MCP 端点一致）：
+        - 未配置 OPSKG_API_TOKEN → 开发模式放行
+        - 已配置 OPSKG_API_TOKEN → 需要 Authorization: Bearer <token>
+        """
         return Response(
             content=generate_latest(REGISTRY),
             media_type=CONTENT_TYPE_LATEST,
@@ -285,4 +297,5 @@ def setup_metrics_middleware(app: FastAPI) -> None:
     # 路径 /metrics 已被上面的端点占用，这里挂到 /metrics/internal 仅供深度排查
     app.mount("/metrics/internal", make_asgi_app(registry=REGISTRY))
 
-    logger.info("observability.metrics_enabled", endpoint="/metrics")
+    settings = get_settings()
+    logger.info("observability.metrics_enabled", endpoint="/metrics", auth="requires-token" if settings.api_token else "open-dev")
