@@ -451,7 +451,7 @@ def test_oidc_callback_e2e() -> None:
 
     original_exchange = oidc_router_mod.exchange_code
 
-    async def mock_exchange_code(provider, code, code_verifier, redirect_uri):
+    async def mock_exchange_code(provider, code, code_verifier, redirect_uri, nonce=None):
         return {
             "access_token": "mock-access-token",
             "token_type": "Bearer",
