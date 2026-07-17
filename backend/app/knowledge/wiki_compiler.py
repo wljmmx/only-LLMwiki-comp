@@ -81,6 +81,7 @@ class ProgressEventType(str, Enum):
     QUALITY_CHECK = "quality_check"
     CONFLICT_DETECTED = "conflict_detected"
     PROGRESS = "progress"  # 百分比进度
+    SECTION_PROGRESS = "section_progress"  # 章节处理进度
 
 
 # M3: 进度回调类型
@@ -378,6 +379,14 @@ def generate_slug_for_heading_tree(
     return result
 
 
+def iter_tree_nodes(nodes: list[dict]) -> Iterator[dict]:
+    """递归遍历标题树的所有节点"""
+    for node in nodes:
+        yield node
+        if node.get("children"):
+            yield from iter_tree_nodes(node["children"])
+
+
 # ────────── 编译器主体 ──────────
 
 
@@ -577,7 +586,7 @@ class WikiCompiler:
                 result.errors.append(f"解析失败: {e}")
                 _emit(ProgressEventType.STEP_DONE, {"step": "parse", "error": str(e)})
                 return result
-            _emit(ProgressEventType.STEP_DONE, {"step": "parse", "elements": len(doc.elements)})
+            _emit(ProgressEventType.STEP_DONE, {"step": "parse", "elements": len(doc.elements), "heading_tree_count": len(doc.heading_tree)})
             if _check_cancel():
                 _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": "编译已取消"})
                 return result
@@ -751,9 +760,10 @@ class WikiCompiler:
 
             # 4. 结构编译（基于标题层级树）
             if doc.heading_tree:
+                _emit(ProgressEventType.STEP_START, {"step": "struct_compile", "message": f"开始结构编译，共 {len(doc.heading_tree)} 个章节..."})
                 try:
                     struct_result = await self._compile_heading_tree_to_wiki(
-                        doc, source_entry, force=force
+                        doc, source_entry, force=force, on_progress=_emit
                     )
                     result.pages_created += struct_result.pages_created
                     result.pages_updated += struct_result.pages_updated
@@ -763,9 +773,11 @@ class WikiCompiler:
                     result.stale_marked.extend(struct_result.stale_marked)
                     result.errors.extend(struct_result.errors)
                     result.pipeline_trace = struct_result.pipeline_trace
+                    _emit(ProgressEventType.STEP_DONE, {"step": "struct_compile", "sections": len(doc.heading_tree), "pages_created": struct_result.pages_created, "pages_updated": struct_result.pages_updated})
                 except Exception as e:
                     logger.exception("wiki_compiler_struct_failed", doc_id=doc_id)
                     result.errors.append(f"结构编译失败: {e}")
+                    _emit(ProgressEventType.STEP_DONE, {"step": "struct_compile", "error": str(e)})
 
             # 4. 状态推进
             self.store.update_status(doc_id, "compiled")
@@ -1146,6 +1158,7 @@ H{level}
         source_entry: dict,
         *,
         force: bool = False,
+        on_progress: ProgressCallback | None = None,
     ) -> WikiCompileResult:
         """基于标题层级树生成结构化 wiki 页面
 
@@ -1161,6 +1174,7 @@ H{level}
             doc: ParsedDocument（含 heading_tree）
             source_entry: 来源信息
             force: 是否强制更新
+            on_progress: 进度回调
 
         Returns:
             WikiCompileResult
@@ -1172,9 +1186,28 @@ H{level}
             return result
 
         tree_with_slugs = generate_slug_for_heading_tree(heading_tree_dicts)
+        total_sections = sum(1 for _ in iter_tree_nodes(tree_with_slugs))
 
         t_start = time.monotonic()
         trace_buffer: list[SectionTrace] = []
+        current_section = 0
+
+        def _emit_section_progress(title: str, level: int, status: str) -> None:
+            nonlocal current_section
+            current_section += 1
+            if on_progress:
+                try:
+                    on_progress(ProgressEventType.SECTION_PROGRESS, {
+                        "title": title,
+                        "level": level,
+                        "status": status,
+                        "current": current_section,
+                        "total": total_sections,
+                        "percent": round(current_section / max(total_sections, 1) * 100),
+                    })
+                except Exception:
+                    pass
+
         page_count = await self._compile_tree_node_with_llm(
             tree_with_slugs,
             doc,
@@ -1182,6 +1215,7 @@ H{level}
             result,
             force=force,
             trace_buffer=trace_buffer,
+            on_section_progress=_emit_section_progress,
         )
         duration_ms = (time.monotonic() - t_start) * 1000
 
@@ -1220,10 +1254,12 @@ H{level}
         force: bool = False,
         parent_slug: str | None = None,
         trace_buffer: list[SectionTrace] | None = None,
+        on_section_progress: Callable[[str, int, str], None] | None = None,
     ) -> int:
         """递归编译标题树节点为 wiki 页面（使用 LLM 生成内容）
 
         trace_buffer: 可选列表，收集章节级管道追踪数据
+        on_section_progress: 章节处理进度回调
         """
         count = 0
         for node in nodes:
@@ -1234,9 +1270,13 @@ H{level}
             if not slug or level > 3:
                 if node.get("children"):
                     count += await self._compile_tree_node_with_llm(
-                        node["children"], doc, source_entry, result, force=force, parent_slug=slug, trace_buffer=trace_buffer
+                        node["children"], doc, source_entry, result, force=force, parent_slug=slug, trace_buffer=trace_buffer,
+                        on_section_progress=on_section_progress,
                     )
                 continue
+
+            if on_section_progress:
+                on_section_progress(title, level, "processing")
 
             # 准备原始内容
             elements = node.get("elements", [])
@@ -1254,6 +1294,9 @@ H{level}
                 body_md = self._build_section_body(node, parent_slug)
                 llm_success = False
                 processing_time_ms = 0.0
+
+            if on_section_progress:
+                on_section_progress(title, level, "done" if llm_success else "failed")
 
             # 收集管道追踪数据
             if trace_buffer is not None:

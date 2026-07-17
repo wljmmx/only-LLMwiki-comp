@@ -162,10 +162,11 @@ interface PipelineStep {
 const compiling = ref(false)
 const compileProgress = ref(0)
 const compileSteps = ref<PipelineStep[]>([
-  { name: 'parse', label: '解析文档', status: 'pending' },
-  { name: 'extract', label: '知识抽取', status: 'pending' },
-  { name: 'compile', label: 'LLM 编译 Wiki', status: 'pending' },
-  { name: 'index', label: '重建索引', status: 'pending' },
+  { name: 'parse', label: '解析文档', status: 'pending', details: '' },
+  { name: 'extract', label: '知识抽取', status: 'pending', details: '' },
+  { name: 'compile', label: 'LLM 编译 Wiki', status: 'pending', details: '' },
+  { name: 'struct_compile', label: '结构编译（章节处理）', status: 'pending', details: '' },
+  { name: 'index', label: '重建索引', status: 'pending', details: '' },
 ])
 const compileResult = ref<{
   pages_created?: number
@@ -176,14 +177,15 @@ const compileResult = ref<{
   paragraph_count?: number
 } | null>(null)
 
-const stepIndex: Record<string, number> = { parse: 0, extract: 1, compile: 2, index: 3 }
+const stepIndex: Record<string, number> = { parse: 0, extract: 1, compile: 2, struct_compile: 3, index: 4 }
 
 function resetSteps() {
   compileSteps.value = [
-    { name: 'parse', label: '解析文档', status: 'pending' },
-    { name: 'extract', label: '知识抽取', status: 'pending' },
-    { name: 'compile', label: 'LLM 编译 Wiki', status: 'pending' },
-    { name: 'index', label: '重建索引', status: 'pending' },
+    { name: 'parse', label: '解析文档', status: 'pending', details: '' },
+    { name: 'extract', label: '知识抽取', status: 'pending', details: '' },
+    { name: 'compile', label: 'LLM 编译 Wiki', status: 'pending', details: '' },
+    { name: 'struct_compile', label: '结构编译（章节处理）', status: 'pending', details: '' },
+    { name: 'index', label: '重建索引', status: 'pending', details: '' },
   ]
   compileProgress.value = 0
   compileResult.value = null
@@ -207,7 +209,8 @@ function startCompile() {
         const idx = stepIndex[step] ?? 0
         if (step in stepIndex) {
           compileSteps.value[idx].status = 'running'
-          compileProgress.value = (idx / 4) * 100
+          compileSteps.value[idx].details = evt.data.message ?? ''
+          compileProgress.value = (idx / 5) * 100
         }
       } else if (evt.type === 'step_done') {
         const step = evt.data.step as string
@@ -216,9 +219,28 @@ function startCompile() {
         if (idx !== undefined) {
           compileSteps.value[idx].status = 'done'
           compileSteps.value[idx].duration_ms = evt.data.duration_ms ?? null
-          compileProgress.value = ((idx + 1) / 4) * 100
-          if (step === 'compile') {
+          compileProgress.value = ((idx + 1) / 5) * 100
+          if (step === 'parse') {
+            const elements = evt.data.elements ?? 0
+            const headingTreeCount = evt.data.heading_tree_count ?? 0
+            compileSteps.value[idx].details = `解析完成：${elements} 个元素，${headingTreeCount} 个章节`
+          } else if (step === 'extract') {
+            const entities = evt.data.entities ?? 0
+            compileSteps.value[idx].details = `抽取完成：${entities} 个实体`
+          } else if (step === 'compile') {
             compileResult.value = evt.data
+            const pages = evt.data.pages ?? 0
+            compileSteps.value[idx].details = `编译完成：${pages} 个页面`
+          } else if (step === 'struct_compile') {
+            const sections = evt.data.sections ?? 0
+            const pagesCreated = evt.data.pages_created ?? 0
+            const pagesUpdated = evt.data.pages_updated ?? 0
+            const error = evt.data.error
+            if (error) {
+              compileSteps.value[idx].details = `结构编译失败：${error}`
+            } else {
+              compileSteps.value[idx].details = `章节处理完成：${sections} 个章节，${pagesCreated} 创建，${pagesUpdated} 更新`
+            }
           }
         }
       } else if (evt.type === 'page_start') {
@@ -238,8 +260,22 @@ function startCompile() {
       } else if (evt.type === 'progress') {
         const percent = evt.data.percent as number | undefined
         if (typeof percent === 'number' && percent > 0) {
-          compileProgress.value = 50 + (percent / 100) * 25
+          compileProgress.value = 40 + (percent / 100) * 20
         }
+      } else if (evt.type === 'section_progress') {
+        const data = evt.data
+        const title = data.title as string ?? ''
+        const level = data.level as number ?? 1
+        const status = data.status as string ?? ''
+        const current = data.current as number ?? 0
+        const total = data.total as number ?? 0
+        const percent = data.percent as number ?? 0
+        compileSteps.value[3].subProgress = {
+          current: current,
+          total: total,
+          currentEntity: status === 'processing' ? `处理章节: ${title} (H${level})` : status === 'done' ? `完成章节: ${title}` : `失败章节: ${title}`,
+        }
+        compileProgress.value = 60 + (percent / 100) * 20
       } else if (evt.type === 'done') {
         compileProgress.value = 100
         compiling.value = false
@@ -594,8 +630,14 @@ watch(sourceTab, (val) => {
             step.status === 'done' ? 'finish' : 'wait'
           "
         >
-          <template v-if="step.status === 'done' && step.duration_ms" #default>
+          <template v-if="step.status === 'done' && step.details" #default>
+            <span style="color: #18a058">{{ step.details }}</span>
+          </template>
+          <template v-if="step.status === 'done' && !step.details && step.duration_ms" #default>
             <span style="color: #18a058">耗时 {{ (step.duration_ms / 1000).toFixed(1) }}s</span>
+          </template>
+          <template v-if="step.status === 'running' && step.details" #default>
+            <span style="color: #2080f0">{{ step.details }}</span>
           </template>
           <template v-if="step.status === 'error' && step.error" #default>
             <span style="color: #d03050">{{ step.error }}</span>
