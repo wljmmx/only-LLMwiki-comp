@@ -840,8 +840,8 @@ onMounted(() => {
         </template>
       </NDrawerContent>
     </NDrawer>
-  </div>
-<!-- 重新生成弹窗 -->
+
+    <!-- 重新生成弹窗 -->
     <NModal
       v-model:show="recompileDialogVisible"
       title="重新生成章节"
