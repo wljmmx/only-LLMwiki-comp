@@ -19,7 +19,9 @@ class OllamaClient:
     def __init__(self, settings) -> None:
         self._base_url = settings.ollama_base_url.rstrip("/")
         # P0-3: SSRF 防护 — 验证 Ollama base URL 不指向内部地址
-        validate_url_safe(self._base_url)
+        # 允许通过配置绕过私有地址检查（用于 Docker 部署访问宿主 Ollama）
+        if not getattr(settings, "llm_allow_private_urls", False):
+            validate_url_safe(self._base_url)
         self._model = settings.ollama_model
         self._embedding_model = getattr(settings, "embedding_model", None) or settings.ollama_model
         self._timeout = settings.llm_timeout
