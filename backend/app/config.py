@@ -50,9 +50,6 @@ class Settings(BaseSettings):
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:7b"
-    # 是否允许 LLM 后端访问私有/内部地址（如 10.x.x.x、192.168.x.x、localhost）
-    # 默认为 False（安全默认），设置为 True 可用于 Docker 部署访问宿主 Ollama
-    llm_allow_private_urls: bool = False
 
     # vLLM
     vllm_base_url: str = "http://localhost:8000"
