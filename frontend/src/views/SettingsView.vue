@@ -145,7 +145,7 @@ import {
   NSelect, NSpace, NSpin, NSwitch, NTabPane, NTabs, NModal,
   NResult, useMessage, NIcon,
 } from 'naive-ui'
-import { CheckCircle as CheckIcon, AlertCircle as AlertIcon, Test as TestIcon } from '@vicons/ionicons5'
+import { CheckmarkDoneOutline as CheckIcon, AlertCircleOutline as AlertIcon, BuildOutline as TestIcon } from '@vicons/ionicons5'
 import {
   getSettings, updateSettings, validateSettings, restartService, testLLMConnection,
   type SettingsGroup, type TestLLMConnectionResponse,
