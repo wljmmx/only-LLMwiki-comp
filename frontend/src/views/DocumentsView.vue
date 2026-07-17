@@ -21,12 +21,19 @@ import {
   NStep,
   NProgress,
   NPopconfirm,
+  NCode,
+  NCheckbox,
+  NModal,
+  NForm,
+  NFormItem,
+  NSlider,
   useMessage,
 } from 'naive-ui'
 import type { UploadCustomRequestOptions } from 'naive-ui'
 import { listDocuments, deleteDocument, parseDocument, getDocumentContent, searchDocuments, getPipelineStatus, compileToWiki } from '@/api/documents'
+import { getCompileTrace, recompileSection, updateWikiPage } from '@/api/wiki'
 import { formatFileSize, formatDateTime as formatDateTimeUtil } from '@/utils/format'
-import type { DocumentMeta } from '@/types/api'
+import type { DocumentMeta, CompileTraceResponse, SectionTrace } from '@/types/api'
 
 const message = useMessage()
 const router = useRouter()
@@ -66,6 +73,21 @@ const drawerTab = ref<'info' | 'content' | 'pipeline'>('info')
 const currentDoc = ref<DocumentMeta | null>(null)
 const docContent = ref('')
 const docContentLoading = ref(false)
+
+// 章节对比相关状态
+const traceData = ref<CompileTraceResponse | null>(null)
+const traceLoading = ref(false)
+const showOnlyWithDiffs = ref(false)
+const editingSlug = ref<string | null>(null)
+const editingContent = ref('')
+
+// 重新生成弹窗
+const recompileDialogVisible = ref(false)
+const recompileTarget = ref<{ slug: string; title: string } | null>(null)
+const recompileTemperature = ref(0.2)
+const recompileSystemPrompt = ref('')
+const recompileUserPrompt = ref('')
+const recompilingSlug = ref<string | null>(null)
 
 const formatOptions = [
   { label: '全部格式', value: '' },
@@ -278,6 +300,10 @@ async function handleView(doc: DocumentMeta) {
   pipelineSteps.value = []
   pipelineLoading.value = false
   pipelineResult.value = null
+  traceData.value = null
+  traceLoading.value = false
+  editingSlug.value = null
+  editingContent.value = ''
   try {
     const res = await getDocumentContent(doc.id)
     docContent.value = res.content
@@ -288,8 +314,9 @@ async function handleView(doc: DocumentMeta) {
     docContentLoading.value = false
   }
 
-  // P3-3: 异步加载流水线状态
+  // P3-3: 异步加载流水线状态和章节追踪数据
   loadPipelineStatus(doc.id)
+  loadTraceData(doc.id)
 }
 
 async function loadPipelineStatus(docId: string) {
@@ -298,6 +325,121 @@ async function loadPipelineStatus(docId: string) {
     pipelineSteps.value = (res.steps || []) as PipelineStep[]
   } catch {
     // 静默失败，流水线状态非关键
+  }
+}
+
+async function loadTraceData(docId: string) {
+  if (!docId) return
+  traceLoading.value = true
+  try {
+    const res = await getCompileTrace(docId, false)
+    traceData.value = res
+  } catch {
+    // 静默失败，追踪数据非关键
+  } finally {
+    traceLoading.value = false
+  }
+}
+
+function hasDiff(s: SectionTrace): boolean {
+  return s.raw_content.trim() !== s.compiled_content.trim()
+}
+
+function getLevelLabel(level: number): string {
+  return `H${level}`
+}
+
+function getLevelType(level: number): 'success' | 'info' | 'warning' {
+  const types: Record<number, 'success' | 'info' | 'warning'> = { 1: 'success', 2: 'info', 3: 'warning' }
+  return types[level] || 'info'
+}
+
+function formatMs(ms: number): string {
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`
+  if (ms >= 1) return `${ms.toFixed(0)}ms`
+  return '<1ms'
+}
+
+function calcReduction(raw: number, compiled: number): string {
+  if (raw === 0) return '0%'
+  const pct = ((raw - compiled) / raw) * 100
+  return pct > 0 ? `-${pct.toFixed(1)}%` : `+${Math.abs(pct).toFixed(1)}%`
+}
+
+function startEdit(section: SectionTrace) {
+  editingSlug.value = section.slug
+  editingContent.value = section.compiled_content
+}
+
+function cancelEdit() {
+  editingSlug.value = null
+  editingContent.value = ''
+}
+
+async function saveEdit(section: SectionTrace) {
+  if (!editingSlug.value || !currentDoc.value) return
+  const slug = editingSlug.value
+  try {
+    const fm = `---
+slug: ${slug}
+title: ${section.title}
+type: concept
+tags: []
+review_status: auto
+edited_by_human: true
+---
+`
+    const fullContent = fm + editingContent.value
+    await updateWikiPage(slug, {
+      content: fullContent,
+      title: section.title,
+      change_summary: '用户手工编辑',
+    })
+    message.success('保存成功')
+    section.compiled_content = editingContent.value
+    section.compiled_chars = editingContent.value.length
+    cancelEdit()
+  } catch (e: any) {
+    message.error('保存失败：' + (e?.response?.data?.detail || e?.message || '未知错误'))
+  }
+}
+
+function openRecompileDialog(section: SectionTrace) {
+  recompileTarget.value = { slug: section.slug, title: section.title }
+  recompileTemperature.value = 0.2
+  recompileSystemPrompt.value = ''
+  recompileUserPrompt.value = ''
+  recompileDialogVisible.value = true
+}
+
+function closeRecompileDialog() {
+  recompileDialogVisible.value = false
+  recompileTarget.value = null
+}
+
+async function doRecompile() {
+  if (!recompileTarget.value || !currentDoc.value) return
+  const { slug } = recompileTarget.value
+  recompilingSlug.value = slug
+  try {
+    const result = await recompileSection({
+      doc_id: currentDoc.value.id,
+      slug,
+      temperature: recompileTemperature.value || undefined,
+      system_prompt: recompileSystemPrompt.value || undefined,
+      user_prompt: recompileUserPrompt.value || undefined,
+    })
+    message.success(`重新生成成功（${result.outcome}）`)
+    const section = traceData.value?.sections?.find((s) => s.slug === slug)
+    if (section) {
+      section.compiled_content = result.compiled_content
+      section.compiled_chars = result.compiled_chars
+    }
+    closeRecompileDialog()
+  } catch (e: any) {
+    message.error('重新生成失败：' + (e?.response?.data?.detail || e?.message || '未知错误'))
+  } finally {
+    recompilingSlug.value = null
   }
 }
 
@@ -593,12 +735,166 @@ onMounted(() => {
                     </NDescriptionsItem>
                   </NDescriptions>
                 </div>
+
+                <!-- 章节对比 -->
+                <div v-if="traceData?.available" class="sections-compare">
+                  <div class="sections-header">
+                    <NSpace justify="space-between" align="center">
+                      <span style="font-weight: 600">章节处理对比</span>
+                      <NCheckbox v-model:checked="showOnlyWithDiffs">仅显示有差异</NCheckbox>
+                    </NSpace>
+                  </div>
+                  <NSpin v-if="traceLoading" />
+                  <div v-else-if="traceData.sections && traceData.sections.length > 0" class="sections-list">
+                    <div
+                      v-for="(section, idx) in (showOnlyWithDiffs ? traceData.sections.filter(hasDiff) : traceData.sections)"
+                      :key="section.slug || idx"
+                      class="section-item"
+                    >
+                      <div class="section-header">
+                        <NSpace align="center" :wrap="false">
+                          <NTag :bordered="false" size="small" :type="getLevelType(section.level)">
+                            {{ getLevelLabel(section.level) }}
+                          </NTag>
+                          <span style="font-weight: 500">{{ section.title || '(无标题)' }}</span>
+                          <NTag size="small" :bordered="false">{{ section.slug }}</NTag>
+                          <NTag
+                            size="small"
+                            :bordered="false"
+                            :type="section.llm_success ? 'success' : 'error'"
+                          >
+                            {{ section.llm_success ? 'LLM 成功' : 'LLM 失败' }}
+                          </NTag>
+                          <span style="font-size: 12px; color: #999">{{ formatMs(section.processing_time_ms) }}</span>
+                          <span style="font-size: 12px; color: #999">
+                            {{ section.raw_chars }} → {{ section.compiled_chars }} 字符
+                            ({{ calcReduction(section.raw_chars, section.compiled_chars) }})
+                          </span>
+                          <NTag v-if="hasDiff(section)" size="small" :bordered="false" type="warning">有变更</NTag>
+                          <div style="flex: 1" />
+                          <NButton
+                            size="tiny"
+                            quaternary
+                            :loading="recompilingSlug === section.slug"
+                            @click.stop="openRecompileDialog(section)"
+                          >
+                            重新生成
+                          </NButton>
+                          <NButton
+                            size="tiny"
+                            quaternary
+                            :type="editingSlug === section.slug ? 'warning' : 'default'"
+                            @click.stop="editingSlug === section.slug ? cancelEdit() : startEdit(section)"
+                          >
+                            {{ editingSlug === section.slug ? '取消编辑' : '编辑' }}
+                          </NButton>
+                        </NSpace>
+                      </div>
+                      <div class="section-content">
+                        <div class="content-col">
+                          <div class="col-label" style="color: #d03050">处理前（原始内容）</div>
+                          <NCode
+                            :code="section.raw_content || '(空)'"
+                            language="markdown"
+                            word-wrap
+                            style="max-height: 200px; overflow: auto"
+                          />
+                        </div>
+                        <div class="content-col">
+                          <div class="col-label" style="color: #18a058">
+                            处理后（LLM 编译）
+                            <span v-if="editingSlug === section.slug" style="color: #f0a020; font-size: 12px">（编辑模式）</span>
+                          </div>
+                          <template v-if="editingSlug === section.slug">
+                            <textarea
+                              v-model="editingContent"
+                              class="edit-textarea"
+                              style="min-height: 150px; margin-bottom: 8px"
+                            />
+                            <NSpace>
+                              <NButton size="small" type="primary" @click="saveEdit(section)">保存</NButton>
+                              <NButton size="small" @click="cancelEdit()">取消</NButton>
+                            </NSpace>
+                          </template>
+                          <NCode
+                            v-else
+                            :code="section.compiled_content || '(空)'"
+                            language="markdown"
+                            word-wrap
+                            style="max-height: 200px; overflow: auto"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <NEmpty v-else description="所有章节处理后无差异" size="small" />
+                </div>
+
+                <!-- 无追踪数据 -->
+                <div v-if="traceData && !traceData.available" class="no-trace">
+                  <span style="color: #999">{{ traceData.message || '该文档无管道追踪数据' }}</span>
+                </div>
               </div>
             </NTabPane>
           </NTabs>
         </template>
       </NDrawerContent>
     </NDrawer>
+  </div>
+<!-- 重新生成弹窗 -->
+    <NModal
+      v-model:show="recompileDialogVisible"
+      title="重新生成章节"
+      style="width: 600px"
+      preset="card"
+    >
+      <template v-if="recompileTarget">
+        <p style="margin-bottom: 16px; color: #666">
+          章节：<strong>{{ recompileTarget.title }}</strong>（{{ recompileTarget.slug }}）
+        </p>
+        <NForm label-placement="top" size="small">
+          <NFormItem label="Temperature（创造性）">
+            <NSpace align="center">
+              <NSlider
+                v-model:value="recompileTemperature"
+                :min="0"
+                :max="2"
+                :step="0.05"
+                style="flex: 1"
+              />
+              <span style="width: 40px; text-align: right">{{ recompileTemperature.toFixed(2) }}</span>
+            </NSpace>
+            <div style="font-size: 11px; color: #999; margin-top: 4px">
+              0 = 确定性输出，1 = 创造性，2 = 高度随机
+            </div>
+          </NFormItem>
+          <NFormItem label="自定义系统提示词（可选）">
+            <textarea
+              v-model="recompileSystemPrompt"
+              class="edit-textarea"
+              placeholder="留空使用默认系统提示词"
+              style="min-height: 80px"
+            />
+          </NFormItem>
+          <NFormItem label="自定义用户提示词（可选）">
+            <textarea
+              v-model="recompileUserPrompt"
+              class="edit-textarea"
+              placeholder="留空使用默认用户提示词（含章节原文）"
+              style="min-height: 80px"
+            />
+          </NFormItem>
+        </NForm>
+      </template>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="closeRecompileDialog">取消</NButton>
+          <NButton type="primary" :loading="!!recompilingSlug" @click="doRecompile">
+            重新生成
+          </NButton>
+        </NSpace>
+      </template>
+    </NModal>
   </div>
 </template>
 
@@ -751,5 +1047,75 @@ onMounted(() => {
   font-weight: 600;
   margin-bottom: 12px;
   color: var(--n-text-color, #111827);
+}
+
+.sections-compare {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--n-border-color, #e5e7eb);
+}
+
+.sections-header {
+  margin-bottom: 12px;
+}
+
+.sections-list {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.section-item {
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--n-base-color, #f9fafb);
+  border-radius: 6px;
+  border: 1px solid var(--n-border-color, #e5e7eb);
+}
+
+.section-header {
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--n-border-color, #e5e7eb);
+}
+
+.section-content {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.content-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.col-label {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.edit-textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--n-border-color, #e5e7eb);
+  border-radius: 6px;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.edit-textarea:focus {
+  outline: none;
+  border-color: var(--n-primary-color, #3b82f6);
+}
+
+.no-trace {
+  margin-top: 16px;
+  padding: 12px;
+  background: var(--n-info-color-suppl, #f0f5ff);
+  border-radius: 6px;
 }
 </style>
