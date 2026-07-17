@@ -55,6 +55,8 @@ export const useAppStore = defineStore('app', () => {
       if (!sidebarCollapsed.value) sidebarCollapsed.value = true
     } else {
       viewport.value = 'desktop'
+      // 桌面端自动展开侧栏，确保菜单可见
+      if (sidebarCollapsed.value) sidebarCollapsed.value = false
     }
   }
 

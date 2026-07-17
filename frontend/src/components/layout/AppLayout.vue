@@ -135,6 +135,7 @@ onMounted(() => {
       :collapsed-width="64"
       :width="240"
       bordered
+      class="app-sider"
       @update:collapsed="handleToggle"
     >
       <div class="logo">
@@ -227,9 +228,16 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* NLayout has-sider 内部使用 absolute 定位，这里只需设高度 */
+/* NLayout has-sider 内部使用 flex 布局，确保正确的高度和宽度 */
 .app-shell {
   height: 100vh;
+  width: 100%;
+  display: flex;
+  overflow: hidden;
+}
+.app-sider {
+  flex-shrink: 0;
+  position: relative;
 }
 .logo {
   display: flex;
@@ -241,6 +249,7 @@ onMounted(() => {
   border-bottom: 1px solid var(--opskg-border-color);
   height: 56px;
   box-sizing: border-box;
+  flex-shrink: 0;
 }
 .logo-icon {
   font-size: var(--opskg-fs-xl);

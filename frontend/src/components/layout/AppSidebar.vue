@@ -70,39 +70,48 @@ const langLabel = computed(() => (locale.value === 'zh-CN' ? 'EN' : '中文'))
 </script>
 
 <template>
-  <GlobalSearch />
-  <div class="sidebar-menu">
-    <NMenu
-      :collapsed="appStore.sidebarCollapsed"
-      :collapsed-width="64"
-      :collapsed-icon-size="20"
-      :options="[...recentMenuItems, ...menuItems]"
-      :value="route.path"
-      :indent="18"
-      @update:value="handleSelect"
-    />
-  </div>
-  <div class="sidebar-footer">
-    <NButton
-      quaternary
-      size="small"
-      :style="{ width: appStore.sidebarCollapsed ? '100%' : 'auto' }"
-      @click="toggleLocale"
-    >
-      {{ langLabel }}
-    </NButton>
+  <div class="sidebar-content">
+    <GlobalSearch />
+    <div class="sidebar-menu">
+      <NMenu
+        :collapsed="appStore.sidebarCollapsed"
+        :collapsed-width="64"
+        :collapsed-icon-size="20"
+        :options="[...recentMenuItems, ...menuItems]"
+        :value="route.path"
+        :indent="18"
+        @update:value="handleSelect"
+      />
+    </div>
+    <div class="sidebar-footer">
+      <NButton
+        quaternary
+        size="small"
+        :style="{ width: appStore.sidebarCollapsed ? '100%' : 'auto' }"
+        @click="toggleLocale"
+      >
+        {{ langLabel }}
+      </NButton>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.sidebar-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
 .sidebar-menu {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 .sidebar-footer {
   padding: 8px 12px;
   border-top: 1px solid var(--opskg-border-color);
   display: flex;
   justify-content: center;
+  flex-shrink: 0;
 }
 </style>
