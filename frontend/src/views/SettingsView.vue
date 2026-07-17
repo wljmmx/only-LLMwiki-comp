@@ -33,6 +33,25 @@
         :tab="group.label"
       >
         <n-card :title="group.label" :bordered="false" size="small">
+          <!-- LLM 配置组显示测试按钮 -->
+          <div v-if="key === 'llm'" class="llm-test-bar">
+            <n-button
+              type="primary"
+              @click="handleTestLLM"
+              :loading="testingLLM"
+              :disabled="testingLLM"
+            >
+              <template #icon>
+                <n-icon><component :is="TestIcon" /></n-icon>
+              </template>
+              测试 LLM 连通性
+            </n-button>
+            <div v-if="llmTestResult" class="llm-test-result" :class="{ success: llmTestResult.success, error: !llmTestResult.success }">
+              <n-icon><component :is="llmTestResult.success ? CheckIcon : AlertIcon" /></n-icon>
+              <span>{{ llmTestResult.message }}</span>
+              <span v-if="llmTestResult.latency_ms" class="latency">耗时 {{ llmTestResult.latency_ms }}ms</span>
+            </div>
+          </div>
           <n-form label-placement="left" label-width="180" :show-feedback="true">
             <n-form-item
               v-for="(field, fkey) in group.items"
@@ -124,11 +143,12 @@ import { ref, onMounted } from 'vue'
 import {
   NButton, NCard, NForm, NFormItem, NInput, NInputNumber,
   NSelect, NSpace, NSpin, NSwitch, NTabPane, NTabs, NModal,
-  NResult, useMessage,
+  NResult, useMessage, NIcon,
 } from 'naive-ui'
+import { CheckCircle as CheckIcon, AlertCircle as AlertIcon, Test as TestIcon } from '@vicons/ionicons5'
 import {
-  getSettings, updateSettings, validateSettings, restartService,
-  type SettingsGroup,
+  getSettings, updateSettings, validateSettings, restartService, testLLMConnection,
+  type SettingsGroup, type TestLLMConnectionResponse,
 } from '@/api/settings'
 import PageHeader from '@/components/common/PageHeader.vue'
 
@@ -138,10 +158,12 @@ const loading = ref(true)
 const saving = ref(false)
 const validating = ref(false)
 const restarting = ref(false)
+const testingLLM = ref(false)
 const error = ref('')
 const showRestartModal = ref(false)
 const groups = ref<Record<string, SettingsGroup>>({})
 const pendingChanges = ref<Record<string, string | number | boolean>>({})
+const llmTestResult = ref<TestLLMConnectionResponse | null>(null)
 
 async function loadSettings() {
   loading.value = true
@@ -217,6 +239,32 @@ async function handleRestart() {
   }
 }
 
+async function handleTestLLM() {
+  testingLLM.value = true
+  llmTestResult.value = null
+  try {
+    const res = await testLLMConnection()
+    llmTestResult.value = res
+    if (res.success) {
+      message.success(res.message)
+    } else {
+      message.error(res.message + (res.errors ? '：' + res.errors.join('；') : ''))
+    }
+  } catch (err: any) {
+    llmTestResult.value = {
+      success: false,
+      backend: '',
+      model: '',
+      base_url: '',
+      latency_ms: 0,
+      message: '测试失败：' + (err?.response?.data?.detail || err?.message),
+    }
+    message.error(llmTestResult.value.message)
+  } finally {
+    testingLLM.value = false
+  }
+}
+
 onMounted(loadSettings)
 </script>
 
@@ -238,5 +286,34 @@ onMounted(loadSettings)
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 13px;
+}
+.llm-test-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--n-border-color);
+}
+.llm-test-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.llm-test-result.success {
+  background: rgba(24, 160, 88, 0.1);
+  color: var(--n-success-color);
+}
+.llm-test-result.error {
+  background: rgba(208, 48, 80, 0.1);
+  color: var(--n-error-color);
+}
+.llm-test-result .latency {
+  margin-left: 8px;
+  opacity: 0.7;
+  font-size: 12px;
 }
 </style>

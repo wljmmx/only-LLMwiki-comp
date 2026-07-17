@@ -40,6 +40,23 @@ export interface SettingsValidateResponse {
   errors: string[]
 }
 
+export interface TestLLMConnectionRequest {
+  backend?: string
+  base_url?: string
+  api_key?: string
+  model?: string
+}
+
+export interface TestLLMConnectionResponse {
+  success: boolean
+  backend: string
+  model: string
+  base_url: string
+  latency_ms: number
+  message: string
+  errors?: string[]
+}
+
 /** 获取当前配置 */
 export function getSettings(): Promise<SettingsResponse> {
   return api.get('/settings')
@@ -58,4 +75,11 @@ export function validateSettings(data: SettingsUpdateRequest): Promise<SettingsV
 /** 重启服务 */
 export function restartService(): Promise<{ restart: boolean; message: string }> {
   return api.post('/settings/restart')
+}
+
+/** 测试 LLM 后端连通性 */
+export function testLLMConnection(
+  data?: TestLLMConnectionRequest,
+): Promise<TestLLMConnectionResponse> {
+  return api.post('/settings/llm/test', data || {})
 }
