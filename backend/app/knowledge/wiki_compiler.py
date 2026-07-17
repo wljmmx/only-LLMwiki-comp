@@ -762,6 +762,7 @@ class WikiCompiler:
                     result.review_needed.extend(struct_result.review_needed)
                     result.stale_marked.extend(struct_result.stale_marked)
                     result.errors.extend(struct_result.errors)
+                    result.pipeline_trace = struct_result.pipeline_trace
                 except Exception as e:
                     logger.exception("wiki_compiler_struct_failed", doc_id=doc_id)
                     result.errors.append(f"结构编译失败: {e}")
