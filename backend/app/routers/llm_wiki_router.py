@@ -353,6 +353,36 @@ async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool =
                     total_ms = int(
                         (datetime.now(timezone.utc) - total_start).total_seconds() * 1000
                     )
+                    pt_data = None
+                    if result.pipeline_trace:
+                        pt = result.pipeline_trace
+                        pt_data = {
+                            "doc_id": pt.doc_id,
+                            "doc_title": pt.doc_title,
+                            "duration_ms": pt.duration_ms,
+                            "total_sections": pt.total_sections,
+                            "total_raw_chars": pt.total_raw_chars,
+                            "total_compiled_chars": pt.total_compiled_chars,
+                            "sections_with_children": pt.sections_with_children,
+                            "llm_success_count": pt.llm_success_count,
+                            "llm_fail_count": pt.llm_fail_count,
+                            "sections": [
+                                {
+                                    "title": s.title,
+                                    "level": s.level,
+                                    "slug": s.slug,
+                                    "raw_content": s.raw_content,
+                                    "raw_chars": s.raw_chars,
+                                    "compiled_content": s.compiled_content,
+                                    "compiled_chars": s.compiled_chars,
+                                    "llm_success": s.llm_success,
+                                    "processing_time_ms": s.processing_time_ms,
+                                    "children_count": s.children_count,
+                                }
+                                for s in pt.sections
+                            ],
+                        }
+
                     yield _sse_event("done", {
                         "total_ms": total_ms,
                         "doc_id": doc_id,
@@ -366,6 +396,7 @@ async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool =
                         "errors": result.errors,
                         "index_rebuilt": result.index_rebuilt,
                         "graph_compiled": result.graph_compiled,
+                        "pipeline_trace": pt_data,
                     })
                     break
                 elif event_type == "__error__":

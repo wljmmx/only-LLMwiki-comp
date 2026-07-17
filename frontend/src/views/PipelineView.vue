@@ -255,8 +255,28 @@ function startCompile() {
         } else {
           message.success(`编译成功：${created} 个页面创建，${updated} 个页面更新`)
         }
-        // 自动加载管道追踪
-        loadTraceData(docId)
+        // 直接从 done 事件获取管道追踪数据
+        const pt = evt.data.pipeline_trace
+        if (pt) {
+          traceData.value = {
+            doc_id: pt.doc_id,
+            doc_title: pt.doc_title,
+            available: true,
+            summary: {
+              duration_ms: pt.duration_ms,
+              total_sections: pt.total_sections,
+              total_raw_chars: pt.total_raw_chars,
+              total_compiled_chars: pt.total_compiled_chars,
+              sections_with_children: pt.sections_with_children,
+              llm_success_count: pt.llm_success_count,
+              llm_fail_count: pt.llm_fail_count,
+            },
+            sections: pt.sections,
+          }
+        } else {
+          // 回退到单独调用
+          loadTraceData(docId)
+        }
       } else if (evt.type === 'error') {
         compiling.value = false
         phase.value = 'input'
@@ -285,7 +305,7 @@ const showOnlyWithDiffs = ref(false)
 async function loadTraceData(docId: string) {
   traceLoading.value = true
   try {
-    traceData.value = await getCompileTrace(docId, false)
+    traceData.value = await getCompileTrace(docId, true)
   } catch {
     // 静默失败
   } finally {
