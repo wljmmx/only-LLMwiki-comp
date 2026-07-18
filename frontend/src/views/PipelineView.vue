@@ -156,6 +156,7 @@ interface PipelineStep {
   duration_ms?: number | null
   error?: string | null
   subProgress?: { current: number; total: number; currentEntity: string } | null
+  details?: string | null
 }
 
 // 章节节点（独立管道节点）

@@ -197,7 +197,7 @@ function onPageSizeChange(size: number) {
       }"
       :bordered="false"
       size="medium"
-      @update:checked-row-keys="(keys: string[]) => emit('update:checkedRowKeys', keys)"
+      @update:checked-row-keys="(keys) => emit('update:checkedRowKeys', keys as string[])"
     >
       <template #empty>
         <NEmpty description="暂无文档" />

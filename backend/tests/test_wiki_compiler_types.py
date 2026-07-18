@@ -5,13 +5,11 @@
 """
 from __future__ import annotations
 
-import pytest
-
 # 直接导入子模块，避免触发 app.knowledge.__init__ 的 neo4j 依赖链
 from app.knowledge.wiki_compiler_types import (
     ENTITY_TYPE_TO_PAGE_TYPE,
-    ProgressEventType,
     PipelineTrace,
+    ProgressEventType,
     SectionTrace,
     WikiCompileResult,
     WikiPage,
@@ -21,7 +19,6 @@ from app.knowledge.wiki_compiler_utils import (
     make_slug,
     slugify,
 )
-
 
 # ────────── WikiPage 创建 ──────────
 

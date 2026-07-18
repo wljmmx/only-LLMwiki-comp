@@ -22,7 +22,7 @@ export interface User {
   display_name: string | null
   email: string | null
   active: boolean
-  must_change_password: boolean
+  must_change_password?: boolean
   created_at: string
   updated_at: string
 }

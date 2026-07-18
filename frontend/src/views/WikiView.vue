@@ -90,7 +90,7 @@ const pageMeta = computed(() => {
   const sources = Array.isArray(parsed.rest.sources) ? parsed.rest.sources : []
   return {
     updatedAt: currentPage.value.updated_at,
-    version: currentPage.value.version,
+    version: currentPage.value.version ?? 0,
     reviewStatus,
     reviewStatusLabel: reviewStatusLabelMap[reviewStatus] || reviewStatus,
     sourcesCount: sources.length,

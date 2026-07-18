@@ -17,9 +17,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.knowledge.okf_adapter import (
     FALLBACK_DIR,
     OKF_VERSION,
-    OKFConcept,
     ExportResult,
     ImportResult,
+    OKFConcept,
     _assemble_frontmatter,
     _split_frontmatter,
     build_okf_link,

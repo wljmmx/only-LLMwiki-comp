@@ -6,9 +6,6 @@ from __future__ import annotations
 
 import io
 import os
-import tarfile
-import tempfile
-from pathlib import Path
 
 os.environ.setdefault("OPSKG_API_TOKEN", "")
 

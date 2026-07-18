@@ -5,10 +5,7 @@
 """
 from __future__ import annotations
 
-import pytest
-
 from app.storage.document_store import DocumentStore
-
 
 # ────────── CRUD 操作 ──────────
 
@@ -403,7 +400,7 @@ class TestPipelineRun:
             fmt=sample_document["fmt"],
         )
 
-        run_id1 = store.create_pipeline_run(saved["doc_id"])
+        store.create_pipeline_run(saved["doc_id"])
         run_id2 = store.create_pipeline_run(saved["doc_id"])
 
         latest = store.get_latest_pipeline_run(saved["doc_id"])

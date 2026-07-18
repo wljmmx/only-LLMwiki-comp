@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from pathlib import Path
 from typing import Any
 
 # 确保测试期间关闭认证

@@ -5,10 +5,7 @@
 """
 from __future__ import annotations
 
-import pytest
-
 from app.storage.version_control import VersionControl
-
 
 # ────────── 版本保存 ──────────
 

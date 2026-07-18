@@ -11,7 +11,6 @@ import pytest
 from app.core.llm.base import ChatMessage, LLMResponse
 from app.core.llm.cache import LlmCache
 
-
 # ────────── 辅助函数 ──────────
 
 def _make_msg(role: str, content: str) -> ChatMessage:
@@ -473,8 +472,8 @@ class TestResilientLLMClientIntegration:
     @pytest.mark.anyio
     async def test_error_response_not_cached(self):
         """LLM 调用失败时不缓存响应"""
-        from app.core.llm.resilient import ResilientLLMClient
         from app.core.llm.base import LLMServerError
+        from app.core.llm.resilient import ResilientLLMClient
 
         msgs = [_make_msg("user", "hello")]
         mock_client = AsyncMock()

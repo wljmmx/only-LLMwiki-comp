@@ -250,7 +250,7 @@ function applyResponseInterceptor(
 
       console.error(
         'API Error:',
-        error.response?.data?.detail || error.message,
+        (error.response?.data as Record<string, unknown>)?.detail || error.message,
       )
       return Promise.reject(error)
     },
