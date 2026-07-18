@@ -39,7 +39,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # ────────── Stage 2: 运行时 ──────────
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 ARG OPSKG_VERSION
 ARG OPSKG_IMAGE_REF

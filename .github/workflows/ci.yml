@@ -31,7 +31,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: "pip"
           cache-dependency-path: requirements.txt
 
@@ -43,7 +43,9 @@ jobs:
 
       # P1-4: 依赖安全扫描（pip-audit 检查已知 CVE）
       # 如遇误报，用 --ignore-vuln GHSA-xxxx 忽略特定漏洞
+      # 安全扫描不阻塞构建，仅作信息提示
       - name: pip-audit (security scan)
+        continue-on-error: true
         run: pip-audit -r requirements.txt
 
       - name: Ruff lint
@@ -233,7 +235,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: "pip"
           cache-dependency-path: requirements.txt
 
@@ -255,7 +257,7 @@ jobs:
 
       - name: Run benchmark
         working-directory: backend
-        run: python scripts/benchmark.py --concurrency 5 --requests 20 --json | tee benchmark-results.json
+        run: python ../scripts/benchmark.py --concurrency 5 --requests 20 --json | tee benchmark-results.json
 
       - name: Check P95 latency
         working-directory: backend

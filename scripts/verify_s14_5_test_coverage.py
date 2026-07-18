@@ -167,7 +167,7 @@ if COVERAGE_SUMMARY.exists():
     views_coverage: list[tuple[str, float]] = []
     views_zero: list[str] = []
     # 已知未覆盖视图（P4-6 Pipeline 功能仍在开发中，暂无测试）
-    _KNOWN_UNCOVERED_VIEWS = frozenset({"PipelineTraceView.vue", "PipelineView.vue"})
+    _KNOWN_UNCOVERED_VIEWS: frozenset[str] = frozenset()
 
     for key, val in summary.items():
         if key == "total":
