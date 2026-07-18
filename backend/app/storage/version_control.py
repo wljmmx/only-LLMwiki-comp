@@ -135,6 +135,16 @@ class VersionControl:
                 }
 
             conn.commit()
+            # P2: 版本保留限制 — 每个 doc_key 最多保留 MAX_VERSIONS 个版本
+            _MAX_VERSIONS = 50
+            conn.execute(
+                """DELETE FROM document_versions WHERE doc_key = ? AND version <= (
+                    SELECT version FROM document_versions WHERE doc_key = ?
+                    ORDER BY version DESC LIMIT 1 OFFSET ?
+                )""",
+                (doc_key, doc_key, _MAX_VERSIONS - 1),
+            )
+            conn.commit()
             logger.info("version_saved", doc_key=doc_key, version=next_version)
             return {
                 "doc_key": doc_key,
@@ -164,6 +174,30 @@ class VersionControl:
             (doc_key,),
         ).fetchone()
         return dict(row) if row else None
+
+    def get_latest_batch(self, doc_keys: list[str]) -> dict[str, dict | None]:
+        """P1: 批量获取最新版本 — 单次 SQL 查询替代 N 次 get_latest
+
+        使用子查询获取每个 doc_key 的最大 version，然后 JOIN 获取完整行。
+        """
+        if not doc_keys:
+            return {}
+        conn = _get_db()
+        placeholders = ",".join(["?"] * len(doc_keys))
+        rows = conn.execute(
+            f"""SELECT dv.* FROM document_versions dv
+                INNER JOIN (
+                    SELECT doc_key, MAX(version) AS max_version
+                    FROM document_versions
+                    WHERE doc_key IN ({placeholders})
+                    GROUP BY doc_key
+                ) latest ON dv.doc_key = latest.doc_key AND dv.version = latest.max_version""",
+            doc_keys,
+        ).fetchall()
+        result = {key: None for key in doc_keys}
+        for row in rows:
+            result[row["doc_key"]] = dict(row)
+        return result
 
     def list_versions(self, doc_key: str) -> list[dict]:
         """列出所有版本（不含内容，减少传输）"""

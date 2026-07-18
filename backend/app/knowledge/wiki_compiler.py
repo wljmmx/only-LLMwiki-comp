@@ -233,6 +233,7 @@ class WikiCompiler:
 
         # ── 编译指标埋点：记录编译开始 ──
         try:
+            from app.observability.metrics import record_business_metric  # noqa: F811
             record_business_metric("compile_total", compile_type="full")
         except Exception:  # noqa: BLE001
             pass
@@ -364,6 +365,12 @@ class WikiCompiler:
                     result.graph_compiled = True
                 except Exception as e:
                     result.errors.append(f"图谱编译失败: {e}")
+                    # P0-3: 记录图谱编译失败指标
+                    try:
+                        from app.observability.metrics import record_business_metric
+                        record_business_metric("graph_sync_failures_total", 1.0, operation="compile_to_graph")
+                    except Exception:
+                        pass
 
             # 3. 逐个编译（实体抽取方式）
             source_entry = {
@@ -374,33 +381,65 @@ class WikiCompiler:
 
             _emit(ProgressEventType.STEP_START, {"step": "compile", "total": len(entities)})
             total_entities = len(entities)
-            for i, entity in enumerate(entities):
+
+            # P0-1: 实体编译并行化 — Phase 1: 并行执行 LLM 调用（信号量限制并发数）
+            max_concurrency = max(getattr(self.settings, 'compile_concurrency', 3), 1)
+            sem = asyncio.Semaphore(max_concurrency)
+
+            async def _compile_page_parallel(
+                idx: int, entity: ExtractedEntity,
+            ) -> tuple[int, ExtractedEntity, WikiPage | None, Exception | None]:
+                async with sem:
+                    if _check_cancel():
+                        return (idx, entity, None, None)
+                    # L1: 断点恢复 — 跳过已处理的实体
+                    if task_state is not None and idx <= task_state.get("last_entity_idx", -1):
+                        return (idx, entity, None, None)
+                    try:
+                        _emit(ProgressEventType.PAGE_START, {
+                            "entity": entity.name,
+                            "index": idx + 1,
+                            "total": total_entities,
+                        })
+                        _emit(ProgressEventType.PROGRESS, {
+                            "percent": round((idx + 1) / max(total_entities, 1) * 100),
+                            "current": idx + 1,
+                            "total": total_entities,
+                        })
+                        page = await self._compile_entity_page(
+                            entity, source_entry, para_labels=doc_labels,
+                        )
+                        return (idx, entity, page, None)
+                    except Exception as e:
+                        return (idx, entity, None, e)
+
+            tasks = [_compile_page_parallel(i, entity) for i, entity in enumerate(entities)]
+            results_list = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # P0-1: Phase 2 — 串行保存和后续处理（SQLite 写入安全）
+            for item in results_list:
+                if item is None:
+                    continue
+                if isinstance(item, Exception):
+                    result.errors.append(f"gather_failed: {item}")
+                    continue
+
+                idx, entity, page, error = item
+                if error:
+                    logger.exception("wiki_compiler_page_failed", slug=entity.name)
+                    result.errors.append(f"{entity.name}: {error}")
+                    continue
+                if page is None:
+                    continue
+
                 if _check_cancel():
                     if task_state is not None:
-                        task_state["last_entity_idx"] = i
+                        task_state["last_entity_idx"] = idx
                         task_state["steps_completed"].append("compile_partial")
-                    _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": f"编译已取消（已完成 {i}/{total_entities}）"})
+                    _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": f"编译已取消（已完成 {idx}/{total_entities}）"})
                     return result
-                # L1: 断点恢复 — 跳过已处理的实体
-                if task_state is not None and i <= task_state.get("last_entity_idx", -1):
-                    continue
+
                 try:
-                    _emit(ProgressEventType.PAGE_START, {
-                        "entity": entity.name,
-                        "index": i + 1,
-                        "total": total_entities,
-                    })
-                    _emit(ProgressEventType.PROGRESS, {
-                        "percent": round((i + 1) / max(total_entities, 1) * 100),
-                        "current": i + 1,
-                        "total": total_entities,
-                    })
-                    # S1: 使用文档级段落分类标签作为页面标签
-                    page = await self._compile_entity_page(
-                        entity, source_entry, para_labels=doc_labels
-                    )
-                    if page is None:
-                        continue
                     outcome = self._save_page(page, force=force)
                     # GS-6: 双向同步 — 页面保存后同步更新图谱
                     self._sync_page_to_graph(page)
@@ -1494,6 +1533,7 @@ H{level}
         Wiki → Graph 双向同步：
         - 创建/更新对应的 GraphEntity 节点
         - 图不可用时静默降级，不影响编译流程
+        - P0-3: 失败时记录 Prometheus 指标 + 限频警告日志
         """
         try:
             from app.knowledge.graph_store import GraphEntity, get_graph_store
@@ -1519,7 +1559,22 @@ H{level}
                 entity_type=page.type,
             )
         except Exception as e:
-            logger.debug("wiki_graph_sync_skipped", slug=page.slug, error=str(e))
+            # P0-3: 记录 Prometheus 指标
+            try:
+                from app.observability.metrics import record_business_metric
+                record_business_metric("graph_sync_failures_total", 1.0, operation="sync_entity")
+            except Exception:
+                pass
+            # 限频警告：每 60 秒最多输出一次警告日志
+            _now = time.monotonic()
+            _last = getattr(self, '_last_graph_sync_warning', 0.0)
+            if _now - _last > 60:
+                logger.warning(
+                    "wiki_graph_sync_failed",
+                    slug=page.slug,
+                    error=str(e),
+                )
+                self._last_graph_sync_warning = _now  # type: ignore[attr-defined]
 
     # M1: 相似度阈值
     _SIMILARITY_THRESHOLD = 0.8

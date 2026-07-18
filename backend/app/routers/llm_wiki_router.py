@@ -296,11 +296,29 @@ async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool =
         event: error       — {"step":"compile", "message":"...", "retryable":true}
 
     P2-4: 客户端断连时取消编译（通过 request.is_disconnected()）。
+    P0-4: 修复 — 使用 threading.Event 将异步断连检测转换为同步检查。
     """
+    import threading
+
     from app.knowledge.wiki_compiler import ProgressEventType
 
     compiler = get_wiki_compiler()
-    cancel_token = request.is_disconnected
+
+    # P0-4: 将异步 request.is_disconnected() 转换为同步可检查的 Event
+    disconnected = threading.Event()
+
+    async def _monitor_disconnect():
+        """后台监控客户端断连，更新 disconnected 标志"""
+        while not disconnected.is_set():
+            try:
+                if await request.is_disconnected():
+                    disconnected.set()
+                    break
+            except Exception:  # noqa: BLE001
+                pass
+            await asyncio.sleep(0.5)
+
+    monitor_task = asyncio.create_task(_monitor_disconnect())
 
     async def event_gen():
         total_start = datetime.now(timezone.utc)
@@ -325,7 +343,7 @@ async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool =
                 result = await compiler.compile_raw_to_wiki(
                     doc_id,
                     force=force,
-                    is_cancelled=cancel_token,  # L1: 客户端断连时取消
+                    is_cancelled=disconnected.is_set,  # P0-4: 同步断连检查
                     on_progress=on_progress,  # P2-5.5: 进度回调
                 )
                 await ev_queue.put(("__result__", result))
@@ -339,7 +357,7 @@ async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool =
         try:
             while True:
                 # L1: 中断检查 — 客户端断连时取消编译
-                if await _check_cancel(cancel_token):
+                if await _check_cancel(disconnected.is_set):
                     task.cancel()
                     return
 
@@ -416,6 +434,14 @@ async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool =
                     await task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+            # P0-4: 清理断连监控任务
+            disconnected.set()
+            if not monitor_task.done():
+                monitor_task.cancel()
+                try:
+                    await monitor_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
 
     return StreamingResponse(
         event_gen(),
@@ -428,11 +454,15 @@ async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool =
 
 
 async def _check_cancel(cancel_token) -> bool:
-    """检查客户端是否断开连接"""
+    """检查客户端是否断开连接（P0-4: 支持同步 is_set 和异步 callable）"""
     if cancel_token is None:
         return False
     try:
-        return await cancel_token()
+        result = cancel_token()
+        # 兼容异步 callable（如 request.is_disconnected）和同步 callable（如 threading.Event.is_set）
+        if hasattr(result, '__await__'):
+            return await result
+        return bool(result)
     except Exception:  # noqa: BLE001
         return False
 

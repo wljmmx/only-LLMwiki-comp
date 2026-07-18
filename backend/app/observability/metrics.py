@@ -201,6 +201,13 @@ business_metrics = {
         "Wiki 页面更新数",
         registry=REGISTRY,
     ),
+    # P0-3: 图谱同步失败计数器
+    "graph_sync_failures_total": Counter(
+        "opskg_graph_sync_failures_total",
+        "Neo4j 图谱同步失败次数",
+        ["operation"],  # sync_entity | sync_relation | compile_to_graph
+        registry=REGISTRY,
+    ),
     # S16-4：协作 Hub（CollabHub）指标
     "collab_rooms_total": Gauge(
         "opskg_collab_rooms_total",

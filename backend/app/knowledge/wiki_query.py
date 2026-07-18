@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
+import time as _time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -44,6 +46,10 @@ except ImportError:  # pragma: no cover
 # wiki 页面 embedding 内存缓存：slug → (version, embedding)
 # 版本变化时自动失效（无需手动清理）
 _wiki_emb_cache: dict[str, tuple[int, list[float]]] = {}
+
+# P0-2: 查询结果缓存 — 基于 question hash，TTL 5 分钟
+_query_cache: dict[str, tuple[float, object]] = {}
+_QUERY_CACHE_TTL = 300  # 5 分钟
 
 
 @dataclass
@@ -300,10 +306,13 @@ async def recall_pages(
     # ── 关键词召回路径 ──
     keyword_hits: dict[str, WikiPageHit] = {}
     if tokens:
+        # P1: 批量查询 — 所有页面的最新版本一次获取
+        doc_keys = [_key_from_slug(p["slug"]) for p in pages if p["slug"] != "index"]
+        latest_batch = vc.get_latest_batch(doc_keys)
         for p in pages:
             if p["slug"] == "index":
                 continue
-            latest = vc.get_latest(_key_from_slug(p["slug"]))
+            latest = latest_batch.get(_key_from_slug(p["slug"]))
             if not latest:
                 continue
             title = (p.get("title") or p["slug"]).lower()
@@ -452,6 +461,23 @@ async def _get_wiki_embeddings(
     texts_to_embed: list[str] = []
     versions_to_embed: list[int] = []
 
+    # P1: 批量查询 — 收集所有需要正文的 slug，一次获取
+    slugs_need_content: list[str] = []
+    for p in pages:
+        slug = p["slug"]
+        if slug == "index":
+            continue
+        if slug not in body_cache and (
+            slug not in _wiki_emb_cache or _wiki_emb_cache[slug][0] != p.get("version", 0)
+        ):
+            slugs_need_content.append(slug)
+    if slugs_need_content:
+        doc_keys = [_key_from_slug(s) for s in slugs_need_content]
+        batch = vc.get_latest_batch(doc_keys)
+        for slug, latest in zip(slugs_need_content, batch.values()):
+            if latest:
+                body_cache[slug] = latest["content"]
+
     for p in pages:
         slug = p["slug"]
         if slug == "index":
@@ -465,11 +491,7 @@ async def _get_wiki_embeddings(
         # 获取正文
         body_md = body_cache.get(slug)
         if body_md is None:
-            latest = vc.get_latest(_key_from_slug(slug))
-            if not latest:
-                continue
-            body_md = latest["content"]
-            body_cache[slug] = body_md
+            continue
 
         body = _strip_frontmatter(body_md)
         # 拼接 title + body，截断到 2000 字符（避免 token 过多）
@@ -543,6 +565,11 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 def clear_wiki_embedding_cache() -> None:
     """清空 wiki embedding 内存缓存（测试或运维使用）"""
     _wiki_emb_cache.clear()
+
+
+def clear_query_cache() -> None:
+    """P0-2: 清空查询结果缓存（wiki 页面变更后调用）"""
+    _query_cache.clear()
 
 
 def _extract_snippet(md: str, tokens: list[str], window: int = 200) -> str:
@@ -642,6 +669,17 @@ class WikiQAEngine:
                      让其理解追问/指代。后端无状态，历史由前端维护。
         """
         clean_history = _sanitize_history(history)
+
+        # P0-2: 查询结果缓存（仅单轮问答，多轮对话不缓存）
+        cache_key = f"qa:{hashlib.md5(question.encode()).hexdigest()}:{recall_limit}:{writeback}"
+        if not clean_history:
+            cached = _query_cache.get(cache_key)
+            if cached is not None:
+                cached_at, cached_result = cached
+                if _time.time() - cached_at < _QUERY_CACHE_TTL:
+                    logger.debug("wiki_query_cache_hit", question=question[:80])
+                    return cached_result  # type: ignore[return-value]
+
         # P1-4: 召回 + 上下文准备（与 stream_answer 共用）
         early, recalled, contexts, cited = await self._prepare_context(
             question,
@@ -678,6 +716,10 @@ class WikiQAEngine:
                 result.writebacks = writebacks
             except Exception as e:
                 logger.warning("wiki_writeback_failed", error=str(e))
+
+        # P0-2: 缓存查询结果（单轮问答）
+        if not clean_history:
+            _query_cache[cache_key] = (_time.time(), result)
 
         return result
 
@@ -724,34 +766,44 @@ class WikiQAEngine:
         # 2. backlink 扩展（最多补 2 个）
         if expand_backlinks:
             existing_slugs = {h.slug for h in recalled}
+            # P1: 批量查询 backlink 内容
+            backlinks_to_load: list[tuple[str, str, float]] = []
             for hit in list(recalled):
                 for back in get_backlinks(hit.slug):
-                    if (
-                        back.source_slug in existing_slugs
-                        or back.source_slug == "index"
-                    ):
+                    if back.source_slug in existing_slugs or back.source_slug == "index":
                         continue
-                    latest = self.vc.get_latest(_key_from_slug(back.source_slug))
-                    if not latest:
-                        continue
-                    recalled.append(
-                        WikiPageHit(
-                            slug=back.source_slug,
-                            title=back.display,
-                            type="",
-                            score=hit.score * 0.3,
-                            snippet=_extract_snippet(latest["content"], [question]),
-                        )
-                    )
+                    backlinks_to_load.append((back.source_slug, back.display, hit.score * 0.3))
                     existing_slugs.add(back.source_slug)
-                    if len(recalled) >= recall_limit + 2:
+                    if len(backlinks_to_load) >= 2:
                         break
-                if len(recalled) >= recall_limit + 2:
+                if len(backlinks_to_load) >= 2:
                     break
+            if backlinks_to_load:
+                back_slugs = [b[0] for b in backlinks_to_load]
+                back_doc_keys = [_key_from_slug(s) for s in back_slugs]
+                back_latest = self.vc.get_latest_batch(back_doc_keys)
+                for slug, display, score in backlinks_to_load:
+                    latest = back_latest.get(_key_from_slug(slug))
+                    if latest:
+                        recalled.append(
+                            WikiPageHit(
+                                slug=slug,
+                                title=display,
+                                type="",
+                                score=score,
+                                snippet=_extract_snippet(latest["content"], [question]),
+                            )
+                        )
 
-        # 3. 加载页面正文
+        # 3. 加载页面正文（P1: 批量查询）
         contexts: list[str] = []
         cited: list[str] = []
+        wiki_hits = [h for h in recalled if h.type != "raw-fallback"]
+        if wiki_hits:
+            wiki_doc_keys = [_key_from_slug(h.slug) for h in wiki_hits]
+            wiki_latest = self.vc.get_latest_batch(wiki_doc_keys)
+        else:
+            wiki_latest = {}
         for hit in recalled:
             if hit.type == "raw-fallback":
                 if hit.snippet:
@@ -761,7 +813,7 @@ class WikiQAEngine:
                     )
                     cited.append(hit.slug)
                 continue
-            latest = self.vc.get_latest(_key_from_slug(hit.slug))
+            latest = wiki_latest.get(_key_from_slug(hit.slug))
             if not latest:
                 continue
             body = _strip_frontmatter(latest["content"])

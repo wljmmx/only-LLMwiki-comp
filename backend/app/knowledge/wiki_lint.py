@@ -479,12 +479,10 @@ async def _check_contradictions_semantic(
     - 共享至少一个 tag 的页面
     - 一个 outlink 到另一个
 
-    LLM 对每对页面判断：是否存在事实层面的冲突，返回 JSON 列表
+    P0-6: 批量调用 — 将所有候选对合并为一次 LLM 调用，而非逐对调用。
     """
-    from app.config import get_settings
-    from app.core.llm import get_llm_client
+    from app.core.llm import ChatMessage, get_llm_client
 
-    settings = get_settings()
     llm = get_llm_client()
 
     # 收集候选对
@@ -495,18 +493,57 @@ async def _check_contradictions_semantic(
     # 限制对数（控制成本）
     candidate_pairs = candidate_pairs[:max_pairs]
 
-    issues: list[LintIssue] = []
-    for slug_a, slug_b in candidate_pairs:
-        try:
-            conflicts = await _llm_detect_conflicts(
-                llm,
-                settings,
-                slug_a=slug_a,
-                content_a=page_contents[slug_a],
-                slug_b=slug_b,
-                content_b=page_contents[slug_b],
-            )
-            for c in conflicts:
+    # P0-6: 批量构建 prompt — 将所有对合并为一次 LLM 调用
+    pair_blocks: list[str] = []
+    for i, (slug_a, slug_b) in enumerate(candidate_pairs):
+        _, body_a = _split_frontmatter(page_contents[slug_a])
+        _, body_b = _split_frontmatter(page_contents[slug_b])
+        pair_blocks.append(
+            f"## 对 {i + 1}：[[{slug_a}]] vs [[{slug_b}]]\n"
+            f"### 页面 A\n{body_a[:1500]}\n\n"
+            f"### 页面 B\n{body_b[:1500]}"
+        )
+
+    system = (
+        "你是知识库审校员。判断每组 wiki 页面是否存在事实层面的矛盾。"
+        "只关注可验证的事实冲突（数值、配置、流程、状态、关系），"
+        "忽略措辞差异、详略差异、视角差异。"
+    )
+    prompt = (
+        "请检查以下各组 wiki 页面是否存在事实矛盾。\n\n"
+        + "\n\n".join(pair_blocks)
+        + "\n\n# 输出格式\n"
+        + "返回 JSON 数组，每项形如：\n"
+        + '{"pair_index": 1, "slug_a": "...", "slug_b": "...", "conflicts": ['
+        + '{"summary": "冲突概述", "evidence_a": "A 中的证据", "evidence_b": "B 中的证据"}]}\n'
+        + "无矛盾的对不返回。只返回 JSON，不要其他文字。"
+    )
+
+    messages = [
+        ChatMessage(role="system", content=system),
+        ChatMessage(role="user", content=prompt),
+    ]
+
+    try:
+        resp = await llm.chat(
+            messages=messages,
+            temperature=0.0,
+            max_tokens=2000,
+        )
+        text = resp.content.strip()
+        # 清理 markdown 代码块
+        if text.startswith("```"):
+            text = re.sub(r"^```\w*\n?", "", text)
+            text = re.sub(r"\n```\s*$", "", text)
+        conflicts_data = json.loads(text)
+        if not isinstance(conflicts_data, list):
+            conflicts_data = []
+
+        issues: list[LintIssue] = []
+        for entry in conflicts_data:
+            slug_a = entry.get("slug_a", "")
+            slug_b = entry.get("slug_b", "")
+            for c in entry.get("conflicts", []):
                 issues.append(
                     LintIssue(
                         type=TYPE_CONTRADICTION_SEMANTIC,
@@ -518,19 +555,15 @@ async def _check_contradictions_semantic(
                             "conflicting_claim": c.get("summary", ""),
                             "evidence_a": c.get("evidence_a", ""),
                             "evidence_b": c.get("evidence_b", ""),
-                            "detection": "semantic_llm",
+                            "detection": "semantic_llm_batch",
                         },
                     )
                 )
-        except Exception as e:
-            logger.warning(
-                "wiki_lint_pair_failed",
-                slug_a=slug_a,
-                slug_b=slug_b,
-                error=str(e),
-            )
+        return issues
 
-    return issues
+    except Exception as e:
+        logger.warning("wiki_lint_semantic_batch_failed", error=str(e))
+        return []
 
 
 def _collect_semantic_candidate_pairs(
@@ -576,70 +609,6 @@ def _collect_semantic_candidate_pairs(
                 pairs.append((slug, other))
 
     return pairs
-
-
-async def _llm_detect_conflicts(
-    llm,
-    settings,
-    slug_a: str,
-    content_a: str,
-    slug_b: str,
-    content_b: str,
-) -> list[dict]:
-    """让 LLM 判断两个页面之间是否存在事实矛盾
-
-    Returns:
-        [{summary, evidence_a, evidence_b}]
-    """
-    from app.core.llm import ChatMessage
-
-    # 截断过长的内容（控制 token 成本）
-    _, body_a = _split_frontmatter(content_a)
-    _, body_b = _split_frontmatter(content_b)
-    body_a = body_a[:2000]
-    body_b = body_b[:2000]
-
-    system = (
-        "你是知识库审校员。判断两份 wiki 页面是否存在事实层面的矛盾。"
-        "只关注可验证的事实冲突（数值、配置、流程、状态、关系），"
-        "忽略措辞差异、详略差异、视角差异。"
-        "返回 JSON 数组，每项含 summary/evidence_a/evidence_b 三个字段。"
-        "无矛盾时返回 []。"
-    )
-    prompt = f"""请检查以下两个 wiki 页面是否存在事实矛盾。
-
-# 页面 A（slug: {slug_a}）
-{body_a}
-
-# 页面 B（slug: {slug_b}）
-{body_b}
-
-# 输出格式
-返回 JSON 数组（无矛盾时返回 []），每项形如：
-{{"summary": "冲突概述", "evidence_a": "A 中的证据", "evidence_b": "B 中的证据"}}
-
-只返回 JSON，不要其他文字。
-"""
-    messages = [
-        ChatMessage(role="system", content=system),
-        ChatMessage(role="user", content=prompt),
-    ]
-    try:
-        resp = await llm.chat(
-            messages=messages,
-            temperature=0.0,
-            max_tokens=settings.llm_max_tokens,
-        )
-    except Exception as e:
-        logger.warning(
-            "wiki_lint_llm_call_failed",
-            slug_a=slug_a,
-            slug_b=slug_b,
-            error=str(e),
-        )
-        return []
-    text = (resp.text or "").strip()
-    return _parse_json_array(text)
 
 
 def _parse_json_array(text: str) -> list[dict]:

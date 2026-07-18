@@ -90,13 +90,25 @@ function getRetryDelay(retryCount: number): number {
 }
 
 // ========================================================================
-// 统一 401 处理
+// 统一 401 处理（P0-7: 去重锁防止并发 401 竞态）
 // ========================================================================
 
+/** 防止多个 401 响应同时触发 redirect 的竞态锁 */
+let _unauthorizedHandling = false
+
 function handleUnauthorized(): void {
-  localStorage.removeItem(AUTH_TOKEN_KEY)
-  if (window.location.pathname !== '/login') {
-    window.location.href = '/login'
+  if (_unauthorizedHandling) return
+  _unauthorizedHandling = true
+  try {
+    localStorage.removeItem(AUTH_TOKEN_KEY)
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login'
+    }
+  } finally {
+    // 重置锁（如果 redirect 未生效，允许后续 401 再次触发）
+    setTimeout(() => {
+      _unauthorizedHandling = false
+    }, 1000)
   }
 }
 
