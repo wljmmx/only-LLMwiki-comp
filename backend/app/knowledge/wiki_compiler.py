@@ -28,7 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Iterator
 
 import structlog
 import yaml
@@ -82,6 +82,8 @@ class ProgressEventType(str, Enum):
     CONFLICT_DETECTED = "conflict_detected"
     PROGRESS = "progress"  # 百分比进度
     SECTION_PROGRESS = "section_progress"  # 章节处理进度
+    SECTION_START = "section_start"  # 单个章节处理开始
+    SECTION_DONE = "section_done"    # 单个章节处理完成
 
 
 # M3: 进度回调类型
@@ -1216,6 +1218,8 @@ H{level}
             force=force,
             trace_buffer=trace_buffer,
             on_section_progress=_emit_section_progress,
+            on_progress=on_progress,
+            total_sections=total_sections,
         )
         duration_ms = (time.monotonic() - t_start) * 1000
 
@@ -1255,12 +1259,28 @@ H{level}
         parent_slug: str | None = None,
         trace_buffer: list[SectionTrace] | None = None,
         on_section_progress: Callable[[str, int, str], None] | None = None,
+        on_progress: ProgressCallback | None = None,
+        total_sections: int = 0,
+        _section_index: list[int] | None = None,
     ) -> int:
         """递归编译标题树节点为 wiki 页面（使用 LLM 生成内容）
 
         trace_buffer: 可选列表，收集章节级管道追踪数据
         on_section_progress: 章节处理进度回调
+        on_progress: M3 SSE 进度回调（用于发射 section_start/section_done 事件）
+        total_sections: 总章节数（用于进度计算）
+        _section_index: 可变列表 [0] 用于跨递归调用跟踪当前章节索引
         """
+        if _section_index is None:
+            _section_index = [0]
+
+        def _emit(etype: ProgressEventType, data: dict[str, Any]) -> None:
+            if on_progress:
+                try:
+                    on_progress(etype, data)
+                except Exception:
+                    pass
+
         count = 0
         for node in nodes:
             slug = node.get("slug")
@@ -1269,11 +1289,28 @@ H{level}
 
             if not slug or level > 3:
                 if node.get("children"):
-                    count += await self._compile_tree_node_with_llm(
+                    child_count = await self._compile_tree_node_with_llm(
                         node["children"], doc, source_entry, result, force=force, parent_slug=slug, trace_buffer=trace_buffer,
                         on_section_progress=on_section_progress,
+                        on_progress=on_progress,
+                        total_sections=total_sections,
+                        _section_index=_section_index,
                     )
+                    count += child_count
                 continue
+
+            _section_index[0] += 1
+            section_idx = _section_index[0]
+
+            # 发射 section_start 事件
+            _emit(ProgressEventType.SECTION_START, {
+                "slug": slug,
+                "title": title,
+                "level": level,
+                "index": section_idx,
+                "total": total_sections,
+                "children_count": len(node.get("children", [])),
+            })
 
             if on_section_progress:
                 on_section_progress(title, level, "processing")
@@ -1347,9 +1384,34 @@ H{level}
                         score=quality["score"],
                     )
                 count += 1
+                # 发射 section_done 事件
+                _emit(ProgressEventType.SECTION_DONE, {
+                    "slug": slug,
+                    "title": title,
+                    "level": level,
+                    "outcome": outcome,
+                    "raw_chars": raw_chars,
+                    "compiled_chars": len(body_md),
+                    "llm_success": llm_success,
+                    "processing_time_ms": round(processing_time_ms, 1),
+                    "children_count": len(node.get("children", [])),
+                    "index": section_idx,
+                    "total": total_sections,
+                })
             except Exception as e:
                 logger.exception("wiki_compiler_struct_node_failed", slug=slug)
                 result.errors.append(f"{slug}: {e}")
+                # 发射 section_done 错误事件
+                _emit(ProgressEventType.SECTION_DONE, {
+                    "slug": slug,
+                    "title": title,
+                    "level": level,
+                    "outcome": "error",
+                    "error": str(e),
+                    "llm_success": False,
+                    "index": section_idx,
+                    "total": total_sections,
+                })
 
             if node.get("children"):
                 count += await self._compile_tree_node_with_llm(

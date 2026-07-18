@@ -27,6 +27,8 @@ import {
   NForm,
   NFormItem,
   NSlider,
+  NSpin,
+  NTooltip,
   useMessage,
 } from 'naive-ui'
 import type { UploadCustomRequestOptions, DataTableColumns } from 'naive-ui'
@@ -66,7 +68,6 @@ function handleUpload({ file, onFinish, onError }: UploadCustomRequestOptions) {
       message.success('上传成功')
       onFinish()
       selectedDocId.value = res.doc_id
-      // 自动开始编译
       startCompile()
     })
     .catch((err) => {
@@ -120,9 +121,7 @@ const docColumns: DataTableColumns<DocumentMeta> = [
         {
           size: 'small',
           type: selectedDocId.value === row.id ? 'primary' : 'default',
-          onClick: () => {
-            selectedDocId.value = row.id
-          },
+          onClick: () => { selectedDocId.value = row.id },
         },
         () => (selectedDocId.value === row.id ? '已选择' : '选择'),
       ),
@@ -159,15 +158,36 @@ interface PipelineStep {
   subProgress?: { current: number; total: number; currentEntity: string } | null
 }
 
+// 章节节点（独立管道节点）
+interface SectionNode {
+  slug: string
+  title: string
+  level: number
+  status: 'pending' | 'running' | 'done' | 'error'
+  outcome?: string
+  raw_chars?: number
+  compiled_chars?: number
+  llm_success?: boolean
+  processing_time_ms?: number
+  children_count?: number
+  error?: string
+  raw_content?: string
+  compiled_content?: string
+}
+
 const compiling = ref(false)
 const compileProgress = ref(0)
 const compileSteps = ref<PipelineStep[]>([
-  { name: 'parse', label: '解析文档', status: 'pending', details: '' },
-  { name: 'extract', label: '知识抽取', status: 'pending', details: '' },
-  { name: 'compile', label: 'LLM 编译 Wiki', status: 'pending', details: '' },
-  { name: 'struct_compile', label: '结构编译（章节处理）', status: 'pending', details: '' },
-  { name: 'index', label: '重建索引', status: 'pending', details: '' },
+  { name: 'parse', label: '解析文档', status: 'pending' },
+  { name: 'extract', label: '知识抽取', status: 'pending' },
+  { name: 'compile', label: 'LLM 编译 Wiki', status: 'pending' },
+  { name: 'struct_compile', label: '结构编译（章节处理）', status: 'pending' },
+  { name: 'index', label: '重建索引', status: 'pending' },
 ])
+
+// 章节级节点列表（独立展示每个章节的处理状态）
+const sectionNodes = ref<SectionNode[]>([])
+
 const compileResult = ref<{
   pages_created?: number
   pages_updated?: number
@@ -181,14 +201,15 @@ const stepIndex: Record<string, number> = { parse: 0, extract: 1, compile: 2, st
 
 function resetSteps() {
   compileSteps.value = [
-    { name: 'parse', label: '解析文档', status: 'pending', details: '' },
-    { name: 'extract', label: '知识抽取', status: 'pending', details: '' },
-    { name: 'compile', label: 'LLM 编译 Wiki', status: 'pending', details: '' },
-    { name: 'struct_compile', label: '结构编译（章节处理）', status: 'pending', details: '' },
-    { name: 'index', label: '重建索引', status: 'pending', details: '' },
+    { name: 'parse', label: '解析文档', status: 'pending' },
+    { name: 'extract', label: '知识抽取', status: 'pending' },
+    { name: 'compile', label: 'LLM 编译 Wiki', status: 'pending' },
+    { name: 'struct_compile', label: '结构编译（章节处理）', status: 'pending' },
+    { name: 'index', label: '重建索引', status: 'pending' },
   ]
   compileProgress.value = 0
   compileResult.value = null
+  sectionNodes.value = []
 }
 
 function startCompile() {
@@ -209,7 +230,6 @@ function startCompile() {
         const idx = stepIndex[step] ?? 0
         if (step in stepIndex) {
           compileSteps.value[idx].status = 'running'
-          compileSteps.value[idx].details = evt.data.message ?? ''
           compileProgress.value = (idx / 5) * 100
         }
       } else if (evt.type === 'step_done') {
@@ -228,7 +248,6 @@ function startCompile() {
             const entities = evt.data.entities ?? 0
             compileSteps.value[idx].details = `抽取完成：${entities} 个实体`
           } else if (step === 'compile') {
-            compileResult.value = evt.data
             const pages = evt.data.pages ?? 0
             compileSteps.value[idx].details = `编译完成：${pages} 个页面`
           } else if (step === 'struct_compile') {
@@ -262,25 +281,59 @@ function startCompile() {
         if (typeof percent === 'number' && percent > 0) {
           compileProgress.value = 40 + (percent / 100) * 20
         }
-      } else if (evt.type === 'section_progress') {
+      } else if (evt.type === 'section_start') {
+        // 添加新章节节点
         const data = evt.data
-        const title = data.title as string ?? ''
-        const level = data.level as number ?? 1
-        const status = data.status as string ?? ''
-        const current = data.current as number ?? 0
-        const total = data.total as number ?? 0
-        const percent = data.percent as number ?? 0
+        sectionNodes.value.push({
+          slug: data.slug as string,
+          title: data.title as string,
+          level: data.level as number,
+          status: 'running',
+          children_count: data.children_count as number ?? 0,
+        })
+        compileSteps.value[3].status = 'running'
         compileSteps.value[3].subProgress = {
-          current: current,
-          total: total,
-          currentEntity: status === 'processing' ? `处理章节: ${title} (H${level})` : status === 'done' ? `完成章节: ${title}` : `失败章节: ${title}`,
+          current: data.index as number ?? 0,
+          total: data.total as number ?? 0,
+          currentEntity: `处理章节: ${data.title}`,
         }
-        compileProgress.value = 60 + (percent / 100) * 20
+        compileProgress.value = 60 + ((data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 20)
+      } else if (evt.type === 'section_done') {
+        // 更新章节节点状态
+        const data = evt.data
+        const node = sectionNodes.value.find((n) => n.slug === data.slug)
+        if (node) {
+          node.status = data.outcome === 'error' ? 'error' : 'done'
+          node.outcome = data.outcome as string
+          node.raw_chars = data.raw_chars as number
+          node.compiled_chars = data.compiled_chars as number
+          node.llm_success = data.llm_success as boolean
+          node.processing_time_ms = data.processing_time_ms as number
+          node.error = data.error as string | undefined
+        }
+        if (compileSteps.value[3].subProgress) {
+          compileSteps.value[3].subProgress.current = data.index as number ?? 0
+          compileSteps.value[3].subProgress.currentEntity = `完成章节: ${data.title}`
+          compileProgress.value = 60 + ((data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 20)
+        }
+      } else if (evt.type === 'section_progress') {
+        // 兼容旧版 section_progress 事件
+        const data = evt.data
+        compileSteps.value[3].subProgress = {
+          current: data.current as number ?? 0,
+          total: data.total as number ?? 0,
+          currentEntity: data.status === 'processing' ? `处理章节: ${data.title}` : `完成章节: ${data.title}`,
+        }
+        compileProgress.value = 60 + ((data.percent as number ?? 0) / 100) * 20
       } else if (evt.type === 'done') {
         compileProgress.value = 100
         compiling.value = false
         compileSteps.value[2].subProgress = null
+        compileSteps.value[3].subProgress = null
+        compileSteps.value[4].status = 'done'
+        compileSteps.value[4].details = '索引重建完成'
         phase.value = 'done'
+        compileResult.value = evt.data
         const created = evt.data.pages_created ?? 0
         const updated = evt.data.pages_updated ?? 0
         const errors = evt.data.errors ?? []
@@ -291,7 +344,7 @@ function startCompile() {
         } else {
           message.success(`编译成功：${created} 个页面创建，${updated} 个页面更新`)
         }
-        // 直接从 done 事件获取管道追踪数据
+        // 从 done 事件获取管道追踪数据
         const pt = evt.data.pipeline_trace
         if (pt) {
           traceData.value = {
@@ -309,8 +362,19 @@ function startCompile() {
             },
             sections: pt.sections,
           }
+          // 将 trace 数据合并到 sectionNodes
+          if (pt.sections) {
+            for (const s of pt.sections) {
+              const node = sectionNodes.value.find((n) => n.slug === s.slug)
+              if (node) {
+                node.raw_content = s.raw_content
+                node.compiled_content = s.compiled_content
+                node.raw_chars = s.raw_chars
+                node.compiled_chars = s.compiled_chars
+              }
+            }
+          }
         } else {
-          // 回退到单独调用
           loadTraceData(docId)
         }
       } else if (evt.type === 'error') {
@@ -386,7 +450,6 @@ function calcReduction(raw: number, compiled: number): string {
   return pct > 0 ? `-${pct.toFixed(1)}%` : `+${Math.abs(pct).toFixed(1)}%`
 }
 
-// 查看某个 wiki 页面
 function viewWikiPage(slug: string) {
   router.push({ name: 'wiki', query: { slug } })
 }
@@ -396,16 +459,15 @@ function resetAll() {
   selectedDocId.value = ''
   compileResult.value = null
   traceData.value = null
+  sectionNodes.value = []
   resetSteps()
 }
 
 // ========== 章节操作：重新生成 + 编辑保存 ==========
 
-// 当前编辑的章节 slug
 const editingSlug = ref<string | null>(null)
 const editingContent = ref('')
 
-// 重新生成弹窗
 const recompileDialogVisible = ref(false)
 const recompileTarget = ref<{ slug: string; title: string } | null>(null)
 const recompileTemperature = ref(0.2)
@@ -413,9 +475,9 @@ const recompileSystemPrompt = ref('')
 const recompileUserPrompt = ref('')
 const recompilingSlug = ref<string | null>(null)
 
-function startEdit(section: SectionTrace) {
-  editingSlug.value = section.slug
-  editingContent.value = section.compiled_content
+function startEdit(slug: string, content: string) {
+  editingSlug.value = slug
+  editingContent.value = content
 }
 
 function cancelEdit() {
@@ -423,14 +485,12 @@ function cancelEdit() {
   editingContent.value = ''
 }
 
-async function saveEdit(section: SectionTrace) {
+async function saveEdit(slug: string, title: string) {
   if (!editingSlug.value) return
-  const slug = editingSlug.value
   try {
-    // 构建含 frontmatter 的完整内容
     const fm = `---
 slug: ${slug}
-title: ${section.title}
+title: ${title}
 type: concept
 tags: []
 review_status: auto
@@ -440,21 +500,29 @@ edited_by_human: true
     const fullContent = fm + editingContent.value
     await updateWikiPage(slug, {
       content: fullContent,
-      title: section.title,
+      title: title,
       change_summary: '用户手工编辑',
     })
     message.success('保存成功')
     // 更新本地数据
-    section.compiled_content = editingContent.value
-    section.compiled_chars = editingContent.value.length
+    const node = sectionNodes.value.find((n) => n.slug === slug)
+    if (node) {
+      node.compiled_content = editingContent.value
+      node.compiled_chars = editingContent.value.length
+    }
+    const section = traceData.value?.sections?.find((s) => s.slug === slug)
+    if (section) {
+      section.compiled_content = editingContent.value
+      section.compiled_chars = editingContent.value.length
+    }
     cancelEdit()
   } catch (e: any) {
     message.error('保存失败：' + (e?.response?.data?.detail || e?.message || '未知错误'))
   }
 }
 
-function openRecompileDialog(section: SectionTrace) {
-  recompileTarget.value = { slug: section.slug, title: section.title }
+function openRecompileDialog(slug: string, title: string) {
+  recompileTarget.value = { slug, title }
   recompileTemperature.value = 0.2
   recompileSystemPrompt.value = ''
   recompileUserPrompt.value = ''
@@ -479,7 +547,11 @@ async function doRecompile() {
       user_prompt: recompileUserPrompt.value || undefined,
     })
     message.success(`重新生成成功（${result.outcome}）`)
-    // 更新本地数据
+    const node = sectionNodes.value.find((n) => n.slug === slug)
+    if (node) {
+      node.compiled_content = result.compiled_content
+      node.compiled_chars = result.compiled_chars
+    }
     const section = traceData.value?.sections?.find((s) => s.slug === slug)
     if (section) {
       section.compiled_content = result.compiled_content
@@ -493,9 +565,16 @@ async function doRecompile() {
   }
 }
 
+// 章节节点统计
+const sectionStats = computed(() => {
+  const done = sectionNodes.value.filter((n) => n.status === 'done').length
+  const error = sectionNodes.value.filter((n) => n.status === 'error').length
+  const running = sectionNodes.value.filter((n) => n.status === 'running').length
+  return { done, error, running, total: sectionNodes.value.length }
+})
+
 // ========== 初始化 ==========
 onMounted(() => {
-  // 从 URL 参数读取 doc_id（从 DocumentsView 跳转时带入）
   const qDocId = route.query.doc_id as string
   if (qDocId) {
     selectedDocId.value = qDocId
@@ -505,7 +584,6 @@ onMounted(() => {
   loadExistingDocs()
 })
 
-// 切换 sourceTab 时加载已有文档
 watch(sourceTab, (val) => {
   if (val === 'existing' && existingDocs.value.length === 0) {
     loadExistingDocs()
@@ -516,7 +594,7 @@ watch(sourceTab, (val) => {
 <template>
   <PageHeader
     title="LLM 编译流水线"
-    description="上传文档 → 实时编译 → 查看章节级处理前后对比与统计"
+    description="上传文档 → 实时编译 → 查看章节级处理对比与统计，每个章节独立展示、可编辑、可重处理"
   />
 
   <!-- ==================== 阶段导航 ==================== -->
@@ -615,10 +693,12 @@ watch(sourceTab, (val) => {
         style="margin-bottom: 20px"
       />
 
+      <!-- 高层级 5 步骤 -->
       <NSteps
         :current="compileSteps.filter(s => s.status === 'done').length"
         :status="compileSteps.some(s => s.status === 'error') ? 'error' : 'process'"
         vertical
+        style="margin-bottom: 20px"
       >
         <NStep
           v-for="step in compileSteps"
@@ -633,9 +713,6 @@ watch(sourceTab, (val) => {
           <template v-if="step.status === 'done' && step.details" #default>
             <span style="color: #18a058">{{ step.details }}</span>
           </template>
-          <template v-if="step.status === 'done' && !step.details && step.duration_ms" #default>
-            <span style="color: #18a058">耗时 {{ (step.duration_ms / 1000).toFixed(1) }}s</span>
-          </template>
           <template v-if="step.status === 'running' && step.details" #default>
             <span style="color: #2080f0">{{ step.details }}</span>
           </template>
@@ -647,7 +724,7 @@ watch(sourceTab, (val) => {
             #default
           >
             <span style="color: #2080f0">
-              编译中 {{ step.subProgress.current }}/{{ step.subProgress.total }}
+              {{ step.name === 'struct_compile' ? '章节' : '编译' }}中 {{ step.subProgress.current }}/{{ step.subProgress.total }}
               <span v-if="step.subProgress.currentEntity">
                 — {{ step.subProgress.currentEntity }}
               </span>
@@ -688,6 +765,147 @@ watch(sourceTab, (val) => {
           </NTag>
         </div>
       </template>
+    </NCard>
+
+    <!-- ==================== 章节节点（独立管道节点） ==================== -->
+    <NCard
+      v-if="sectionNodes.length > 0"
+      title="章节处理节点"
+      size="small"
+      style="margin-bottom: 16px"
+    >
+      <template #header-extra>
+        <NSpace :size="12">
+          <NTag size="small" type="info" :bordered="false">
+            总计 {{ sectionStats.total }}
+          </NTag>
+          <NTag size="small" type="success" :bordered="false">
+            完成 {{ sectionStats.done }}
+          </NTag>
+          <NTag v-if="sectionStats.error > 0" size="small" type="error" :bordered="false">
+            失败 {{ sectionStats.error }}
+          </NTag>
+          <NTag v-if="sectionStats.running > 0" size="small" type="warning" :bordered="false">
+            处理中 {{ sectionStats.running }}
+          </NTag>
+        </NSpace>
+      </template>
+
+      <div
+        v-for="node in sectionNodes"
+        :key="node.slug"
+        style="display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid #f0f0f0; gap: 8px"
+      >
+        <!-- 状态图标 -->
+        <NSpin v-if="node.status === 'running'" :size="16" />
+        <span v-else-if="node.status === 'done'" style="color: #18a058; font-size: 16px">✅</span>
+        <span v-else-if="node.status === 'error'" style="color: #d03050; font-size: 16px">❌</span>
+        <span v-else style="color: #ccc; font-size: 16px">⏳</span>
+
+        <!-- 层级标签 -->
+        <NTag
+          :bordered="false"
+          size="tiny"
+          :type="getLevelType(node.level)"
+          style="font-weight: 600; min-width: 32px; text-align: center"
+        >
+          {{ getLevelLabel(node.level) }}
+        </NTag>
+
+        <!-- 标题 -->
+        <span style="font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+          {{ node.title }}
+        </span>
+
+        <!-- slug -->
+        <NTag size="tiny" :bordered="false" style="max-width: 160px; overflow: hidden; text-overflow: ellipsis">
+          {{ node.slug }}
+        </NTag>
+
+        <!-- 处理时间 -->
+        <span v-if="node.processing_time_ms" style="font-size: 12px; color: #999; white-space: nowrap">
+          {{ formatMs(node.processing_time_ms) }}
+        </span>
+
+        <!-- 字符变化 -->
+        <span v-if="node.raw_chars !== undefined && node.compiled_chars !== undefined" style="font-size: 12px; color: #999; white-space: nowrap">
+          {{ node.raw_chars }} → {{ node.compiled_chars }}
+        </span>
+
+        <!-- LLM 状态 -->
+        <NTag v-if="node.status === 'done'" size="tiny" :bordered="false" :type="node.llm_success ? 'success' : 'error'">
+          {{ node.llm_success ? 'LLM 成功' : 'LLM 失败' }}
+        </NTag>
+
+        <!-- 操作按钮 -->
+        <template v-if="node.status === 'done' || node.status === 'error'">
+          <NTooltip>
+            <template #trigger>
+              <NButton
+                size="tiny"
+                quaternary
+                @click="viewWikiPage(node.slug)"
+              >
+                查看
+              </NButton>
+            </template>
+            查看 Wiki 页面
+          </NTooltip>
+          <NTooltip>
+            <template #trigger>
+              <NButton
+                size="tiny"
+                quaternary
+                :loading="recompilingSlug === node.slug"
+                @click="openRecompileDialog(node.slug, node.title)"
+              >
+                重处理
+              </NButton>
+            </template>
+            重新生成此章节
+          </NTooltip>
+          <NTooltip>
+            <template #trigger>
+              <NButton
+                size="tiny"
+                quaternary
+                :type="editingSlug === node.slug ? 'warning' : 'default'"
+                @click="editingSlug === node.slug ? cancelEdit() : startEdit(node.slug, node.compiled_content || '')"
+              >
+                {{ editingSlug === node.slug ? '取消' : '编辑' }}
+              </NButton>
+            </template>
+            编辑此章节内容
+          </NTooltip>
+        </template>
+      </div>
+
+      <NEmpty v-if="sectionNodes.length === 0" description="暂无章节节点" size="small" />
+    </NCard>
+
+    <!-- 章节编辑内联区域 -->
+    <NCard
+      v-if="editingSlug"
+      title="编辑章节"
+      size="small"
+      style="margin-bottom: 16px"
+    >
+      <NInput
+        v-model:value="editingContent"
+        type="textarea"
+        :autosize="{ minRows: 8, maxRows: 20 }"
+        style="margin-bottom: 8px"
+      />
+      <NSpace>
+        <NButton
+          size="small"
+          type="primary"
+          @click="saveEdit(editingSlug, sectionNodes.find(n => n.slug === editingSlug)?.title || '')"
+        >
+          保存
+        </NButton>
+        <NButton size="small" @click="cancelEdit()">取消</NButton>
+      </NSpace>
     </NCard>
   </div>
 
@@ -789,12 +1007,11 @@ watch(sourceTab, (val) => {
                 有变更
               </NTag>
               <div style="flex: 1" />
-              <!-- 操作按钮 -->
               <NButton
                 size="tiny"
                 quaternary
                 :loading="recompilingSlug === section.slug"
-                @click.stop="openRecompileDialog(section)"
+                @click.stop="openRecompileDialog(section.slug, section.title)"
               >
                 重新生成
               </NButton>
@@ -802,7 +1019,7 @@ watch(sourceTab, (val) => {
                 size="tiny"
                 quaternary
                 :type="editingSlug === section.slug ? 'warning' : 'default'"
-                @click.stop="editingSlug === section.slug ? cancelEdit() : startEdit(section)"
+                @click.stop="editingSlug === section.slug ? cancelEdit() : startEdit(section.slug, section.compiled_content)"
               >
                 {{ editingSlug === section.slug ? '取消编辑' : '编辑' }}
               </NButton>
@@ -826,26 +1043,8 @@ watch(sourceTab, (val) => {
             <NGi>
               <div style="margin-bottom: 4px; font-weight: 600; color: #18a058">
                 处理后（LLM 编译）
-                <span v-if="editingSlug === section.slug" style="color: #f0a020; font-size: 12px">
-                  （编辑模式）
-                </span>
               </div>
-              <template v-if="editingSlug === section.slug">
-                <NInput
-                  v-model:value="editingContent"
-                  type="textarea"
-                  :autosize="{ minRows: 8, maxRows: 20 }"
-                  style="margin-bottom: 8px"
-                />
-                <NSpace>
-                  <NButton size="small" type="primary" @click="saveEdit(section)">
-                    保存
-                  </NButton>
-                  <NButton size="small" @click="cancelEdit()">取消</NButton>
-                </NSpace>
-              </template>
               <NCode
-                v-else
                 :code="section.compiled_content || '(空)'"
                 language="markdown"
                 word-wrap
