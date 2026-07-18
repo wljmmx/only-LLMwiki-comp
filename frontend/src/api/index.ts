@@ -1,4 +1,9 @@
-import axios, { type AxiosInstance } from 'axios'
+import axios, {
+  type AxiosInstance,
+  type AxiosError,
+  type AxiosResponse,
+  type InternalAxiosRequestConfig,
+} from 'axios'
 import {
   startLoadingBar,
   finishLoadingBar,
@@ -35,10 +40,78 @@ const baseConfig = {
   },
 }
 
+// ========================================================================
+// 请求去重（Request Dedup）
+// ========================================================================
+
+interface DedupEntry {
+  promise: Promise<AxiosResponse>
+  resolve: (value: AxiosResponse) => void
+  reject: (reason?: unknown) => void
+}
+
+/** 进行中的请求映射表：key → deferred promise */
+const pendingRequests = new Map<string, DedupEntry>()
+
+/** 根据请求配置生成唯一 key */
+function getRequestKey(config: InternalAxiosRequestConfig): string {
+  const { method, url, params, data } = config
+  return `${method}:${url}:${JSON.stringify(params)}:${JSON.stringify(data)}`
+}
+
+/** 判断是否应跳过去重（blob 下载、文件上传等不应去重） */
+function shouldSkipDedup(config: InternalAxiosRequestConfig): boolean {
+  if (config.responseType === 'blob') return true
+  if (config.data instanceof FormData) return true
+  const ct = config.headers?.['Content-Type'] as string | undefined
+  if (ct && ct.includes('multipart/form-data')) return true
+  return false
+}
+
+// ========================================================================
+// 指数退避重试（Exponential Backoff Retry）
+// ========================================================================
+
+/** 最大重试次数 */
+const MAX_RETRIES = 2
+/** 基础退避延迟（ms） */
+const BASE_DELAY = 500
+
+/** 判断错误是否应重试：仅 5xx 服务器错误和网络错误 */
+function shouldRetry(error: AxiosError): boolean {
+  if (!error.response) return true // 网络错误（无响应）
+  const status = error.response.status
+  return status >= 500 && status < 600
+}
+
+/** 计算指数退避延迟：BASE_DELAY * 2^retryCount */
+function getRetryDelay(retryCount: number): number {
+  return BASE_DELAY * Math.pow(2, retryCount)
+}
+
+// ========================================================================
+// 统一 401 处理
+// ========================================================================
+
+function handleUnauthorized(): void {
+  localStorage.removeItem(AUTH_TOKEN_KEY)
+  if (window.location.pathname !== '/login') {
+    window.location.href = '/login'
+  }
+}
+
+// ========================================================================
+// 拦截器工厂
+// ========================================================================
+
+/** 扩展 config 字段（用于去重 key 和重试计数） */
+interface ExtendedConfig extends InternalAxiosRequestConfig {
+  __dedupKey?: string
+  __retryCount?: number
+}
+
 /**
- * 应用请求拦截器：auth token + loading bar
- *
- * 共享给 api / apiRaw 两个实例，确保所有请求都经过统一的认证与进度条处理。
+ * 应用请求拦截器：auth token + loading bar + 请求去重
  */
 function applyRequestInterceptor(instance: AxiosInstance): void {
   instance.interceptors.request.use(
@@ -49,15 +122,132 @@ function applyRequestInterceptor(instance: AxiosInstance): void {
       }
       // S14-2: 全局 loading bar（每个请求启动进度条）
       startLoadingBar()
+
+      // 请求去重：相同 URL + method + params + data 的并发请求共享同一个 Promise
+      if (!shouldSkipDedup(config)) {
+        const key = getRequestKey(config)
+        if (pendingRequests.has(key)) {
+          // 已有相同请求进行中 → 复用其 Promise
+          config.adapter = () => pendingRequests.get(key)!.promise
+          return config
+        }
+        // 创建 deferred promise，等待响应拦截器 resolve
+        let resolve!: (value: AxiosResponse) => void
+        let reject!: (reason?: unknown) => void
+        const promise = new Promise<AxiosResponse>((res, rej) => {
+          resolve = res
+          reject = rej
+        })
+        pendingRequests.set(key, { promise, resolve, reject })
+        ;(config as ExtendedConfig).__dedupKey = key
+      }
+
       return config
     },
     (error) => {
-      // 请求发送失败（如网络错误）也要结束 loading bar
       errorLoadingBar()
       return Promise.reject(error)
     },
   )
 }
+
+/**
+ * 应用响应拦截器：loading bar 收尾 + 去重 deferred 结算 + 401 处理 + 指数退避重试
+ *
+ * @param raw  — true 时返回完整 AxiosResponse（apiRaw），false 时返回 response.data（api）
+ */
+function applyResponseInterceptor(
+  instance: AxiosInstance,
+  raw: boolean,
+): void {
+  instance.interceptors.response.use(
+    (response) => {
+      finishLoadingBar()
+
+      // 结算去重 deferred
+      const key = (response.config as ExtendedConfig).__dedupKey
+      if (key) {
+        const entry = pendingRequests.get(key)
+        if (entry) {
+          entry.resolve(response)
+          pendingRequests.delete(key)
+        }
+      }
+
+      return raw ? response : response.data
+    },
+    async (error: AxiosError) => {
+      errorLoadingBar()
+
+      // 401 统一处理
+      if (error.response?.status === 401) {
+        handleUnauthorized()
+      }
+
+      const config = error.config as ExtendedConfig | undefined
+      const key = config?.__dedupKey
+      const retryCount = config?.__retryCount ?? 0
+
+      // 指数退避重试（仅 5xx / 网络错误，最多 2 次）
+      if (config && shouldRetry(error) && retryCount < MAX_RETRIES) {
+        config.__retryCount = retryCount + 1
+
+        // 保存旧 deferred（用于后续结算），然后从去重 map 中移除当前 key
+        const oldEntry = key ? pendingRequests.get(key) : undefined
+        if (key) {
+          pendingRequests.delete(key)
+          delete config.__dedupKey
+        }
+
+        const delay = getRetryDelay(retryCount)
+        await new Promise<void>((r) => setTimeout(r, delay))
+
+        try {
+          // 重试请求：instance.request 会再次经过请求/响应拦截器
+          const result = await instance.request(config)
+          // 结算旧 deferred：raw 模式下 result 是 AxiosResponse，否则需构造
+          if (oldEntry) {
+            oldEntry.resolve(
+              raw
+                ? (result as AxiosResponse)
+                : ({
+                    data: result,
+                    status: 200,
+                    statusText: 'OK',
+                    headers: {} as Record<string, string>,
+                    config,
+                    request: {},
+                  } as AxiosResponse),
+            )
+          }
+          return result
+        } catch (finalError) {
+          oldEntry?.reject(finalError)
+          return Promise.reject(finalError)
+        }
+      }
+
+      // 不重试或重试次数耗尽 → 结算去重 deferred（reject）
+      if (key) {
+        const entry = pendingRequests.get(key)
+        if (entry) {
+          entry.reject(error)
+          pendingRequests.delete(key)
+        }
+      }
+
+      console.error(
+        'API Error:',
+        error.response?.data?.detail || error.message,
+      )
+      return Promise.reject(error)
+    },
+  )
+}
+
+// ========================================================================
+// 实例创建
+// ========================================================================
 
 /**
  * 标准实例：response 拦截器返回 response.data
@@ -66,19 +256,7 @@ function applyRequestInterceptor(instance: AxiosInstance): void {
  */
 const api = axios.create(baseConfig)
 applyRequestInterceptor(api)
-api.interceptors.response.use(
-  (response) => {
-    // S14-2: 请求成功 → 完成 loading bar
-    finishLoadingBar()
-    return response.data
-  },
-  (error) => {
-    // S14-2: 请求失败 → 错误 loading bar
-    errorLoadingBar()
-    console.error('API Error:', error.response?.data?.detail || error.message)
-    return Promise.reject(error)
-  },
-)
+applyResponseInterceptor(api, false)
 
 /**
  * 原始实例：response 拦截器返回完整 AxiosResponse（不解包 data）
@@ -90,17 +268,7 @@ api.interceptors.response.use(
  */
 const apiRaw = axios.create(baseConfig)
 applyRequestInterceptor(apiRaw)
-apiRaw.interceptors.response.use(
-  (response) => {
-    finishLoadingBar()
-    return response
-  },
-  (error) => {
-    errorLoadingBar()
-    console.error('API Error:', error.response?.data?.detail || error.message)
-    return Promise.reject(error)
-  },
-)
+applyResponseInterceptor(apiRaw, true)
 
 export default api
 export { apiRaw }

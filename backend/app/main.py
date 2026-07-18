@@ -21,6 +21,7 @@ from app.routers.anomaly_router import router as anomaly_router
 from app.routers.auth_router import router as auth_router
 from app.routers.backup_router import router as backup_router
 from app.routers.changes_router import router as changes_router
+from app.routers.cost_router import router as cost_router
 from app.routers.documents_router import router as documents_router
 from app.routers.events_router import router as events_router
 from app.routers.export_router import router as export_router
@@ -31,7 +32,6 @@ from app.routers.llm_wiki_router import router as llm_wiki_router
 from app.routers.mcp_router import router as mcp_router
 from app.routers.oidc_router import router as oidc_router
 from app.routers.okf_router import router as okf_router
-from app.routers.cost_router import router as cost_router
 from app.routers.parsers_router import router as parsers_router
 from app.routers.realtime_router import router as realtime_router
 from app.routers.review_router import router as review_router

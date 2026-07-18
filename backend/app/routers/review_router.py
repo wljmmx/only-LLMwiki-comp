@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from app.auth import verify_token
 from app.knowledge import get_review_queue
+from app.schemas import PaginatedData, PaginatedResponse
 
 router = APIRouter()
 
@@ -59,31 +60,52 @@ def _normalize_item(row: dict) -> dict:
 @router.get("/review/queue")
 async def list_review_queue(
     status: str | None = None,
-    limit: int = 50,
-    offset: int = 0,
+    page: int = 1,
+    page_size: int = 20,
+    # Deprecated: 向后兼容旧 limit/offset 参数
+    limit: int | None = None,
+    offset: int | None = None,
 ) -> dict:
-    """获取审查队列
+    """获取审查队列（分页）
 
     status=None 表示全部状态，否则按指定状态过滤。
+    使用 page/page_size 分页（推荐），同时兼容旧的 limit/offset 参数。
     """
     queue = get_review_queue()
+
+    # 向后兼容：如果显式传入 limit，使用 limit/offset 模式
+    if limit is not None:
+        _limit, _offset = limit, offset or 0
+        _page, _page_size = 1, _limit
+    else:
+        _limit = page_size
+        _offset = (page - 1) * page_size
+        _page, _page_size = page, page_size
+
     if status is None or status == "":
-        items = queue.list_by_status(None, limit, offset)
+        items = queue.list_by_status(None, _limit, _offset)
         total = queue.count_by_status(None)
     elif status == "pending":
-        items = queue.list_by_status("pending", limit, offset)
+        items = queue.list_by_status("pending", _limit, _offset)
         total = queue.count_by_status("pending")
     else:
-        items = queue.list_by_status(status, limit, offset)
+        items = queue.list_by_status(status, _limit, _offset)
         total = queue.count_by_status(status)
+
     stats = queue.get_stats()
-    return {
-        "items": [_normalize_item(item) for item in items],
-        "stats": stats,
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-    }
+
+    result = PaginatedResponse[dict](
+        data=PaginatedData(
+            items=[_normalize_item(item) for item in items],
+            total=total,
+            page=_page,
+            page_size=_page_size,
+        ),
+        message="",
+    ).model_dump()
+    # 向后兼容：保留 stats 字段
+    result["stats"] = stats
+    return result
 
 
 @router.get("/review/stats")

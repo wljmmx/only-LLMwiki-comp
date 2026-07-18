@@ -22,6 +22,7 @@ export interface User {
   display_name: string | null
   email: string | null
   active: boolean
+  must_change_password: boolean
   created_at: string
   updated_at: string
 }
@@ -47,9 +48,25 @@ export interface OIDCStatusResponse {
   providers: OIDCProviderInfo[]
 }
 
+export interface ChangePasswordResponse {
+  changed: boolean
+  must_change_password: boolean
+}
+
 /** 用户名密码登录 */
 export async function login(username: string, password: string): Promise<LoginResponse> {
   return await api.post('/auth/login', { username, password })
+}
+
+/** 修改自己的密码（P0-9: 强制改密） */
+export async function changePassword(
+  oldPassword: string,
+  newPassword: string,
+): Promise<ChangePasswordResponse> {
+  return await api.post('/auth/change-password', {
+    old_password: oldPassword,
+    new_password: newPassword,
+  })
 }
 
 /** 注销 */

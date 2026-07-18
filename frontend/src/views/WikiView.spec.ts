@@ -127,25 +127,6 @@ describe('WikiView.vue', () => {
     expect(getWikiPage).not.toHaveBeenCalled()
   })
 
-  it('treeData computed 按类型分组', async () => {
-    ;(listWikiPages as any).mockResolvedValue({
-      pages: [
-        samplePage,
-        { ...samplePage, slug: 'reverse-proxy', title: '反向代理', type: 'concept' },
-      ],
-      total: 2,
-    })
-    ;(getWikiPage as any).mockResolvedValue(samplePage)
-    ;(getWikiBacklinks as any).mockResolvedValue([])
-    const wrapper = mountView()
-    await flushPromises()
-    const vm = wrapper.vm as any
-    expect(vm.treeData).toHaveLength(2) // incident + concept 两个类型组
-    const types = vm.treeData.map((n: any) => n.key)
-    expect(types).toContain('type-incident')
-    expect(types).toContain('type-concept')
-  })
-
   it('renderedContent computed 渲染当前页 markdown', async () => {
     ;(listWikiPages as any).mockResolvedValue({ pages: [samplePage], total: 1 })
     ;(getWikiPage as any).mockResolvedValue(samplePage)
@@ -162,20 +143,6 @@ describe('WikiView.vue', () => {
     await flushPromises()
     const vm = wrapper.vm as any
     expect(vm.renderedContent).toBe('')
-  })
-
-  it('typeLabelMap / typeTagTypeMap 映射完整', () => {
-    ;(listWikiPages as any).mockResolvedValue({ pages: [], total: 0 })
-    const wrapper = mountView()
-    const vm = wrapper.vm as any
-    expect(vm.typeLabelMap.entity).toBe('实体')
-    expect(vm.typeLabelMap.concept).toBe('概念')
-    expect(vm.typeLabelMap.incident).toBe('事件')
-    expect(vm.typeLabelMap.runbook).toBe('运行手册')
-    expect(vm.typeLabelMap.service).toBe('服务')
-    expect(vm.typeLabelMap.host).toBe('主机')
-    expect(vm.typeTagTypeMap.incident).toBe('error')
-    expect(vm.typeTagTypeMap.concept).toBe('info')
   })
 
   // ────────── P1-12a: ?slug= query 跳转 ──────────

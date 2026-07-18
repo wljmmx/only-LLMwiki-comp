@@ -695,6 +695,30 @@ async def llm_wiki_page_put(
     except Exception:  # noqa: BLE001
         pass
 
+    # 14. 知识图谱同步（P0-4: 人工编辑 Wiki 后同步到 Neo4j）
+    try:
+        from app.knowledge.graph_store import GraphEntity, get_graph_store
+
+        graph_store = get_graph_store()
+        entity = GraphEntity(
+            entity_type=page_type,
+            name=title,
+            properties={
+                "slug": slug,
+                "tags": meta.get("tags", []),
+                "review_status": meta.get("review_status", "auto"),
+                "source_doc_id": meta.get("source_doc_id", ""),
+                "paragraph_labels": meta.get("paragraph_labels", ""),
+                "edited_by_human": True,
+            },
+            source_doc_id=meta.get("source_doc_id", ""),
+            confidence=1.0,
+        )
+        graph_store.upsert_entity(entity)
+        # graph sync logged at debug level via graph_store
+    except Exception:  # noqa: BLE001
+        pass
+
     return {
         "slug": slug,
         "title": title,

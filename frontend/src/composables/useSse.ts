@@ -11,105 +11,156 @@ export interface UseSseOptions {
   onEvent?: (event: SseEvent) => void
   onError?: (error: string) => void
   onDone?: () => void
+  onReconnecting?: (attempt: number, maxAttempts: number) => void
+  autoReconnect?: boolean
+  maxReconnectAttempts?: number
+  reconnectBaseDelay?: number
 }
 
 export function useSse() {
   const connected = ref(false)
   const error = ref<string | null>(null)
   let abortController: AbortController | null = null
+  let isUnsubscribed = false
 
   function subscribe(
     endpoint: string,
     options: UseSseOptions = {},
   ): () => void {
-    const baseUrl = getApiBaseUrl()
-    const url = `${baseUrl}${endpoint}`
-    const token = getAuthToken()
+    const {
+      autoReconnect = false,
+      maxReconnectAttempts = 5,
+      reconnectBaseDelay = 1000,
+    } = options
 
-    abortController = new AbortController()
-    const headers: Record<string, string> = {
-      'Accept': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    }
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`
-    }
+    isUnsubscribed = false
+    let reconnectAttempt = 0
 
-    console.log('[SSE] Connecting to:', url)
+    function connect() {
+      if (isUnsubscribed) return
 
-    fetch(url, {
-      method: 'POST',
-      headers,
-      signal: abortController.signal,
-    }).then(async (response) => {
-      if (!response.ok) {
-        const errMsg = `SSE 连接失败: ${response.status} ${response.statusText}`
-        error.value = errMsg
-        console.error('[SSE]', errMsg)
-        options.onError?.(errMsg)
-        return
+      const baseUrl = getApiBaseUrl()
+      const url = `${baseUrl}${endpoint}`
+      const token = getAuthToken()
+
+      abortController = new AbortController()
+      const headers: Record<string, string> = {
+        'Accept': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
       }
-      connected.value = true
-      error.value = null
-      console.log('[SSE] Connected')
-
-      const reader = response.body?.getReader()
-      const decoder = new TextDecoder()
-      if (!reader) {
-        error.value = '响应体为空'
-        options.onError?.('响应体为空')
-        return
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
       }
 
-      let buffer = ''
-      try {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) {
-            console.log('[SSE] Connection closed')
-            break
-          }
-          buffer += decoder.decode(value, { stream: true })
-          const events = buffer.split('\n\n')
-          buffer = events.pop() || ''
-          for (const raw of events) {
-            const parsed = _parseSseEvent(raw)
-            if (parsed) {
-              options.onEvent?.(parsed)
-              if (parsed.type === 'error') {
-                error.value = parsed.data?.message || '未知错误'
-                options.onError?.(error.value ?? '未知错误')
-              }
-              if (parsed.type === 'done') {
-                options.onDone?.()
+      console.log('[SSE] Connecting to:', url)
+
+      fetch(url, {
+        method: 'POST',
+        headers,
+        signal: abortController.signal,
+      }).then(async (response) => {
+        if (!response.ok) {
+          const errMsg = `SSE 连接失败: ${response.status} ${response.statusText}`
+          error.value = errMsg
+          console.error('[SSE]', errMsg)
+          options.onError?.(errMsg)
+          tryReconnect()
+          return
+        }
+        connected.value = true
+        error.value = null
+        reconnectAttempt = 0
+        console.log('[SSE] Connected')
+
+        const reader = response.body?.getReader()
+        const decoder = new TextDecoder()
+        if (!reader) {
+          error.value = '响应体为空'
+          options.onError?.('响应体为空')
+          tryReconnect()
+          return
+        }
+
+        let buffer = ''
+        let receivedDone = false
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) {
+              console.log('[SSE] Connection closed')
+              break
+            }
+            buffer += decoder.decode(value, { stream: true })
+            const events = buffer.split('\n\n')
+            buffer = events.pop() || ''
+            for (const raw of events) {
+              const parsed = _parseSseEvent(raw)
+              if (parsed) {
+                options.onEvent?.(parsed)
+                if (parsed.type === 'error') {
+                  error.value = parsed.data?.message || '未知错误'
+                  options.onError?.(error.value ?? '未知错误')
+                }
+                if (parsed.type === 'done') {
+                  receivedDone = true
+                  options.onDone?.()
+                }
               }
             }
           }
+          // 服务器流结束但未收到 done 事件 → 视为意外断开，触发重连
+          if (!receivedDone) {
+            tryReconnect()
+          }
+        } catch (err: any) {
+          if (err.name !== 'AbortError') {
+            error.value = err.message
+            console.error('[SSE] Error:', err.message)
+            options.onError?.(err.message)
+            tryReconnect()
+          }
         }
-      } catch (err: any) {
+        connected.value = false
+      }).catch((err: any) => {
         if (err.name !== 'AbortError') {
           error.value = err.message
-          console.error('[SSE] Error:', err.message)
+          console.error('[SSE] Fetch error:', err.message)
           options.onError?.(err.message)
+          tryReconnect()
         }
+      })
+    }
+
+    function tryReconnect() {
+      if (!autoReconnect || isUnsubscribed) return
+      if (reconnectAttempt >= maxReconnectAttempts) {
+        console.log('[SSE] Max reconnect attempts reached')
+        return
       }
-      connected.value = false
-    }).catch((err: any) => {
-      if (err.name !== 'AbortError') {
-        error.value = err.message
-        console.error('[SSE] Fetch error:', err.message)
-        options.onError?.(err.message)
-      }
-    })
+      const delay = Math.min(
+        reconnectBaseDelay * Math.pow(2, reconnectAttempt),
+        30000,
+      )
+      reconnectAttempt++
+      options.onReconnecting?.(reconnectAttempt, maxReconnectAttempts)
+      console.log(
+        `[SSE] Reconnecting in ${delay}ms (attempt ${reconnectAttempt}/${maxReconnectAttempts})`,
+      )
+      setTimeout(connect, delay)
+    }
+
+    connect()
 
     return () => {
+      isUnsubscribed = true
       abortController?.abort()
       connected.value = false
     }
   }
 
   function unsubscribe() {
+    isUnsubscribed = true
     abortController?.abort()
     connected.value = false
   }

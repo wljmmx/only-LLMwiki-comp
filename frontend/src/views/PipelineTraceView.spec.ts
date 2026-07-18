@@ -94,6 +94,7 @@ const mockRoute = {
 
 vi.mock('vue-router', () => ({
   useRoute: () => mockRoute,
+  useRouter: () => ({ push: vi.fn(), resolve: vi.fn() }),
 }))
 
 import PipelineTraceView from '@/views/PipelineTraceView.vue'

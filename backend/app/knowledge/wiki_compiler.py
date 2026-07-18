@@ -21,14 +21,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import hashlib
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
-from typing import Any, Iterator
+from typing import Any
 
 import structlog
 import yaml
@@ -36,358 +34,43 @@ import yaml
 from app.config import get_settings
 from app.core.llm import ChatMessage, get_llm_client
 from app.extraction import KnowledgeExtractor
-from app.extraction.types import EntityType, ExtractedEntity, ExtractionResult
+from app.extraction.types import ExtractedEntity, ExtractionResult
+from app.knowledge.wiki_compiler_types import (
+    _MAX_LLM_RETRIES,
+    _QUALITY_REVIEW_THRESHOLD,
+    _REQUIRED_SECTIONS,
+    _RETRY_BASE_DELAY,
+    _TEMPLATE_PLACEHOLDER_RE,
+    ENTITY_TYPE_TO_PAGE_TYPE,
+    PipelineTrace,
+    ProgressCallback,
+    ProgressEventType,
+    SectionTrace,
+    WikiCompileResult,
+    WikiPage,
+)
+from app.knowledge.wiki_compiler_utils import (
+    _CJK_RE,
+    _cosine_similarity,
+    _entity_to_wiki_slugs,
+    _parse_json_response,
+    _slugify,
+    _tokenize,
+    generate_slug_for_heading_tree,
+    iter_tree_nodes,
+    make_hierarchical_slug,  # noqa: F401  # re-exported for external consumers
+    make_slug,
+)
 from app.knowledge.wiki_drift import clear_stale, record_compiled_checksum
 from app.knowledge.wiki_index import _key_from_slug, list_wiki_pages, rebuild_index
 from app.knowledge.wikilink import WIKILINK_RE, update_backlinks
-from app.observability import span
+from app.observability import record_business_histogram, record_business_metric, span
 from app.parsers import get_parser
 from app.parsers.base import ParsedDocument
 from app.storage import get_document_store
 from app.storage.version_control import get_version_control
 
 logger = structlog.get_logger()
-
-# ────────── S3: LLM 重试配置 ──────────
-_MAX_LLM_RETRIES = 3
-_RETRY_BASE_DELAY = 1.0  # 秒
-
-# ────────── S2: 模板兜底标记正则 ──────────
-_TEMPLATE_PLACEHOLDER_RE = re.compile(r"待\s*(LLM|补全|人工)")
-
-# ────────── S2: 类型必含章节规范 ──────────
-_REQUIRED_SECTIONS: dict[str, list[str]] = {
-    "entity": ["概述", "属性", "来源"],
-    "concept": ["概述", "来源"],
-    "incident": ["概述", "排查步骤", "处置方案", "来源"],
-    "runbook": ["概述", "排查步骤", "处置方案", "来源"],
-    "service": ["概述", "来源"],
-    "host": ["概述", "来源"],
-}
-
-# ────────── L3: 质量阈值配置 ──────────
-_QUALITY_PUBLISH_THRESHOLD = 0.8  # 质量分 ≥ 0.8 自动发布
-_QUALITY_REVIEW_THRESHOLD = 0.5   # 质量分 ≥ 0.5 标记 review_needed，< 0.5 拒绝发布
-
-# ────────── M3: 进度事件类型 ──────────
-
-
-class ProgressEventType(str, Enum):
-    """编译进度事件类型"""
-    STEP_START = "step_start"
-    STEP_DONE = "step_done"
-    PAGE_START = "page_start"
-    PAGE_DONE = "page_done"
-    QUALITY_CHECK = "quality_check"
-    CONFLICT_DETECTED = "conflict_detected"
-    PROGRESS = "progress"  # 百分比进度
-    SECTION_PROGRESS = "section_progress"  # 章节处理进度
-    SECTION_START = "section_start"  # 单个章节处理开始
-    SECTION_DONE = "section_done"    # 单个章节处理完成
-
-
-# M3: 进度回调类型
-ProgressCallback = Callable[[ProgressEventType, dict[str, Any]], None]
-
-# CJK 字符检测（用于决定匹配策略与最小词长）
-_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
-
-# ────────── M1: 相似度检测工具函数 ──────────
-
-
-def _entity_to_wiki_slugs(name: str) -> list[str]:
-    """GS-2: 将图谱实体名称映射为可能的 wiki slug 候选"""
-    candidates = [name]
-    kebab = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "-", name).strip("-").lower()
-    if kebab and kebab != name:
-        candidates.append(kebab)
-    for prefix in ["host-", "service-", "component-", "incident-"]:
-        if not name.lower().startswith(prefix):
-            candidates.append(f"{prefix}{name}")
-    return candidates
-
-
-def _tokenize(text: str) -> list[str]:
-    """简单分词：按空格/CJK字符/标点拆分，保留 2+ 字符的 token"""
-    tokens: list[str] = []
-    # 按非字母数字/CJK 拆分
-    parts = re.split(r"[^\w\u4e00-\u9fff]+", text.lower().strip())
-    for part in parts:
-        if len(part) >= 2:
-            tokens.append(part)
-        elif _CJK_RE.search(part):
-            # CJK 单字符也保留
-            tokens.append(part)
-    return tokens
-
-
-def _cosine_similarity(bow1: dict[str, float], bow2: dict[str, float]) -> float:
-    """计算两个词袋的余弦相似度"""
-    if not bow1 or not bow2:
-        return 0.0
-    # 交集
-    common = set(bow1.keys()) & set(bow2.keys())
-    if not common:
-        return 0.0
-    dot = sum(bow1[k] * bow2[k] for k in common)
-    norm1 = sum(v * v for v in bow1.values()) ** 0.5
-    norm2 = sum(v * v for v in bow2.values()) ** 0.5
-    if norm1 == 0 or norm2 == 0:
-        return 0.0
-    return round(dot / (norm1 * norm2), 4)
-
-
-def _parse_json_response(text: str) -> dict | None:
-    """从 LLM 响应中提取 JSON 对象"""
-    if not text.strip():
-        return None
-    # 尝试直接解析
-    try:
-        return json.loads(text.strip())
-    except json.JSONDecodeError:
-        pass
-    # 尝试提取 ```json ... ``` 代码块
-    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(1).strip())
-        except json.JSONDecodeError:
-            pass
-    # 尝试提取 { ... } 对象
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group())
-        except json.JSONDecodeError:
-            pass
-    return None
-
-# ────────── EntityType → Wiki 页面类型映射 ──────────
-# 见 AGENTS.md §三：entity | concept | incident | runbook | service | host
-ENTITY_TYPE_TO_PAGE_TYPE: dict[str, str] = {
-    EntityType.HOST.value: "host",
-    EntityType.SERVICE.value: "service",
-    EntityType.COMPONENT.value: "entity",
-    EntityType.PARAMETER.value: "entity",
-    EntityType.COMMAND.value: "entity",
-    EntityType.PROCEDURE.value: "runbook",
-    EntityType.INCIDENT.value: "incident",
-    EntityType.SYMPTOM.value: "incident",
-    EntityType.EXPERIENCE.value: "concept",
-    EntityType.CONCEPT.value: "concept",
-    EntityType.DOCUMENT.value: "concept",
-}
-
-
-@dataclass
-class WikiPage:
-    """编译产出的单个 wiki 页面（未持久化前）"""
-
-    slug: str
-    title: str
-    type: str  # entity | concept | incident | runbook | service | host
-    tags: list[str]
-    sources: list[dict]  # [{doc_id, title, checksum}]
-    body_md: str  # 不含 frontmatter 的正文
-    review_status: str = "auto"  # auto | review_needed | approved
-    source_doc_id: str = ""
-    stale_items: list[str] = field(default_factory=list)  # 与已有版本冲突的事实
-    # S1: 段落分类标签（层级标签），用于页面标签和内容组织
-    paragraph_labels: list[str] = field(default_factory=list)
-
-
-@dataclass
-class WikiCompileResult:
-    """一次编译任务的汇总结果"""
-
-    doc_id: str
-    pages_created: int = 0
-    pages_updated: int = 0
-    pages_unchanged: int = 0
-    slugs: list[str] = field(default_factory=list)
-    review_needed: list[str] = field(default_factory=list)
-    stale_marked: list[str] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
-    index_rebuilt: bool = False
-    # P3-4: 统一编译 — 标记是否同时写入了知识图谱
-    graph_compiled: bool = False
-    # S1: 段落分类统计
-    paragraph_count: int = 0
-    # Pipeline trace: 章节级管道追踪
-    pipeline_trace: PipelineTrace | None = None
-
-
-@dataclass
-class SectionTrace:
-    """单个章节的 LLM 处理追踪记录"""
-
-    title: str                          # 章节标题
-    level: int                          # 标题层级
-    slug: str                           # 生成的 slug
-    raw_content: str                    # 处理前原始内容
-    raw_chars: int                      # 原始字符数
-    compiled_content: str               # LLM 编译后内容
-    compiled_chars: int                 # 编译后字符数
-    llm_success: bool                   # LLM 是否成功
-    processing_time_ms: float           # 处理耗时(ms)
-    children_count: int                 # 子章节数
-
-
-@dataclass
-class PipelineTrace:
-    """一次编译的完整管道追踪"""
-
-    doc_id: str
-    doc_title: str
-    duration_ms: float
-    sections: list[SectionTrace] = field(default_factory=list)
-    total_raw_chars: int = 0
-    total_compiled_chars: int = 0
-    total_sections: int = 0
-    sections_with_children: int = 0
-    llm_success_count: int = 0
-    llm_fail_count: int = 0
-
-
-# ────────── 命名约定（AGENTS.md §五）──────────
-
-_SLUG_SAFE_RE = re.compile(r"[^a-zA-Z0-9\-_]")
-
-
-def _slugify(name: str) -> str:
-    """转 kebab-case slug 安全形式"""
-    s = name.strip().lower()
-    s = s.replace(" ", "-").replace("_", "-")
-    s = _SLUG_SAFE_RE.sub("", s)
-    # 合并连续 -
-    s = re.sub(r"-+", "-", s).strip("-")
-    return s or "unnamed"
-
-
-def make_slug(entity_type: str, name: str) -> str:
-    """根据 AGENTS.md 命名约定生成 slug
-
-    - 实体页：{type}-{name}（host/service/component）
-    - 故障页：{symptom}-troubleshooting
-    - 概念页：直接用概念名
-    - Runbook 页：runbook-{scenario}
-    """
-    page_type = ENTITY_TYPE_TO_PAGE_TYPE.get(entity_type, "concept")
-    base = _slugify(name)
-    if page_type == "host":
-        return f"host-{base}"
-    if page_type == "service":
-        return f"service-{base}"
-    if page_type == "incident":
-        # 若 name 已含 troubleshooting 字样则不再追加
-        if "troubleshoot" in base or "故障" in name:
-            return base
-        return f"{base}-troubleshooting"
-    if page_type == "runbook":
-        return f"runbook-{base}"
-    # concept / entity
-    return base
-
-
-def make_hierarchical_slug(
-    title: str,
-    level: int,
-    parent_slug: str | None = None,
-    entity_type: str | None = None,
-    max_length: int = 100,
-) -> str:
-    """生成层级化 Slug，反映文档章节结构
-
-    Slug 命名规则：
-    - H1：{slugified-title}（文档主标题）
-    - H2：{parent-slug}-{section-slug}
-    - H3：{grandparent-slug}-{parent-slug}-{section-slug}
-    - 截断规则：总长度不超过 max_length，保留关键识别信息
-    - 分隔符：连字符 "-"
-    - 大小写：全小写
-
-    Args:
-        title: 章节标题
-        level: 标题层级（1-6）
-        parent_slug: 父章节的 slug（可选）
-        entity_type: 实体类型（用于确定前缀，可选）
-        max_length: slug 最大长度
-
-    Returns:
-        层级化 slug 字符串
-    """
-    base = _slugify(title)
-    if not base:
-        base = f"section-{level}"
-
-    prefix = ""
-    if entity_type:
-        page_type = ENTITY_TYPE_TO_PAGE_TYPE.get(entity_type, "")
-        if page_type == "host":
-            prefix = "host-"
-        elif page_type == "service":
-            prefix = "service-"
-        elif page_type == "runbook":
-            prefix = "runbook-"
-        elif page_type == "incident":
-            if "troubleshoot" not in base and "故障" not in title:
-                base += "-troubleshooting"
-
-    if parent_slug:
-        parts = parent_slug.split("-")
-        if len(parts) > level - 1:
-            parent_base = "-".join(parts[: level - 1])
-        else:
-            parent_base = parent_slug
-        candidate = f"{prefix}{parent_base}-{base}" if prefix else f"{parent_base}-{base}"
-    else:
-        candidate = f"{prefix}{base}" if prefix else base
-
-    if len(candidate) <= max_length:
-        return candidate
-
-    truncated_base = base[: max_length - len(prefix) - 1]
-    candidate = f"{prefix}{truncated_base}" if prefix else truncated_base
-    return candidate.rstrip("-")
-
-
-def generate_slug_for_heading_tree(
-    heading_tree: list[dict],
-    parent_slug: str | None = None,
-) -> list[dict]:
-    """递归为标题树生成层级化 Slug
-
-    Args:
-        heading_tree: 标题树字典列表（由 HeadingNode.to_dict() 生成）
-        parent_slug: 父章节 slug
-
-    Returns:
-        更新后的标题树列表（含 slug 字段）
-    """
-    result = []
-    for node in heading_tree:
-        slug = make_hierarchical_slug(
-            title=node["title"],
-            level=node["level"],
-            parent_slug=parent_slug,
-        )
-        node["slug"] = slug
-        if node.get("children"):
-            node["children"] = generate_slug_for_heading_tree(
-                node["children"],
-                parent_slug=slug,
-            )
-        result.append(node)
-    return result
-
-
-def iter_tree_nodes(nodes: list[dict]) -> Iterator[dict]:
-    """递归遍历标题树的所有节点"""
-    for node in nodes:
-        yield node
-        if node.get("children"):
-            yield from iter_tree_nodes(node["children"])
-
 
 # ────────── 编译器主体 ──────────
 
@@ -406,8 +89,15 @@ class WikiCompiler:
         self.extractor = KnowledgeExtractor()
         self.vc = get_version_control()
         self.store = get_document_store()
+        self._llm_cache: dict[str, str] = {}
 
     # ── LLM 包装 ──
+
+    @staticmethod
+    def _get_llm_cache_key(*args: str) -> str:
+        """计算输入参数的 SHA256 哈希，作为 LLM 缓存键"""
+        combined = "||".join(args)
+        return hashlib.sha256(combined.encode("utf-8")).hexdigest()
 
     async def _llm_complete(
         self,
@@ -428,6 +118,11 @@ class WikiCompiler:
                     temperature=temperature,
                     max_tokens=self.settings.llm_max_tokens,
                 )
+                # ── 编译指标埋点：LLM 调用成功 ──
+                try:
+                    record_business_metric("llm_calls_total", backend=self.settings.llm_backend, status="success")
+                except Exception:  # noqa: BLE001
+                    pass
                 return resp.text or ""
             except Exception as e:
                 _ = str(e)  # 记录最后一次错误
@@ -447,6 +142,11 @@ class WikiCompiler:
                         error=str(e),
                         attempts=attempt,
                     )
+        # ── 编译指标埋点：LLM 调用失败（所有重试耗尽）──
+        try:
+            record_business_metric("llm_calls_total", backend=self.settings.llm_backend, status="error")
+        except Exception:  # noqa: BLE001
+            pass
         return ""
 
     # ── S2: 页面质量校验 ──
@@ -530,6 +230,16 @@ class WikiCompiler:
             task_state: L1 任务状态字典（用于断点恢复）
         """
         result = WikiCompileResult(doc_id=doc_id)
+
+        # ── 编译指标埋点：记录编译开始 ──
+        try:
+            record_business_metric("compile_total", compile_type="full")
+        except Exception:  # noqa: BLE001
+            pass
+        _t_compile_start = time.monotonic()
+
+        # 每次编译开始时清空 LLM 缓存（缓存仅在单次编译期间有效）
+        self._llm_cache.clear()
 
         # L1: 初始化任务状态
         if task_state is not None:
@@ -834,6 +544,18 @@ class WikiCompiler:
                 "review_needed": len(result.review_needed),
                 "errors": len(result.errors),
             })
+
+            # ── 编译指标埋点：记录编译耗时与统计 ──
+            try:
+                _elapsed = time.monotonic() - _t_compile_start
+                record_business_histogram("compile_duration_seconds", _elapsed, compile_type="full")
+                record_business_metric("compile_sections_total", float(len(entities)), compile_type="full")
+                record_business_metric("compile_sections_error_total", float(len(result.errors)), compile_type="full")
+                record_business_metric("wiki_pages_created_total", float(result.pages_created))
+                record_business_metric("wiki_pages_updated_total", float(result.pages_updated))
+            except Exception:  # noqa: BLE001
+                pass
+
             return result
 
     # ── P3-4: 统一编译 ──
@@ -886,6 +608,16 @@ class WikiCompiler:
         Returns:
             { slug, compiled_content, raw_chars, compiled_chars, outcome }
         """
+        # ── 编译指标埋点：增量编译开始 ──
+        try:
+            record_business_metric("compile_total", compile_type="incremental")
+        except Exception:  # noqa: BLE001
+            pass
+        _t_compile_start = time.monotonic()
+
+        # 每次编译开始时清空 LLM 缓存（缓存仅在单次编译期间有效）
+        self._llm_cache.clear()
+
         # 1. 加载原始文档
         meta = self.store.get(doc_id)
         if not meta:
@@ -963,6 +695,13 @@ class WikiCompiler:
             source_doc_id=doc_id,
         )
         outcome = self._save_page(page, force=True)
+
+        # ── 编译指标埋点：增量编译耗时 ──
+        try:
+            _elapsed = time.monotonic() - _t_compile_start
+            record_business_histogram("compile_duration_seconds", _elapsed, compile_type="incremental")
+        except Exception:  # noqa: BLE001
+            pass
 
         return {
             "slug": slug,
@@ -1485,9 +1224,21 @@ H{level}
 4. 「## 来源」章节引用本页来源即可
 5. 标题用 `# {title}` 起首"""
 
+        cache_key = self._get_llm_cache_key(content_text, system_prompt, user_prompt)
+        if cache_key in self._llm_cache:
+            logger.info("llm_cache_hit", method="compile_section", title=title)
+            try:
+                record_business_metric("llm_cache_hits_total", cache_type="compile_section")
+            except Exception:  # noqa: BLE001
+                pass
+            return self._llm_cache[cache_key]
+
+        logger.info("llm_cache_miss", method="compile_section", title=title)
         try:
             text = await self._llm_complete(user_prompt, system=system_prompt, temperature=0.2)
-            return self._strip_codefence(text).strip()
+            result = self._strip_codefence(text).strip()
+            self._llm_cache[cache_key] = result
+            return result
         except Exception as e:
             logger.error("llm_compile_section_llm_error", title=title, error=str(e))
             return self._build_section_body(node, parent_slug)
@@ -1581,6 +1332,17 @@ H{level}
 
         返回不含 frontmatter 的 Markdown 正文。
         """
+        raw_content = (entity.evidence_span or "").strip()
+        cache_key = self._get_llm_cache_key(entity.entity_type, entity.name, raw_content)
+        if cache_key in self._llm_cache:
+            logger.info("llm_cache_hit", method="write_body", entity=entity.name, type=entity.entity_type)
+            try:
+                record_business_metric("llm_cache_hits_total", cache_type="write_body")
+            except Exception:  # noqa: BLE001
+                pass
+            return self._llm_cache[cache_key]
+
+        logger.info("llm_cache_miss", method="write_body", entity=entity.name, type=entity.entity_type)
         system = (
             "你是 OpsKG Wiki 管理员。把运维知识编译为结构化 Markdown wiki 页面。"
             "严格遵循 AGENTS.md 规定的页面骨架。"
@@ -1591,7 +1353,9 @@ H{level}
         text = await self._llm_complete(prompt, system=system, temperature=0.2)
         # 防御：剥离可能误加的代码块围栏
         text = self._strip_codefence(text)
-        return text.strip()
+        result = text.strip()
+        self._llm_cache[cache_key] = result
+        return result
 
     def _build_writing_prompt(self, entity: ExtractedEntity, page_type: str) -> str:
         """构造写作 prompt（P3-1: 融合图谱关系作为编译上下文）"""

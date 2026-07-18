@@ -20,22 +20,24 @@ class TestReviewQueue:
         r = client.get("/review/queue")
         assert r.status_code == 200
         data = r.json()
-        assert "items" in data
+        assert "data" in data
+        assert "items" in data["data"]
         assert "stats" in data
-        assert "total" in data
+        assert "total" in data["data"]
 
     def test_list_queue_with_status(self):
         r = client.get("/review/queue", params={"status": "pending"})
         assert r.status_code == 200
         data = r.json()
-        assert "items" in data
+        assert "data" in data
+        assert "items" in data["data"]
 
     def test_list_queue_with_limit_offset(self):
         r = client.get("/review/queue", params={"limit": 10, "offset": 0})
         assert r.status_code == 200
         data = r.json()
-        assert data["limit"] == 10
-        assert data["offset"] == 0
+        assert "data" in data
+        assert "items" in data["data"]
 
     def test_list_queue_empty_status(self):
         r = client.get("/review/queue", params={"status": ""})

@@ -6,6 +6,7 @@
  * 1. 用户名 + 密码登录（POST /auth/login）
  * 2. OIDC 提供者按钮（GET /auth/oidc/{provider}）
  * 3. dev 模式提示（后端未配置认证时所有请求放行）
+ * 4. P0-9: bootstrap admin 首次登录强制改密
  */
 import { ref, onMounted, reactive } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
@@ -26,6 +27,15 @@ const submitting = ref(false)
 const errorMessage = ref('')
 const redirect = ref<string>((route.query.redirect as string) || '/dashboard')
 
+// P0-9: 强制改密状态
+const showChangePassword = ref(false)
+const changePasswordForm = reactive({
+  newPassword: '',
+  confirmPassword: '',
+})
+const changePasswordError = ref('')
+const changingPassword = ref(false)
+
 onMounted(async () => {
   // 加载 OIDC 提供者
   await authStore.loadOIDCProviders()
@@ -38,6 +48,22 @@ onMounted(async () => {
   }
 })
 
+function validatePassword(password: string): string | null {
+  if (password.length < 8) {
+    return '密码至少 8 位'
+  }
+  if (!/[A-Z]/.test(password)) {
+    return '密码必须包含大写字母'
+  }
+  if (!/[a-z]/.test(password)) {
+    return '密码必须包含小写字母'
+  }
+  if (!/[0-9]/.test(password)) {
+    return '密码必须包含数字'
+  }
+  return null
+}
+
 async function handleLogin() {
   if (!form.username || !form.password) {
     errorMessage.value = '请输入用户名和密码'
@@ -47,6 +73,10 @@ async function handleLogin() {
   submitting.value = true
   try {
     const user = await authStore.loginWithPassword(form.username, form.password)
+    if (user.must_change_password) {
+      showChangePassword.value = true
+      return
+    }
     message.success(`欢迎，${user.display_name || user.username}`)
     router.replace(redirect.value)
   } catch (err: any) {
@@ -54,6 +84,37 @@ async function handleLogin() {
     errorMessage.value = typeof detail === 'string' ? detail : '登录失败'
   } finally {
     submitting.value = false
+  }
+}
+
+async function handleChangePassword() {
+  changePasswordError.value = ''
+
+  const err = validatePassword(changePasswordForm.newPassword)
+  if (err) {
+    changePasswordError.value = err
+    return
+  }
+  if (changePasswordForm.newPassword !== changePasswordForm.confirmPassword) {
+    changePasswordError.value = '两次输入的密码不一致'
+    return
+  }
+  if (changePasswordForm.newPassword === form.password) {
+    changePasswordError.value = '新密码不能与旧密码相同'
+    return
+  }
+
+  changingPassword.value = true
+  try {
+    await authStore.changePassword(form.password, changePasswordForm.newPassword)
+    message.success('密码修改成功')
+    showChangePassword.value = false
+    router.replace(redirect.value)
+  } catch (err: any) {
+    const detail = err.response?.data?.detail || err.message
+    changePasswordError.value = typeof detail === 'string' ? detail : '密码修改失败'
+  } finally {
+    changingPassword.value = false
   }
 }
 
@@ -72,65 +133,117 @@ function handleOIDC(providerName: string) {
       </div>
 
       <NCard class="login-card" :bordered="false">
-        <NForm ref="formRef" @submit.prevent="handleLogin">
-          <NFormItem label="用户名">
-            <NInput
-              v-model:value="form.username"
-              placeholder="admin"
-              :input-props="{ autocomplete: 'username' }"
-              @keyup.enter="handleLogin"
+        <!-- 登录表单 -->
+        <template v-if="!showChangePassword">
+          <NForm ref="formRef" @submit.prevent="handleLogin">
+            <NFormItem label="用户名">
+              <NInput
+                v-model:value="form.username"
+                placeholder="admin"
+                :input-props="{ autocomplete: 'username' }"
+                @keyup.enter="handleLogin"
+              />
+            </NFormItem>
+            <NFormItem label="密码">
+              <NInput
+                v-model:value="form.password"
+                type="password"
+                show-password-on="click"
+                placeholder="••••••"
+                :input-props="{ autocomplete: 'current-password' }"
+                @keyup.enter="handleLogin"
+              />
+            </NFormItem>
+
+            <NAlert
+              v-if="errorMessage"
+              type="error"
+              :title="errorMessage"
+              class="login-error"
+              closable
+              @close="errorMessage = ''"
             />
-          </NFormItem>
-          <NFormItem label="密码">
-            <NInput
-              v-model:value="form.password"
-              type="password"
-              show-password-on="click"
-              placeholder="••••••"
-              :input-props="{ autocomplete: 'current-password' }"
-              @keyup.enter="handleLogin"
+
+            <NButton
+              type="primary"
+              block
+              :loading="submitting"
+              @click="handleLogin"
+            >
+              登录
+            </NButton>
+          </NForm>
+
+          <NDivider v-if="authStore.oidcEnabled" class="login-divider">
+            或使用 SSO 登录
+          </NDivider>
+
+          <NSpace v-if="authStore.oidcEnabled" vertical :size="12">
+            <NButton
+              v-for="provider in authStore.oidcProviders"
+              :key="provider.name"
+              block
+              secondary
+              @click="handleOIDC(provider.name)"
+            >
+              {{ provider.display_name }}
+            </NButton>
+          </NSpace>
+
+          <div class="login-hint">
+            <p>默认管理员：admin / admin</p>
+            <p>可在后端通过 <code>OPSKG_BOOTSTRAP_ADMIN_USER</code> / <code>OPSKG_BOOTSTRAP_ADMIN_PASSWORD</code> 覆盖</p>
+          </div>
+        </template>
+
+        <!-- P0-9: 强制改密表单 -->
+        <template v-else>
+          <NAlert type="warning" class="login-error" :bordered="false">
+            <template #header>
+              首次登录需要修改密码
+            </template>
+            为保证账户安全，请设置一个新密码。
+          </NAlert>
+
+          <NForm @submit.prevent="handleChangePassword" class="change-password-form">
+            <NFormItem label="新密码">
+              <NInput
+                v-model:value="changePasswordForm.newPassword"
+                type="password"
+                show-password-on="click"
+                placeholder="至少 8 位，包含大小写字母和数字"
+                @keyup.enter="handleChangePassword"
+              />
+            </NFormItem>
+            <NFormItem label="确认密码">
+              <NInput
+                v-model:value="changePasswordForm.confirmPassword"
+                type="password"
+                show-password-on="click"
+                placeholder="再次输入新密码"
+                @keyup.enter="handleChangePassword"
+              />
+            </NFormItem>
+
+            <NAlert
+              v-if="changePasswordError"
+              type="error"
+              :title="changePasswordError"
+              class="login-error"
+              closable
+              @close="changePasswordError = ''"
             />
-          </NFormItem>
 
-          <NAlert
-            v-if="errorMessage"
-            type="error"
-            :title="errorMessage"
-            class="login-error"
-            closable
-            @close="errorMessage = ''"
-          />
-
-          <NButton
-            type="primary"
-            block
-            :loading="submitting"
-            @click="handleLogin"
-          >
-            登录
-          </NButton>
-        </NForm>
-
-        <NDivider v-if="authStore.oidcEnabled" class="login-divider">
-          或使用 SSO 登录
-        </NDivider>
-
-        <NSpace v-if="authStore.oidcEnabled" vertical :size="12">
-          <NButton
-            v-for="provider in authStore.oidcProviders"
-            :key="provider.name"
-            block
-            secondary
-            @click="handleOIDC(provider.name)"
-          >
-            {{ provider.display_name }}
-          </NButton>
-        </NSpace>
-
-        <div class="login-hint">
-          <p>默认管理员：admin / admin</p>
-          <p>可在后端通过 <code>OPSKG_BOOTSTRAP_ADMIN_USER</code> / <code>OPSKG_BOOTSTRAP_ADMIN_PASSWORD</code> 覆盖</p>
-        </div>
+            <NButton
+              type="primary"
+              block
+              :loading="changingPassword"
+              @click="handleChangePassword"
+            >
+              修改密码并登录
+            </NButton>
+          </NForm>
+        </template>
       </NCard>
     </div>
   </div>
@@ -206,5 +319,9 @@ function handleOIDC(providerName: string) {
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 11px;
+}
+
+.change-password-form {
+  margin-top: 16px;
 }
 </style>

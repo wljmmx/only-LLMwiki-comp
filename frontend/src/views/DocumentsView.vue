@@ -1,12 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, h } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  NDataTable,
   NButton,
-  NUpload,
-  NInput,
-  NSelect,
   NSpace,
   NDrawer,
   NDrawerContent,
@@ -20,7 +16,6 @@ import {
   NSteps,
   NStep,
   NProgress,
-  NPopconfirm,
   NCode,
   NCheckbox,
   NModal,
@@ -34,6 +29,9 @@ import { listDocuments, deleteDocument, parseDocument, getDocumentContent, searc
 import { getCompileTrace, recompileSection, updateWikiPage } from '@/api/wiki'
 import { formatFileSize, formatDateTime as formatDateTimeUtil } from '@/utils/format'
 import type { DocumentMeta, CompileTraceResponse, SectionTrace } from '@/types/api'
+import DocumentUpload from '@/components/documents/DocumentUpload.vue'
+import DocumentFilter from '@/components/documents/DocumentFilter.vue'
+import DocumentTable from '@/components/documents/DocumentTable.vue'
 
 const message = useMessage()
 const router = useRouter()
@@ -124,100 +122,6 @@ const statusText: Record<string, string> = {
   compiled: '已编译',
   error: '失败',
 }
-
-const columns = [
-  // P1-14: 批量选择列
-  {
-    type: 'selection' as const,
-    width: 50,
-  },
-  {
-    title: '文件名',
-    key: 'filename',
-    ellipsis: { tooltip: true },
-  },
-  {
-    title: '格式',
-    key: 'format',
-    width: 100,
-    render(row: DocumentMeta) {
-      return row.format.toUpperCase()
-    },
-  },
-  {
-    title: '大小',
-    key: 'size',
-    width: 120,
-    render(row: DocumentMeta) {
-      return formatFileSize(row.size)
-    },
-  },
-  {
-    title: '状态',
-    key: 'status',
-    width: 100,
-    render(row: DocumentMeta) {
-      return h(
-        NTag,
-        { type: statusTagType[row.status], size: 'small' },
-        { default: () => statusText[row.status] },
-      )
-    },
-  },
-  {
-    title: '上传时间',
-    key: 'created_at',
-    width: 180,
-    render(row: DocumentMeta) {
-      return formatDateTimeUtil(row.created_at)
-    },
-  },
-  {
-    title: '操作',
-    key: 'actions',
-    width: 240,
-    render(row: DocumentMeta) {
-      return h(
-        NSpace,
-        { size: 'small' },
-        {
-          default: () => [
-            h(
-              NButton,
-              { size: 'small', type: 'primary', quaternary: true, onClick: () => handleView(row) },
-              { default: () => '查看' },
-            ),
-            h(
-              NButton,
-              {
-                size: 'small',
-                type: 'info',
-                quaternary: true,
-                onClick: () => router.push({ name: 'pipeline', query: { doc_id: row.id } }),
-              },
-              { default: () => '编译为Wiki' },
-            ),
-            // P1-13: 删除按钮外裹 NPopconfirm，替代 window.confirm
-            h(
-              NPopconfirm,
-              {
-                onPositiveClick: () => handleDelete(row),
-              },
-              {
-                trigger: () => h(
-                  NButton,
-                  { size: 'small', type: 'error', quaternary: true },
-                  { default: () => '删除' },
-                ),
-                default: () => `确定删除文档 ${row.filename}？此操作不可撤销`,
-              },
-            ),
-          ],
-        },
-      )
-    },
-  },
-]
 
 async function fetchDocuments() {
   // 退出搜索模式，回到分页列表
@@ -512,6 +416,10 @@ function handleClearSelection() {
   checkedRowKeys.value = []
 }
 
+function handleCompile(row: DocumentMeta) {
+  router.push({ name: 'pipeline', query: { doc_id: row.id } })
+}
+
 function handlePageChange(page: number) {
   offset.value = (page - 1) * limit.value
   fetchDocuments()
@@ -543,92 +451,40 @@ onMounted(() => {
   <div class="documents-view">
     <div class="toolbar">
       <NSpace align="center" wrap>
-        <NUpload :show-file-list="false" :custom-request="handleUpload" drag class="upload-dragger">
-          <div class="upload-area">
-            <div class="upload-icon">📤</div>
-            <div class="upload-text">点击或拖拽文件到此处上传</div>
-            <div class="upload-hint">支持 md、docx、xlsx、pdf、html、txt、sql 等格式</div>
-          </div>
-        </NUpload>
+        <DocumentUpload :upload-handler="handleUpload" />
 
-        <NInput
-          :value="searchText"
-          placeholder="搜索文件名/标题..."
-          clearable
-          style="width: 240px"
-          @update:value="handleSearchInput"
-        >
-          <template #prefix>🔍</template>
-        </NInput>
-
-        <NSelect
-          v-model:value="formatFilter"
-          :options="formatOptions"
-          placeholder="格式筛选"
-          style="width: 140px"
-        />
-
-        <NSelect
-          v-model:value="statusFilter"
-          :options="statusOptions"
-          placeholder="状态筛选"
-          style="width: 140px"
+        <DocumentFilter
+          :search-text="searchText"
+          :format-filter="formatFilter"
+          :status-filter="statusFilter"
+          :format-options="formatOptions"
+          :status-options="statusOptions"
+          @update:search-text="(val: string) => searchText = val"
+          @update:format-filter="(val: string) => formatFilter = val"
+          @update:status-filter="(val: string) => statusFilter = val"
+          @search-input="handleSearchInput"
         />
       </NSpace>
     </div>
 
-    <div class="table-container">
-      <!-- P1-14: 批量操作工具栏（仅在有选中项时显示） -->
-      <div v-if="checkedRowKeys.length > 0" class="batch-toolbar">
-        <NSpace align="center" size="medium">
-          <span class="batch-count">已选 {{ checkedRowKeys.length }} 项</span>
-          <NPopconfirm @positive-click="handleBatchDelete">
-            <template #trigger>
-              <NButton type="error" :loading="batchLoading" :disabled="batchLoading">
-                批量删除
-              </NButton>
-            </template>
-            确定删除选中的 {{ checkedRowKeys.length }} 个文档？此操作不可撤销
-          </NPopconfirm>
-          <NButton
-            type="primary"
-            :loading="batchLoading"
-            :disabled="batchLoading"
-            @click="handleBatchCompile"
-          >
-            批量编译为 Wiki
-          </NButton>
-          <NButton :disabled="batchLoading" @click="handleClearSelection">
-            取消选择
-          </NButton>
-        </NSpace>
-      </div>
-
-      <NDataTable
-        v-model:checked-row-keys="checkedRowKeys"
-        :columns="columns"
-        :data="documents"
-        :loading="loading"
-        :row-key="(row: DocumentMeta) => row.id"
-        :pagination="isSearching
-          ? false
-          : {
-            page: offset / limit + 1,
-            pageSize: limit,
-            itemCount: total,
-            pageSizes: [10, 20, 50],
-            showSizePicker: true,
-            onUpdatePage: handlePageChange,
-            onUpdatePageSize: handlePageSizeChange,
-        }"
-        :bordered="false"
-        size="medium"
-      >
-        <template #empty>
-          <NEmpty description="暂无文档" />
-        </template>
-      </NDataTable>
-    </div>
+    <DocumentTable
+      v-model:checked-row-keys="checkedRowKeys"
+      :documents="documents"
+      :loading="loading"
+      :total="total"
+      :offset="offset"
+      :limit="limit"
+      :is-searching="isSearching"
+      :batch-loading="batchLoading"
+      @view="handleView"
+      @delete="handleDelete"
+      @compile="handleCompile"
+      @batch-delete="handleBatchDelete"
+      @batch-compile="handleBatchCompile"
+      @clear-selection="handleClearSelection"
+      @page-change="handlePageChange"
+      @page-size-change="handlePageSizeChange"
+    />
 
     <NDrawer v-model:show="drawerVisible" :width="720" placement="right">
       <NDrawerContent title="文档详情" :closable="true">
@@ -911,66 +767,6 @@ onMounted(() => {
   background: var(--n-card-color, #fff);
   border-radius: 8px;
   border: 1px solid var(--n-border-color, #e5e7eb);
-}
-
-.upload-dragger {
-  width: 280px;
-}
-
-.upload-area {
-  border: 2px dashed var(--n-border-color, #d1d5db);
-  border-radius: 8px;
-  padding: 20px;
-  text-align: center;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  background: var(--n-base-color, #f9fafb);
-}
-
-.upload-area:hover {
-  border-color: var(--n-primary-color, #3b82f6);
-  background: var(--n-primary-color-suppl, #eff6ff);
-}
-
-.upload-icon {
-  font-size: 32px;
-  margin-bottom: 8px;
-}
-
-.upload-text {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--n-text-color, #111827);
-  margin-bottom: 4px;
-}
-
-.upload-hint {
-  font-size: 12px;
-  color: var(--n-text-color-3, #9ca3af);
-}
-
-.table-container {
-  flex: 1;
-  background: var(--n-card-color, #fff);
-  border-radius: 8px;
-  border: 1px solid var(--n-border-color, #e5e7eb);
-  padding: 16px;
-  overflow: hidden;
-}
-
-/* P1-14: 批量操作工具栏 */
-.batch-toolbar {
-  margin-bottom: 12px;
-  padding: 10px 12px;
-  background: var(--n-color-target, #f0f9ff);
-  border: 1px solid var(--n-border-color, #e5e7eb);
-  border-radius: 6px;
-}
-
-.batch-toolbar .batch-count {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--n-text-color, #111827);
 }
 
 .doc-info {

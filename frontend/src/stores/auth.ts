@@ -27,6 +27,8 @@ export const useAuthStore = defineStore('auth', () => {
   const oidcLoaded = ref(false)
   /** 后端是否要求认证（dev 模式 false，生产模式 true） */
   const authRequired = ref<boolean | null>(null)
+  /** P0-9: bootstrap admin 首次登录是否需强制改密 */
+  const mustChangePassword = ref(false)
 
   const isAuthenticated = computed(
     () => !!token.value && !!user.value && user.value.active,
@@ -55,6 +57,7 @@ export const useAuthStore = defineStore('auth', () => {
       const resp = await authApi.login(username, password)
       setToken(resp.token)
       user.value = resp.user
+      mustChangePassword.value = resp.user.must_change_password ?? false
       return resp.user
     } finally {
       loading.value = false
@@ -112,6 +115,20 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /** P0-9: 强制改密（调用 POST /auth/change-password） */
+  async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
+    loading.value = true
+    try {
+      const resp = await authApi.changePassword(oldPassword, newPassword)
+      mustChangePassword.value = resp.must_change_password
+      if (user.value) {
+        user.value = { ...user.value, must_change_password: resp.must_change_password }
+      }
+    } finally {
+      loading.value = false
+    }
+  }
+
   /** 加载 OIDC 提供者列表 */
   async function loadOIDCProviders(): Promise<void> {
     if (oidcLoaded.value) return
@@ -151,6 +168,7 @@ export const useAuthStore = defineStore('auth', () => {
     oidcEnabled,
     oidcLoaded,
     authRequired,
+    mustChangePassword,
     // computed
     isAuthenticated,
     isAdmin,
@@ -162,6 +180,7 @@ export const useAuthStore = defineStore('auth', () => {
     handleOIDCCallback,
     fetchMe,
     logout,
+    changePassword,
     loadOIDCProviders,
     redirectToOIDC,
     reset,

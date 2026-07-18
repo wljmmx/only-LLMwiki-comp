@@ -465,7 +465,7 @@ describe('PipelineView.vue', () => {
     ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
     const wrapper = mountView()
     const vm = wrapper.vm as any
-    expect(vm.compileSteps).toHaveLength(4)
+    expect(vm.compileSteps).toHaveLength(5)
     vm.compileSteps.forEach((step: any) => {
       expect(step.status).toBe('pending')
     })
@@ -478,7 +478,8 @@ describe('PipelineView.vue', () => {
     expect(vm.compileSteps[0].label).toBe('解析文档')
     expect(vm.compileSteps[1].label).toBe('知识抽取')
     expect(vm.compileSteps[2].label).toBe('LLM 编译 Wiki')
-    expect(vm.compileSteps[3].label).toBe('重建索引')
+    expect(vm.compileSteps[3].label).toBe('结构编译（章节处理）')
+    expect(vm.compileSteps[4].label).toBe('重建索引')
   })
 
   it('SSE step_start 更新步骤状态为 running', async () => {
@@ -510,7 +511,7 @@ describe('PipelineView.vue', () => {
     expect(vm.compileSteps[0].duration_ms).toBe(1200)
   })
 
-  it('SSE step_done 中 compile 步骤写入 compileResult', async () => {
+  it('SSE done 事件中 compileResult 写入统计数据', async () => {
     ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
     const wrapper = mountView()
     await flushPromises()
@@ -520,13 +521,13 @@ describe('PipelineView.vue', () => {
 
     capturedOnEvent!({ type: 'step_start', data: { step: 'compile' } })
     capturedOnEvent!({
-      type: 'step_done',
+      type: 'done',
       data: {
-        step: 'compile',
         pages_created: 5,
         pages_updated: 3,
         pages_unchanged: 1,
         paragraph_count: 42,
+        errors: [],
       },
     })
     expect(vm.compileResult).toEqual(
@@ -573,8 +574,8 @@ describe('PipelineView.vue', () => {
 
     capturedOnEvent!({ type: 'step_start', data: { step: 'compile' } })
     capturedOnEvent!({ type: 'progress', data: { percent: 50 } })
-    // compileProgress = 50 + (50/100) * 25 = 62.5
-    expect(vm.compileProgress).toBeCloseTo(62.5)
+    // compileProgress = 40 + (50/100) * 20 = 50
+    expect(vm.compileProgress).toBeCloseTo(50)
   })
 
   // ========== 7. 编译完成后加载 trace 数据 ==========
@@ -591,7 +592,7 @@ describe('PipelineView.vue', () => {
     capturedOnEvent!({ type: 'done', data: { pages_created: 1, pages_updated: 0, errors: [] } })
     await flushPromises()
 
-    expect(getCompileTrace).toHaveBeenCalledWith('d1', false)
+    expect(getCompileTrace).toHaveBeenCalledWith('d1', true)
     expect(vm.traceData).toEqual(sampleTrace)
   })
 

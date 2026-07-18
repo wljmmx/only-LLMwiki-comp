@@ -187,6 +187,24 @@ class DocumentStore:
         rows = conn.execute(query, params).fetchall()
         return [_normalize_doc(dict(r)) for r in rows]
 
+    def count(
+        self,
+        fmt: str | None = None,
+        status: str | None = None,
+    ) -> int:
+        """统计文档总数（支持按 format/status 过滤）"""
+        conn = _get_db()
+        query = "SELECT COUNT(*) as cnt FROM documents WHERE 1=1"
+        params: list[Any] = []
+        if fmt:
+            query += " AND format = ?"
+            params.append(fmt)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        row = conn.execute(query, params).fetchone()
+        return row["cnt"] if row else 0
+
     def read_content(self, doc_id: str) -> bytes | None:
         """读取文档原始内容"""
         doc = self.get(doc_id)

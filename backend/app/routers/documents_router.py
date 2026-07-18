@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.aiops import get_topology_builder
 from app.auth import verify_token
+from app.schemas import PaginatedData, PaginatedResponse
 from app.search import get_search_engine
 from app.storage import get_document_store
 
@@ -58,16 +59,46 @@ def _render_parsed_elements_to_text(elements: list[dict]) -> str:
 
 @router.get("/documents")
 async def list_documents(
-    limit: int = 50,
-    offset: int = 0,
+    page: int = 1,
+    page_size: int = 20,
     format: str | None = None,
     status: str | None = None,
+    # Deprecated: 向后兼容旧 limit/offset 参数
+    limit: int | None = None,
+    offset: int | None = None,
 ) -> dict:
-    """列出所有存储的文档"""
+    """列出所有存储的文档（分页）
+
+    使用 page/page_size 分页（推荐），同时兼容旧的 limit/offset 参数。
+    当 limit 显式传入时，优先使用 limit/offset 模式。
+    """
     store = get_document_store()
-    docs = store.list(limit, offset, format, status)
+
+    # 向后兼容：如果显式传入 limit，使用 limit/offset 模式
+    if limit is not None:
+        _limit, _offset = limit, offset or 0
+        _page, _page_size = 1, _limit  # 近似映射
+    else:
+        _limit = page_size
+        _offset = (page - 1) * page_size
+        _page, _page_size = page, page_size
+
+    docs = store.list(_limit, _offset, format, status)
+    total = store.count(format, status)
     stats = store.get_stats()
-    return {"documents": docs, "stats": stats, "limit": limit, "offset": offset}
+
+    result = PaginatedResponse[dict](
+        data=PaginatedData(
+            items=docs,
+            total=total,
+            page=_page,
+            page_size=_page_size,
+        ),
+        message="",
+    ).model_dump()
+    # 向后兼容：保留 stats 字段
+    result["stats"] = stats
+    return result
 
 
 @router.get("/documents/stats")

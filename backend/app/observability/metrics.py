@@ -159,6 +159,48 @@ business_metrics = {
         ["type"],
         registry=REGISTRY,
     ),
+    # ────────── 编译指标（Sprint 10+）──────────
+    "compile_total": Counter(
+        "opskg_compile_total",
+        "编译总次数",
+        ["compile_type"],  # full | incremental
+        registry=REGISTRY,
+    ),
+    "compile_duration_seconds": Histogram(
+        "opskg_compile_duration_seconds",
+        "编译耗时分布（秒）",
+        ["compile_type"],
+        buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+        registry=REGISTRY,
+    ),
+    "compile_sections_total": Counter(
+        "opskg_compile_sections_total",
+        "编译章节总数",
+        ["compile_type"],
+        registry=REGISTRY,
+    ),
+    "compile_sections_error_total": Counter(
+        "opskg_compile_sections_error_total",
+        "编译失败章节数",
+        ["compile_type"],
+        registry=REGISTRY,
+    ),
+    "llm_cache_hits_total": Counter(
+        "opskg_llm_cache_hits_total",
+        "LLM 缓存命中次数",
+        ["cache_type"],  # write_body | compile_section
+        registry=REGISTRY,
+    ),
+    "wiki_pages_created_total": Counter(
+        "opskg_wiki_pages_created_total",
+        "Wiki 页面创建数",
+        registry=REGISTRY,
+    ),
+    "wiki_pages_updated_total": Counter(
+        "opskg_wiki_pages_updated_total",
+        "Wiki 页面更新数",
+        registry=REGISTRY,
+    ),
     # S16-4：协作 Hub（CollabHub）指标
     "collab_rooms_total": Gauge(
         "opskg_collab_rooms_total",
@@ -226,6 +268,31 @@ def record_business_metric(name: str, value: float = 1.0, **labels: Any) -> None
     except Exception as e:  # noqa: BLE001
         logger.error(
             "observability.record_business_failed", name=name, err=str(e)
+        )
+
+
+def record_business_histogram(name: str, value: float, **labels: Any) -> None:
+    """记录 Histogram 观测值
+
+    Args:
+        name: 指标名（business_metrics 的 key）
+        value: 观测值（秒）
+        labels: 标签键值对
+    """
+    if not METRICS_ENABLED:
+        return
+    try:
+        metric = business_metrics.get(name)
+        if metric is None:
+            logger.warning("observability.unknown_histogram", name=name)
+            return
+        if labels:
+            metric.labels(**labels).observe(value)
+        else:
+            metric.observe(value)
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "observability.record_histogram_failed", name=name, err=str(e)
         )
 
 

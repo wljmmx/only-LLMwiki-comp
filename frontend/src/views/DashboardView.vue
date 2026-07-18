@@ -1,27 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, h } from 'vue'
+import { computed, h } from 'vue'
 import { useRouter } from 'vue-router'
 import { NGrid, NGi, NCard, NStatistic, NDataTable, NSkeleton, NTag, NAlert, NButton, NSpace } from 'naive-ui'
 import { getDocumentStats, listDocuments } from '@/api/documents'
 import { getReviewStats, getReviewQueue } from '@/api/review'
 import { getSearchStats } from '@/api/search'
 import api from '@/api/index'
+import { useAsyncData } from '@/composables/useAsyncData'
 import { formatFileSize, formatDateTime } from '@/utils/format'
 import type { DocumentMeta, ReviewItem, GraphStats, DocumentStats, ReviewStats, SearchStats } from '@/types/api'
 
 const router = useRouter()
-
-const loading = ref(true)
-const hasError = ref(false)
-const errorMessage = ref('')
-
-const documentStats = ref<DocumentStats | null>(null)
-const graphStats = ref<GraphStats | null>(null)
-const reviewStats = ref<ReviewStats | null>(null)
-const searchStats = ref<SearchStats | null>(null)
-
-const recentDocuments = ref<DocumentMeta[]>([])
-const recentReviews = ref<ReviewItem[]>([])
 
 // P2-8: 历史快照（localStorage），用于 sparkline 趋势 + 环比 delta
 const SNAPSHOT_KEY = 'opskg:dashboard:snapshots'
@@ -53,6 +42,56 @@ function saveSnapshot(s: Snapshot) {
     localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snaps))
   } catch { /* ignore */ }
 }
+
+interface DashboardData {
+  documentStats: DocumentStats
+  graphStats: GraphStats
+  reviewStats: ReviewStats
+  searchStats: SearchStats
+  recentDocuments: DocumentMeta[]
+  recentReviews: ReviewItem[]
+}
+
+const { data: dashboardData, loading, error, execute: fetchData } = useAsyncData<DashboardData>(
+  async () => {
+    const [docStatsRes, graphStatsRes, reviewStatsRes, searchStatsRes, docListRes, reviewQueueRes] =
+      await Promise.all([
+        getDocumentStats(),
+        api.get<unknown, GraphStats>('/graph/stats'),
+        getReviewStats(),
+        getSearchStats(),
+        listDocuments({ limit: 5 }),
+        getReviewQueue(undefined, 5, 0),
+      ])
+
+    // P2-8: 保存快照（用于趋势）
+    saveSnapshot({
+      ts: Date.now(),
+      docs: docStatsRes.total ?? 0,
+      entities: graphStatsRes.total_entities ?? 0,
+      pending: reviewStatsRes.pending ?? 0,
+      indexed: searchStatsRes.indexed_docs ?? 0,
+    })
+
+    return {
+      documentStats: docStatsRes,
+      graphStats: graphStatsRes,
+      reviewStats: reviewStatsRes,
+      searchStats: searchStatsRes,
+      recentDocuments: docListRes.documents || [],
+      recentReviews: reviewQueueRes.items || [],
+    }
+  },
+  { immediate: true },
+)
+
+// 分解为独立 computed 以保持模板与测试兼容
+const documentStats = computed<DocumentStats | null>(() => dashboardData.value?.documentStats ?? null)
+const graphStats = computed<GraphStats | null>(() => dashboardData.value?.graphStats ?? null)
+const reviewStats = computed<ReviewStats | null>(() => dashboardData.value?.reviewStats ?? null)
+const searchStats = computed<SearchStats | null>(() => dashboardData.value?.searchStats ?? null)
+const recentDocuments = computed<DocumentMeta[]>(() => dashboardData.value?.recentDocuments ?? [])
+const recentReviews = computed<ReviewItem[]>(() => dashboardData.value?.recentReviews ?? [])
 
 const currentSnapshot = computed<Snapshot>(() => ({
   ts: Date.now(),
@@ -177,64 +216,22 @@ const reviewColumns = [
   },
 ]
 
-async function fetchData() {
-  loading.value = true
-  hasError.value = false
-  errorMessage.value = ''
-  try {
-    const [docStatsRes, graphStatsRes, reviewStatsRes, searchStatsRes, docListRes, reviewQueueRes] =
-      await Promise.all([
-        getDocumentStats(),
-        api.get<unknown, GraphStats>('/graph/stats'),
-        getReviewStats(),
-        getSearchStats(),
-        listDocuments({ limit: 5 }),
-        getReviewQueue(undefined, 5, 0),
-      ])
-
-    documentStats.value = docStatsRes
-    graphStats.value = graphStatsRes
-    reviewStats.value = reviewStatsRes
-    searchStats.value = searchStatsRes
-    recentDocuments.value = docListRes.documents || []
-    recentReviews.value = reviewQueueRes.items || []
-
-    // P2-8: 保存快照（用于趋势）
-    saveSnapshot({
-      ts: Date.now(),
-      docs: docStatsRes.total ?? 0,
-      entities: graphStatsRes.total_entities ?? 0,
-      pending: reviewStatsRes.pending ?? 0,
-      indexed: searchStatsRes.indexed_docs ?? 0,
-    })
-  } catch (error: any) {
-    hasError.value = true
-    errorMessage.value = error?.message || '加载仪表盘数据失败'
-  } finally {
-    loading.value = false
-  }
-}
-
 /** P2-8: 点击统计卡片下钻到对应页面 */
 function drillTo(route: string) {
   router.push(route)
 }
-
-onMounted(() => {
-  fetchData()
-})
 </script>
 
 <template>
   <div class="dashboard-container">
     <!-- P2-9: 加载失败错误提示 + 重试按钮 -->
     <NAlert
-      v-if="hasError && !loading"
+      v-if="error && !loading"
       type="error"
       :show-icon="true"
       class="error-alert"
     >
-      <template #header>{{ errorMessage || '加载仪表盘数据失败' }}</template>
+      <template #header>{{ error || '加载仪表盘数据失败' }}</template>
       <NSpace style="margin-top: 8px">
         <NButton size="small" type="primary" @click="fetchData">重试</NButton>
       </NSpace>
@@ -258,7 +255,7 @@ onMounted(() => {
         </NGi>
       </NGrid>
     </template>
-    <template v-else-if="!hasError">
+    <template v-else-if="!error">
       <NGrid :cols="4" :x-gap="16" :y-gap="16" class="stats-grid">
         <!-- P2-8: 统计卡片带 sparkline + delta + 点击下钻 -->
         <NGi>

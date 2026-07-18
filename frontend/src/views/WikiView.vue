@@ -1,22 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { NSplit, NTree, NCard, NTag, NSpace, NSkeleton, NEmpty, NThing, NButton, NTooltip, NInput } from 'naive-ui'
-import type { TreeOption } from 'naive-ui'
+import { NSplit } from 'naive-ui'
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
-import { renderWikiMarkdown, parseSlugFromHash } from '@/utils/wikiRender'
+import { renderWikiMarkdown } from '@/utils/wikiRender'
 import { parseFrontmatter } from '@/utils/frontmatter'
-import { formatDate } from '@/utils/format'
 import type { WikiPage, BacklinkItem } from '@/types/api'
-// S16-1：协作面板（实时在线用户 + 编辑锁状态）
-import CollabPanel from '@/components/collab/CollabPanel.vue'
-// S16-2：Wiki 页面编辑器
-import WikiEditor from '@/components/wiki/WikiEditor.vue'
-// P1-6：页面目录大纲
-import WikiToc from '@/components/wiki/WikiToc.vue'
-// P1-11：版本历史抽屉
+import WikiSidebar from '@/components/wiki/WikiSidebar.vue'
+import WikiContent from '@/components/wiki/WikiContent.vue'
 import WikiVersionHistory from '@/components/wiki/WikiVersionHistory.vue'
-// P2-6: 最近访问追踪
 import { useRecentPages } from '@/composables/useRecentPages'
 
 const { trackPage } = useRecentPages()
@@ -29,7 +21,6 @@ const currentPage = ref<WikiPage | null>(null)
 const backlinks = ref<BacklinkItem[]>([])
 const selectedKey = ref<string | null>(null)
 
-/** P1-12a: 读取 ?slug= query 支持外部跳转（如 WikiHealthView 的"编辑"按钮、WikiQueryView 的引用来源） */
 const route = useRoute()
 
 // P2-10: Wiki 树搜索过滤
@@ -39,9 +30,6 @@ const treeSearchText = ref('')
 const isEditing = ref(false)
 const hasLock = ref(false)
 const lockHolder = ref<string | null>(null)
-
-// P1-6：页面内容 DOM 引用（供 TOC 提取标题）
-const pageContentRef = ref<HTMLElement | null>(null)
 
 // P1-11：版本历史抽屉
 const showVersionHistory = ref(false)
@@ -76,67 +64,6 @@ async function handleSaved() {
     await loadPage(selectedKey.value)
   }
 }
-
-const typeLabelMap: Record<string, string> = {
-  entity: '实体',
-  concept: '概念',
-  incident: '事件',
-  runbook: '运行手册',
-  service: '服务',
-  host: '主机',
-}
-
-const typeTagTypeMap: Record<
-  string,
-  'default' | 'info' | 'success' | 'warning' | 'error' | 'primary'
-> = {
-  entity: 'primary',
-  concept: 'info',
-  incident: 'error',
-  runbook: 'success',
-  service: 'warning',
-  host: 'default',
-}
-
-const treeData = computed<TreeOption[]>(() => {
-  const grouped: Record<string, WikiPage[]> = {}
-  pages.value.forEach((page) => {
-    if (!grouped[page.type]) {
-      grouped[page.type] = []
-    }
-    grouped[page.type].push(page)
-  })
-
-  // P2-10: 按搜索文本过滤（标题或 slug 匹配）
-  const filter = treeSearchText.value.trim().toLowerCase()
-
-  return Object.keys(grouped).map((type) => {
-    const children = grouped[type]
-      .filter((page) => {
-        if (!filter) return true
-        return (
-          page.title.toLowerCase().includes(filter) ||
-          page.slug.toLowerCase().includes(filter) ||
-          (page.tags || []).some((t) => t.toLowerCase().includes(filter))
-        )
-      })
-      .map((page) => ({
-        key: page.slug,
-        label: page.title,
-        isLeaf: true,
-      }))
-
-    // 过滤后无子节点的分组不显示
-    if (children.length === 0) return null
-
-    return {
-      key: `type-${type}`,
-      label: `${typeLabelMap[type] || type} (${children.length})`,
-      isLeaf: false,
-      children,
-    }
-  }).filter(Boolean) as TreeOption[]
-})
 
 function renderSimpleMarkdown(text: string): string {
   return renderWikiMarkdown(text)
@@ -206,7 +133,6 @@ async function loadPage(slug: string) {
 }
 
 function handleSelect(key: string) {
-  if (key.startsWith('type-')) return
   selectedKey.value = key
   loadPage(key)
 }
@@ -216,17 +142,9 @@ function handleBacklinkClick(slug: string) {
   loadPage(slug)
 }
 
-function handleContentClick(e: MouseEvent) {
-  const target = e.target as HTMLElement
-  if (target.tagName === 'A') {
-    const href = target.getAttribute('href') || ''
-    const slug = parseSlugFromHash(href)
-    if (slug) {
-      e.preventDefault()
-      selectedKey.value = slug
-      loadPage(slug)
-    }
-  }
+function handleContentClick(slug: string) {
+  selectedKey.value = slug
+  loadPage(slug)
 }
 
 onMounted(() => {
@@ -238,162 +156,33 @@ onMounted(() => {
   <div class="wiki-view">
     <NSplit :default-size="280" :min-size="200" :max-size="400">
       <template #1>
-        <NCard class="tree-panel" size="small">
-          <div class="tree-header">
-            <span class="tree-title">Wiki 页面</span>
-          </div>
-          <!-- P2-10: Wiki 树搜索过滤 -->
-          <NInput
-            v-model:value="treeSearchText"
-            placeholder="搜索页面标题或标签..."
-            clearable
-            size="small"
-            class="tree-search"
-          />
-          <!-- P1-3: 左侧页面树加载用骨架列表占位 -->
-          <div v-if="treeLoading" class="tree-skeleton">
-            <NSkeleton text :repeat="8" :height="20" />
-          </div>
-          <NTree
-            v-else
-            :data="treeData"
-            :selected-keys="selectedKey ? [selectedKey] : []"
-            :default-expand-all="true"
-            block-line
-            class="wiki-tree"
-            @update:selected-keys="(keys) => handleSelect(keys[0] as string)"
-          />
-          <NEmpty v-if="!treeLoading && pages.length === 0" description="暂无页面" />
-        </NCard>
+        <WikiSidebar
+          :pages="pages"
+          :tree-loading="treeLoading"
+          :selected-key="selectedKey"
+          :tree-search-text="treeSearchText"
+          @update:tree-search-text="(val: string) => treeSearchText = val"
+          @select="handleSelect"
+        />
       </template>
       <template #2>
-        <NCard class="content-panel" size="large">
-          <!-- P1-3: 右侧内容加载用骨架段落占位（标题 + 元信息 + 正文段落） -->
-          <div v-if="contentLoading" class="content-skeleton">
-            <NSkeleton text :width="280" :height="32" style="margin-bottom: 16px" />
-            <NSkeleton text :width="200" :height="14" style="margin-bottom: 24px" />
-            <NSkeleton text :repeat="6" style="margin-bottom: 12px" />
-            <NSkeleton text width="60%" />
-          </div>
-          <template v-else-if="currentPage">
-            <div class="page-header">
-              <h1 class="page-title">{{ currentPage.title }}</h1>
-              <NSpace :size="12" class="page-meta">
-                <NTag :type="typeTagTypeMap[currentPage.type] || 'default'" size="medium">
-                  {{ typeLabelMap[currentPage.type] || currentPage.type }}
-                </NTag>
-                <template v-if="currentPage.tags && currentPage.tags.length > 0">
-                  <NTag v-for="tag in currentPage.tags" :key="tag" type="info" size="medium">
-                    #{{ tag }}
-                  </NTag>
-                </template>
-              </NSpace>
-            </div>
-            <!-- P1-6：页面元信息条（更新时间 · 版本 · 审查状态 · 来源数） -->
-            <div v-if="pageMeta" class="page-meta-bar">
-              <NTooltip trigger="hover">
-                <template #trigger>
-                  <span class="meta-item" tabindex="0" title="页面最后更新时间">更新于 {{ formatDate(pageMeta.updatedAt) }}</span>
-                </template>
-                页面最后更新时间
-              </NTooltip>
-              <span class="meta-sep" aria-hidden="true">·</span>
-              <NTooltip trigger="hover">
-                <template #trigger>
-                  <span class="meta-item" tabindex="0" title="页面版本号">v{{ pageMeta.version ?? 1 }}</span>
-                </template>
-                页面版本号
-              </NTooltip>
-              <span class="meta-sep" aria-hidden="true">·</span>
-              <NTooltip trigger="hover">
-                <template #trigger>
-                  <span class="meta-item" tabindex="0" title="审查状态">{{ pageMeta.reviewStatusLabel }}</span>
-                </template>
-                审查状态
-              </NTooltip>
-              <span class="meta-sep" aria-hidden="true">·</span>
-              <NTooltip trigger="hover">
-                <template #trigger>
-                  <span class="meta-item" tabindex="0" title="引用的原始文档数量">来源 {{ pageMeta.sourcesCount }}</span>
-                </template>
-                引用的原始文档数量
-              </NTooltip>
-            </div>
-            <!-- S16-1：协作面板（随 selectedKey 变化重建，触发 useCollab 重连） -->
-            <CollabPanel
-              v-if="selectedKey"
-              :key="selectedKey"
-              :slug="selectedKey"
-              class="collab-panel-wrapper"
-              @lock-change="handleLockChange"
-            />
-            <!-- S16-2：编辑模式切换 -->
-            <div v-if="!isEditing" class="page-toolbar">
-              <NButton
-                size="small"
-                type="primary"
-                :disabled="!hasLock"
-                @click="startEditing"
-              >
-                {{ hasLock ? '编辑' : '需先申请编辑锁' }}
-              </NButton>
-              <!-- P1-11：版本历史入口 -->
-              <NButton
-                size="small"
-                quaternary
-                @click="showVersionHistory = true"
-              >
-                历史记录
-              </NButton>
-            </div>
-            <!-- S16-2：WikiEditor 替代只读内容区 -->
-            <WikiEditor
-              v-if="isEditing && currentPage"
-              :slug="currentPage.slug"
-              :content="currentPage.content"
-              :version="currentPage.version"
-              :can-edit="hasLock"
-              @saved="handleSaved"
-              @cancel="cancelEditing"
-              class="editor-wrapper"
-            />
-            <!-- P1-6：只读内容区 + TOC 目录（右侧） -->
-            <div v-else class="content-body">
-              <div class="content-main">
-                <div
-                  ref="pageContentRef"
-                  class="page-content"
-                  @click="handleContentClick"
-                  v-html="renderedContent"
-                ></div>
-                <div v-if="backlinks.length > 0" class="backlinks-section">
-                  <div class="backlinks-title">反向链接</div>
-                  <div class="backlinks-list">
-                    <NThing
-                      v-for="bl in backlinks"
-                      :key="bl.slug"
-                      class="backlink-item"
-                      :title="bl.title"
-                      :description="bl.context"
-                      role="button"
-                      tabindex="0"
-                      :aria-label="`跳转到反向链接: ${bl.title}`"
-                      @click="handleBacklinkClick(bl.slug)"
-                      @keydown.enter="handleBacklinkClick(bl.slug)"
-                      @keydown.space.prevent="handleBacklinkClick(bl.slug)"
-                    />
-                  </div>
-                </div>
-              </div>
-              <WikiToc
-                :content-el="pageContentRef"
-                :page-key="currentPage.slug"
-                class="content-toc"
-              />
-            </div>
-          </template>
-          <NEmpty v-else description="请选择一个页面" />
-        </NCard>
+        <WikiContent
+          :current-page="currentPage"
+          :content-loading="contentLoading"
+          :backlinks="backlinks"
+          :is-editing="isEditing"
+          :has-lock="hasLock"
+          :selected-key="selectedKey"
+          :rendered-content="renderedContent"
+          :page-meta="pageMeta"
+          @start-editing="startEditing"
+          @cancel-editing="cancelEditing"
+          @saved="handleSaved"
+          @backlink-click="handleBacklinkClick"
+          @content-click="handleContentClick"
+          @toggle-version-history="showVersionHistory = true"
+          @lock-change="handleLockChange"
+        />
       </template>
     </NSplit>
     <!-- P1-11：版本历史抽屉 -->
@@ -409,229 +198,5 @@ onMounted(() => {
 .wiki-view {
   height: 100%;
   width: 100%;
-}
-
-.tree-panel {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-}
-
-.tree-panel :deep(.n-card__content) {
-  flex: 1;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  padding: 12px;
-}
-
-.tree-header {
-  padding: 8px 4px 12px;
-  border-bottom: 1px solid var(--n-border-color, #e5e7eb);
-  margin-bottom: 8px;
-}
-
-.tree-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--n-text-color, #111827);
-}
-
-.wiki-tree {
-  flex: 1;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.tree-skeleton {
-  padding: 8px 0;
-}
-
-/* P2-10: Wiki 树搜索输入框 */
-.tree-search {
-  margin-bottom: 8px;
-}
-
-.content-panel {
-  height: 100%;
-  box-sizing: border-box;
-  overflow-y: auto;
-}
-
-.content-panel :deep(.n-card__content) {
-  padding: 32px 40px;
-}
-
-.content-skeleton {
-  padding: 8px 0;
-}
-
-.page-header {
-  margin-bottom: 28px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid var(--n-border-color, #e5e7eb);
-}
-
-.page-title {
-  font-size: 28px;
-  font-weight: 700;
-  color: var(--n-text-color, #111827);
-  margin: 0 0 16px 0;
-  line-height: 1.3;
-}
-
-.page-meta {
-  flex-wrap: wrap;
-}
-
-/* P1-6：页面元信息条 */
-.page-meta-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 24px;
-  padding: 8px 0;
-  font-size: 13px;
-  color: var(--n-text-color-3, #6b7280);
-}
-
-.meta-item {
-  display: inline-flex;
-  align-items: center;
-  cursor: help;
-}
-
-.meta-sep {
-  color: var(--n-text-color-3, #d1d5db);
-  margin: 0 2px;
-}
-
-/* P1-6：内容主体 + TOC 双栏布局 */
-.content-body {
-  display: flex;
-  gap: 24px;
-  align-items: flex-start;
-}
-
-.content-main {
-  flex: 1;
-  min-width: 0;
-}
-
-.content-toc {
-  flex: 0 0 220px;
-  width: 220px;
-}
-
-@media (max-width: 1024px) {
-  .content-body {
-    flex-direction: column;
-  }
-  .content-toc {
-    display: none;
-  }
-}
-
-.page-content {
-  font-size: 15px;
-  line-height: 1.8;
-  color: var(--n-text-color, #1f2937);
-}
-
-.collab-panel-wrapper {
-  margin-bottom: 24px;
-}
-
-.page-toolbar {
-  margin-bottom: 16px;
-}
-
-.editor-wrapper {
-  margin-bottom: 24px;
-}
-
-.page-content :deep(h1) {
-  font-size: 24px;
-  font-weight: 600;
-  margin: 24px 0 16px;
-  color: var(--n-text-color, #111827);
-}
-
-.page-content :deep(h2) {
-  font-size: 20px;
-  font-weight: 600;
-  margin: 20px 0 12px;
-  color: var(--n-text-color, #111827);
-}
-
-.page-content :deep(h3) {
-  font-size: 17px;
-  font-weight: 600;
-  margin: 16px 0 10px;
-  color: var(--n-text-color, #111827);
-}
-
-.page-content :deep(p) {
-  margin: 12px 0;
-}
-
-.page-content :deep(code) {
-  background: var(--n-color-info-weak, #eff6ff);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  font-size: 13px;
-  color: var(--n-text-color, #1f2937);
-}
-
-.page-content :deep(ul) {
-  margin: 12px 0;
-  padding-left: 24px;
-}
-
-.page-content :deep(li) {
-  margin: 6px 0;
-}
-
-.page-content :deep(a) {
-  color: var(--n-primary-color, #3b82f6);
-  text-decoration: none;
-}
-
-.page-content :deep(a:hover) {
-  text-decoration: underline;
-}
-
-.backlinks-section {
-  margin-top: 40px;
-  padding-top: 24px;
-  border-top: 1px solid var(--n-border-color, #e5e7eb);
-}
-
-.backlinks-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--n-text-color, #111827);
-  margin-bottom: 16px;
-}
-
-.backlinks-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.backlink-item {
-  padding: 12px 16px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background-color 0.2s;
-  border: 1px solid var(--n-border-color, #e5e7eb);
-}
-
-.backlink-item:hover {
-  background-color: var(--n-item-color-hover, #f3f4f6);
 }
 </style>

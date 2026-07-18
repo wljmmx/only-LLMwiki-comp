@@ -40,8 +40,10 @@ class TestDocumentAPI:
     def test_list_documents_empty(self):
         r = client.get("/documents")
         assert r.status_code == 200
-        assert "documents" in r.json()
-        assert "stats" in r.json()
+        data = r.json()
+        assert "data" in data
+        assert "items" in data["data"]
+        assert "stats" in data
 
     def test_document_stats(self):
         r = client.get("/documents/stats")
@@ -118,7 +120,9 @@ class TestReviewAPI:
     def test_review_queue_list(self):
         r = client.get("/review/queue")
         assert r.status_code == 200
-        assert "items" in r.json()
+        data = r.json()
+        assert "data" in data
+        assert "items" in data["data"]
 
     def test_approve_nonexistent(self):
         r = client.post("/review/999999/approve")

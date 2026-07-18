@@ -198,6 +198,28 @@ async function doRecompile() {
     recompilingSlug.value = null
   }
 }
+
+defineExpose({
+  docId,
+  traceData,
+  loading,
+  getLevelType,
+  formatMs,
+  formatChars,
+  calcReduction,
+  hasDiff,
+  fetchTrace,
+  viewWikiPage,
+  viewPipeline,
+  cancelEdit,
+  saveEdit,
+  startEdit,
+  editingSlug,
+  editingContent,
+  openRecompileDialog,
+  doRecompile,
+  closeRecompileDialog,
+})
 </script>
 
 <template>
