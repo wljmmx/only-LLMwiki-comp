@@ -559,6 +559,16 @@ class WikiCompiler:
                 except Exception as e:
                     result.errors.append(f"index 重建失败: {e}")
 
+            # 6b. 同步搜索 FTS5 索引（B2 修复）
+            if result.pages_created + result.pages_updated > 0:
+                try:
+                    from app.search.search_engine import get_search_engine
+                    se = get_search_engine()
+                    se.rebuild_index()
+                    logger.info("search_index_rebuilt", pages=result.pages_created + result.pages_updated)
+                except Exception as e:
+                    logger.warning("search_index_rebuild_failed", error=str(e))
+
             # 设置 page_count 属性（编译完成后）
             try:
                 if _sp is not None:
@@ -1016,7 +1026,7 @@ H{level}
         # 构建 PipelineTrace
         pt = PipelineTrace(
             doc_id=doc.doc_id,
-            doc_title=doc.metadata.get("title", doc.doc_id) if doc.metadata else doc.doc_id,
+            doc_title=getattr(doc, "title", None) or doc.doc_id,
             duration_ms=round(duration_ms, 1),
             sections=trace_buffer,
         )
