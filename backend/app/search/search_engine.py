@@ -154,6 +154,106 @@ class SearchEngine:
         conn.execute("DELETE FROM doc_snippets WHERE doc_id = ?", (doc_id,))
         conn.commit()
 
+    # P1: 增量更新索引（仅更新/插入，不先删除再插入）
+    def incremental_update(self, doc_id: str, title: str, content: str, fmt: str) -> None:
+        """P1: 增量更新索引条目，避免全量重建"""
+        conn = _get_db()
+        try:
+            mode = get_settings().search_tokenizer
+            tokenized_title = tokenize_to_string(title or "", mode=mode)
+            tokenized_content = tokenize_to_string(content[:50000] if content else "", mode=mode)
+            # FTS5 不支持 UPDATE，用 INSERT OR REPLACE 模拟（需先删除再插入）
+            conn.execute("DELETE FROM docs_fts WHERE doc_id = ?", (doc_id,))
+            conn.execute(
+                "INSERT INTO docs_fts (doc_id, title, content, format) VALUES (?, ?, ?, ?)",
+                (doc_id, tokenized_title, tokenized_content, fmt),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO doc_snippets (doc_id, title, content, created_at) VALUES (?, ?, ?, ?)",
+                (doc_id, title or "", content[:50000] if content else "", datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+        except Exception as e:
+            logger.warning("search_index_incremental_update_failed", error=str(e))
+        finally:
+            conn.close()
+
+    # P1: 增量删除索引条目
+    def incremental_delete(self, doc_id: str) -> None:
+        """P1: 增量删除索引条目"""
+        conn = _get_db()
+        try:
+            conn.execute("DELETE FROM docs_fts WHERE doc_id = ?", (doc_id,))
+            conn.execute("DELETE FROM doc_embeddings WHERE doc_id = ?", (doc_id,))
+            conn.execute("DELETE FROM doc_snippets WHERE doc_id = ?", (doc_id,))
+            conn.commit()
+        except Exception as e:
+            logger.warning("search_index_incremental_delete_failed", error=str(e))
+        finally:
+            conn.close()
+
+    # P1: 全量重建索引（保留旧表作为备份，重建完成后再丢弃）
+    def rebuild_index(self) -> int:
+        """P1: 全量重建索引，保留旧表备份防止重建失败数据丢失"""
+        conn = _get_db()
+        try:
+            # Step 1: 备份旧表
+            conn.executescript("""
+                DROP TABLE IF EXISTS docs_fts_backup;
+                DROP TABLE IF EXISTS doc_snippets_backup;
+                DROP TABLE IF EXISTS doc_embeddings_backup;
+                CREATE TABLE docs_fts_backup AS SELECT * FROM docs_fts;
+                CREATE TABLE doc_snippets_backup AS SELECT * FROM doc_snippets;
+                CREATE TABLE doc_embeddings_backup AS SELECT * FROM doc_embeddings;
+            """)
+            backup_count = conn.execute("SELECT COUNT(*) as cnt FROM docs_fts_backup").fetchone()["cnt"]
+
+            # Step 2: 删除旧表并重建 schema
+            conn.executescript("""
+                DROP TABLE IF EXISTS docs_fts;
+                DROP TABLE IF EXISTS doc_snippets;
+                DROP TABLE IF EXISTS doc_embeddings;
+            """)
+            _init_schema(conn)
+
+            # Step 3: 从备份恢复数据
+            conn.executescript("""
+                INSERT INTO docs_fts SELECT * FROM docs_fts_backup;
+                INSERT INTO doc_snippets SELECT * FROM doc_snippets_backup;
+                INSERT INTO doc_embeddings SELECT * FROM doc_embeddings_backup;
+            """)
+
+            # Step 4: 丢弃备份表
+            conn.executescript("""
+                DROP TABLE IF EXISTS docs_fts_backup;
+                DROP TABLE IF EXISTS doc_snippets_backup;
+                DROP TABLE IF EXISTS doc_embeddings_backup;
+            """)
+            conn.commit()
+            logger.info("search_index_rebuilt", count=backup_count)
+            return backup_count
+        except Exception as e:
+            logger.error("search_index_rebuild_failed", error=str(e))
+            # 尝试从备份恢复
+            try:
+                conn.executescript("""
+                    DROP TABLE IF EXISTS docs_fts;
+                    DROP TABLE IF EXISTS doc_snippets;
+                    DROP TABLE IF EXISTS doc_embeddings;
+                    CREATE TABLE docs_fts AS SELECT * FROM docs_fts_backup;
+                    CREATE TABLE doc_snippets AS SELECT * FROM doc_snippets_backup;
+                    CREATE TABLE doc_embeddings AS SELECT * FROM doc_embeddings_backup;
+                    DROP TABLE IF EXISTS docs_fts_backup;
+                    DROP TABLE IF EXISTS doc_snippets_backup;
+                    DROP TABLE IF EXISTS doc_embeddings_backup;
+                """)
+                conn.commit()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
     # ────────── 检索 ──────────
 
     def search(

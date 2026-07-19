@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
 import time as _time
 from typing import Any, AsyncIterator
@@ -188,6 +189,10 @@ class ResilientLLMClient:
     实现 LLMClient Protocol（鸭子类型），可透明替换原始客户端。
     """
 
+    # P1: 类级别 embedding 缓存，避免重复向量化
+    _embed_cache: dict[str, list[float]] = {}
+    _EMBED_CACHE_MAX = 200
+
     def __init__(
         self,
         primary: LLMClient,
@@ -352,13 +357,40 @@ class ResilientLLMClient:
         model: str | None = None,
         **kwargs: Any,
     ) -> list[list[float]]:
-        """带重试+限流+降级的 embed 调用"""
+        """带重试+限流+降级+缓存的 embed 调用
+
+        P1: 对每个文本做 SHA256 缓存，避免重复向量化。
+        """
+        if not texts:
+            return []
+
+        # P1: 检查 embedding 缓存，分离已缓存和未缓存的文本
+        result: list[list[float] | None] = [None] * len(texts)
+        uncached_indices: list[int] = []
+        uncached_texts: list[str] = []
+        for i, text in enumerate(texts):
+            cache_key = hashlib.sha256(text.encode()).hexdigest()
+            cached = self._embed_cache.get(cache_key)
+            if cached is not None:
+                result[i] = cached
+            else:
+                uncached_indices.append(i)
+                uncached_texts.append(text)
+
+        if not uncached_texts:
+            return result  # type: ignore[return-value]
+
+        # P1: 调用底层 embed（仅处理未缓存的文本），含 fallback 降级
         clients = [self._primary] + self._fallbacks
         last_error: LLMError | None = None
+        embeddings: list[list[float]] | None = None
 
         for client in clients:
             try:
-                return await self._embed_with_retry(client, texts, model, **kwargs)
+                embeddings = await self._embed_with_retry(
+                    client, uncached_texts, model, **kwargs
+                )
+                break
             except LLMError as e:
                 last_error = e
                 if e.retryable and client is not clients[-1]:
@@ -370,7 +402,22 @@ class ResilientLLMClient:
                     continue
                 raise
 
-        raise last_error or LLMError("所有 LLM 后端均不可用")
+        if embeddings is None:
+            raise last_error or LLMError("所有 LLM 后端均不可用")
+
+        # P1: 将新结果写入缓存，并回填到 result
+        for idx, emb in zip(uncached_indices, embeddings):
+            text = texts[idx]
+            cache_key = hashlib.sha256(text.encode()).hexdigest()
+            # LRU 淘汰：缓存满时移除最旧的 10%
+            if len(self._embed_cache) >= self._EMBED_CACHE_MAX:
+                remove_count = self._EMBED_CACHE_MAX // 10
+                for _ in range(remove_count):
+                    self._embed_cache.pop(next(iter(self._embed_cache)), None)
+            self._embed_cache[cache_key] = emb
+            result[idx] = emb
+
+        return result  # type: ignore[return-value]
 
     async def _embed_with_retry(
         self,

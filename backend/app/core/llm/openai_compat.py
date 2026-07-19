@@ -7,12 +7,35 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
+import httpx
 import structlog
 from openai import AsyncOpenAI
 
 from app.core.llm.base import ChatMessage, LLMResponse
 
 logger = structlog.get_logger()
+
+# P1: 模块级 httpx 连接池单例，供 AsyncOpenAI 复用
+_httpx_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _httpx_client
+    if _httpx_client is None:
+        _httpx_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0, connect=10.0),
+            limits=httpx.Limits(max_keepalive_connections=10, max_connections=50),
+            http2=True,
+        )
+    return _httpx_client
+
+
+async def close_client() -> None:
+    """P1: 关闭全局 httpx 连接池"""
+    global _httpx_client
+    if _httpx_client:
+        await _httpx_client.aclose()
+        _httpx_client = None
 
 
 def _tracing_span(name: str, **attrs):
@@ -52,7 +75,9 @@ class OpenAICompatClient:
         self._default_temperature = default_temperature
         self._default_max_tokens = default_max_tokens
         self._client = AsyncOpenAI(
-            base_url=base_url, api_key=api_key or "EMPTY", timeout=timeout
+            base_url=base_url, api_key=api_key or "EMPTY", timeout=timeout,
+            # P1: 复用模块级 httpx 连接池，避免每次创建新连接
+            http_client=_get_client(),
         )
 
     async def chat(

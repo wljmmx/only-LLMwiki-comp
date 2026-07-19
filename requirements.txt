@@ -243,6 +243,9 @@ orjson==3.11.9
     #   langsmith
 ormsgpack==1.12.2
     # via langgraph-checkpoint
+# P1: E2 — PDF 解析依赖版本锁定
+pdfplumber>=0.11.0,<1.0
+    # via -r requirements.in
 packaging==26.2
     # via
     #   langchain-core

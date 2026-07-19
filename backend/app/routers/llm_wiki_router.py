@@ -443,13 +443,23 @@ async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool =
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
 
+    # P1: R2 — SSE 超时保护：包装 event generator 处理 CancelledError
+    async def event_gen_with_timeout():
+        try:
+            async for event in event_gen():
+                yield event
+        except asyncio.CancelledError:
+            yield f"event: error\ndata: {{\"error\": \"timeout\"}}\n\n"
+
     return StreamingResponse(
-        event_gen(),
+        event_gen_with_timeout(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
+            "Connection": "keep-alive",  # P1: R2
             "X-Accel-Buffering": "no",
         },
+        timeout_keep_alive=30,  # P1: R2 — SSE 超时保护
     )
 
 
@@ -970,13 +980,23 @@ async def llm_wiki_query_stream(request: Request, payload: dict):
             err = json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False)
             yield f"event: error\ndata: {err}\n\n"
 
+    # P1: R2 — SSE 超时保护：包装 event generator 处理 CancelledError
+    async def event_gen_with_timeout():
+        try:
+            async for event in event_gen():
+                yield event
+        except asyncio.CancelledError:
+            yield f"event: error\ndata: {{\"error\": \"timeout\"}}\n\n"
+
     return StreamingResponse(
-        event_gen(),
+        event_gen_with_timeout(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
+            "Connection": "keep-alive",  # P1: R2
             "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲，确保实时推送
         },
+        timeout_keep_alive=30,  # P1: R2 — SSE 超时保护
     )
 
 

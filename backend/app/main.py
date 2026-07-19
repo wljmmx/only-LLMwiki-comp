@@ -15,6 +15,8 @@ import structlog
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware  # P1: R1
+from starlette.responses import RedirectResponse  # P1: R1
 
 from app.config import get_settings
 from app.routers.anomaly_router import router as anomaly_router
@@ -99,6 +101,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # S15-5：停止协作 Hub 心跳清理
         await collab_hub.stop_cleanup_loop()
         await get_webhook_manager().stop_retry_worker()
+        # 关闭所有数据库连接池
+        from app.storage.connection import ConnectionPool
+
+        ConnectionPool.close_all_pools()
         logger.info("backend.stopping", instance_id=instance_id)
 
 
@@ -213,6 +219,25 @@ app.add_middleware(
     migration_map={},
 )
 
+# P1: R1 — API 版本重定向中间件：将 /api/* 重定向到 /api/v1/*
+class ApiVersionRedirectMiddleware(BaseHTTPMiddleware):
+    """向后兼容：将 /api/xxx（非 /api/v1/xxx）重定向到 /api/v1/xxx"""
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        # Redirect /api/xxx (not /api/v1/xxx) to /api/v1/xxx
+        if path.startswith("/api/") and not path.startswith("/api/v1/"):
+            new_path = path.replace("/api/", "/api/v1/", 1)
+            query = request.url.query
+            return RedirectResponse(
+                url=new_path + ("?" + query if query else ""),
+                status_code=307,
+            )
+        return await call_next(request)
+
+
+app.add_middleware(ApiVersionRedirectMiddleware)
+
 
 @app.get("/health")
 async def health() -> dict[str, object]:
@@ -265,8 +290,7 @@ async def tracing_status() -> dict[str, object]:
 
 
 # ────────── 业务域 APIRouter 聚合注册 ──────────
-# P1-5: API 版本化 — 业务路由注册到 /api/v1，同时保留 /api 兼容旧路径
-# auth/setup 等基础设施路由不添加版本前缀（直接访问）
+# P1: R1 — 只注册一次 /api/v1，移除重复注册（/api 和 / 的兼容性由中间件处理）
 
 _BUSINESS_ROUTERS: list[tuple[str, object]] = [
     ("documents", documents_router),
@@ -295,11 +319,8 @@ _BUSINESS_ROUTERS: list[tuple[str, object]] = [
 ]
 
 for _name, _router in _BUSINESS_ROUTERS:
+    # P1: R1 — 仅注册 /api/v1，移除 /api 和 / 的重复注册
     app.include_router(_router, prefix="/api/v1")
-    # P1-5: 向后兼容旧 /api 前缀
-    app.include_router(_router, prefix="/api")
-    # P1-5: 向后兼容无前缀路径（测试客户端和内网直连场景）
-    app.include_router(_router)
 
 # 基础设施路由（不版本化）
 app.include_router(auth_router)

@@ -18,18 +18,15 @@ from typing import Any
 
 import structlog
 
+from app.storage.connection import ConnectionPool
+
 logger = structlog.get_logger()
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "webhooks.db"
 
 
 def _get_db() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    _init_schema(conn)
-    return conn
+    return ConnectionPool.get(str(DB_PATH), _init_schema).get_connection()
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:
@@ -145,25 +142,22 @@ class WebhookStore:
         secret = secret or _gen_secret()
         now = _now_iso()
         conn = _get_db()
-        try:
-            conn.execute(
-                """INSERT INTO webhook_subscriptions
-                   (id, url, events, secret, description, active, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    sub_id,
-                    url,
-                    json.dumps(events, ensure_ascii=False),
-                    secret,
-                    description,
-                    1 if active else 0,
-                    now,
-                    now,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        conn.execute(
+            """INSERT INTO webhook_subscriptions
+               (id, url, events, secret, description, active, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                sub_id,
+                url,
+                json.dumps(events, ensure_ascii=False),
+                secret,
+                description,
+                1 if active else 0,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
         logger.info(
             "webhook.subscription.created", sub_id=sub_id, url=url, events=events
         )
@@ -183,46 +177,37 @@ class WebhookStore:
     ) -> list[dict[str, Any]]:
         """列出订阅（不返回 secret）"""
         conn = _get_db()
-        try:
-            sql = "SELECT * FROM webhook_subscriptions"
-            clauses: list[str] = []
-            params: list[Any] = []
-            if active_only:
-                clauses.append("active = 1")
-            if event_type:
-                clauses.append("(events LIKE ? OR events LIKE ?)")
-                params.extend([f'%"{event_type}"%', '"%*"%'])
-            if clauses:
-                sql += " WHERE " + " AND ".join(clauses)
-            sql += " ORDER BY created_at DESC"
-            rows = conn.execute(sql, params).fetchall()
-            return [self._row_to_sub(r, include_secret=False) for r in rows]
-        finally:
-            conn.close()
+        sql = "SELECT * FROM webhook_subscriptions"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if active_only:
+            clauses.append("active = 1")
+        if event_type:
+            clauses.append("(events LIKE ? OR events LIKE ?)")
+            params.extend([f'%"{event_type}"%', '"%*"%'])
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC"
+        rows = conn.execute(sql, params).fetchall()
+        return [self._row_to_sub(r, include_secret=False) for r in rows]
 
     def get_subscription(
         self, sub_id: str, include_secret: bool = False
     ) -> dict[str, Any] | None:
         conn = _get_db()
-        try:
-            row = conn.execute(
-                "SELECT * FROM webhook_subscriptions WHERE id = ?", (sub_id,)
-            ).fetchone()
-            return self._row_to_sub(row, include_secret=include_secret) if row else None
-        finally:
-            conn.close()
+        row = conn.execute(
+            "SELECT * FROM webhook_subscriptions WHERE id = ?", (sub_id,)
+        ).fetchone()
+        return self._row_to_sub(row, include_secret=include_secret) if row else None
 
     def get_subscription_secret(self, sub_id: str) -> str | None:
         """仅内部 dispatch 使用"""
         conn = _get_db()
-        try:
-            row = conn.execute(
-                "SELECT secret FROM webhook_subscriptions WHERE id = ? AND active = 1",
-                (sub_id,),
-            ).fetchone()
-            return row["secret"] if row else None
-        finally:
-            conn.close()
+        row = conn.execute(
+            "SELECT secret FROM webhook_subscriptions WHERE id = ? AND active = 1",
+            (sub_id,),
+        ).fetchone()
+        return row["secret"] if row else None
 
     def update_subscription(
         self,
@@ -233,30 +218,27 @@ class WebhookStore:
         active: bool | None = None,
     ) -> dict[str, Any] | None:
         conn = _get_db()
-        try:
-            row = conn.execute(
-                "SELECT * FROM webhook_subscriptions WHERE id = ?", (sub_id,)
-            ).fetchone()
-            if not row:
-                return None
-            now = _now_iso()
-            new_url = url if url is not None else row["url"]
-            if new_url and not new_url.startswith(("http://", "https://")):
-                raise ValueError("url 必须以 http:// 或 https:// 开头")
-            new_events = (
-                json.dumps(events, ensure_ascii=False) if events is not None else row["events"]
-            )
-            new_desc = description if description is not None else row["description"]
-            new_active = (1 if active else 0) if active is not None else row["active"]
-            conn.execute(
-                """UPDATE webhook_subscriptions
-                   SET url = ?, events = ?, description = ?, active = ?, updated_at = ?
-                   WHERE id = ?""",
-                (new_url, new_events, new_desc, new_active, now, sub_id),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        row = conn.execute(
+            "SELECT * FROM webhook_subscriptions WHERE id = ?", (sub_id,)
+        ).fetchone()
+        if not row:
+            return None
+        now = _now_iso()
+        new_url = url if url is not None else row["url"]
+        if new_url and not new_url.startswith(("http://", "https://")):
+            raise ValueError("url 必须以 http:// 或 https:// 开头")
+        new_events = (
+            json.dumps(events, ensure_ascii=False) if events is not None else row["events"]
+        )
+        new_desc = description if description is not None else row["description"]
+        new_active = (1 if active else 0) if active is not None else row["active"]
+        conn.execute(
+            """UPDATE webhook_subscriptions
+               SET url = ?, events = ?, description = ?, active = ?, updated_at = ?
+               WHERE id = ?""",
+            (new_url, new_events, new_desc, new_active, now, sub_id),
+        )
+        conn.commit()
         return self.get_subscription(sub_id)
 
     def rotate_secret(self, sub_id: str) -> str | None:
@@ -264,28 +246,22 @@ class WebhookStore:
         new_secret = _gen_secret()
         now = _now_iso()
         conn = _get_db()
-        try:
-            cur = conn.execute(
-                "UPDATE webhook_subscriptions SET secret = ?, updated_at = ? WHERE id = ?",
-                (new_secret, now, sub_id),
-            )
-            conn.commit()
-            if cur.rowcount == 0:
-                return None
-        finally:
-            conn.close()
+        cur = conn.execute(
+            "UPDATE webhook_subscriptions SET secret = ?, updated_at = ? WHERE id = ?",
+            (new_secret, now, sub_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return None
         return new_secret
 
     def delete_subscription(self, sub_id: str) -> bool:
         conn = _get_db()
-        try:
-            cur = conn.execute(
-                "DELETE FROM webhook_subscriptions WHERE id = ?", (sub_id,)
-            )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            conn.close()
+        cur = conn.execute(
+            "DELETE FROM webhook_subscriptions WHERE id = ?", (sub_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
     # ────────── 投递记录 ──────────
 
@@ -299,26 +275,23 @@ class WebhookStore:
         deliv_id = _gen_id("dlv")
         now = _now_iso()
         conn = _get_db()
-        try:
-            conn.execute(
-                """INSERT INTO webhook_deliveries
-                   (id, subscription_id, event_type, payload, status, attempts,
-                    max_attempts, next_retry_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)""",
-                (
-                    deliv_id,
-                    subscription_id,
-                    event_type,
-                    json.dumps(payload, ensure_ascii=False),
-                    max_attempts,
-                    now,
-                    now,
-                    now,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        conn.execute(
+            """INSERT INTO webhook_deliveries
+               (id, subscription_id, event_type, payload, status, attempts,
+                max_attempts, next_retry_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+            (
+                deliv_id,
+                subscription_id,
+                event_type,
+                json.dumps(payload, ensure_ascii=False),
+                max_attempts,
+                now,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
         return {
             "id": deliv_id,
             "subscription_id": subscription_id,
@@ -343,27 +316,24 @@ class WebhookStore:
     ) -> None:
         now = _now_iso()
         conn = _get_db()
-        try:
-            conn.execute(
-                """UPDATE webhook_deliveries
-                   SET status = ?, response_code = ?, response_body = ?,
-                       attempts = COALESCE(?, attempts),
-                       next_retry_at = COALESCE(?, next_retry_at),
-                       updated_at = ?
-                   WHERE id = ?""",
-                (
-                    status,
-                    response_code,
-                    response_body[:4000] if response_body else "",
-                    attempts,
-                    next_retry_at,
-                    now,
-                    deliv_id,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        conn.execute(
+            """UPDATE webhook_deliveries
+               SET status = ?, response_code = ?, response_body = ?,
+                   attempts = COALESCE(?, attempts),
+                   next_retry_at = COALESCE(?, next_retry_at),
+                   updated_at = ?
+               WHERE id = ?""",
+            (
+                status,
+                response_code,
+                response_body[:4000] if response_body else "",
+                attempts,
+                next_retry_at,
+                now,
+                deliv_id,
+            ),
+        )
+        conn.commit()
 
     def list_deliveries(
         self,
@@ -373,48 +343,39 @@ class WebhookStore:
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         conn = _get_db()
-        try:
-            clauses: list[str] = []
-            params: list[Any] = []
-            if subscription_id:
-                clauses.append("subscription_id = ?")
-                params.append(subscription_id)
-            if status:
-                clauses.append("status = ?")
-                params.append(status)
-            sql = "SELECT * FROM webhook_deliveries"
-            if clauses:
-                sql += " WHERE " + " AND ".join(clauses)
-            sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-            params.extend([limit, offset])
-            rows = conn.execute(sql, params).fetchall()
-            return [self._row_to_delivery(r) for r in rows]
-        finally:
-            conn.close()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if subscription_id:
+            clauses.append("subscription_id = ?")
+            params.append(subscription_id)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        sql = "SELECT * FROM webhook_deliveries"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = conn.execute(sql, params).fetchall()
+        return [self._row_to_delivery(r) for r in rows]
 
     def get_delivery(self, deliv_id: str) -> dict[str, Any] | None:
         conn = _get_db()
-        try:
-            row = conn.execute(
-                "SELECT * FROM webhook_deliveries WHERE id = ?", (deliv_id,)
-            ).fetchone()
-            return self._row_to_delivery(row) if row else None
-        finally:
-            conn.close()
+        row = conn.execute(
+            "SELECT * FROM webhook_deliveries WHERE id = ?", (deliv_id,)
+        ).fetchone()
+        return self._row_to_delivery(row) if row else None
 
     def list_pending_retries(self, before_iso: str, limit: int = 100) -> list[dict[str, Any]]:
         """列出待重试（status=retry 且 next_retry_at <= before_iso）的投递"""
         conn = _get_db()
-        try:
-            rows = conn.execute(
-                """SELECT * FROM webhook_deliveries
-                   WHERE status = 'retry' AND next_retry_at <= ?
-                   ORDER BY next_retry_at ASC LIMIT ?""",
-                (before_iso, limit),
-            ).fetchall()
-            return [self._row_to_delivery(r) for r in rows]
-        finally:
-            conn.close()
+        rows = conn.execute(
+            """SELECT * FROM webhook_deliveries
+               WHERE status = 'retry' AND next_retry_at <= ?
+               ORDER BY next_retry_at ASC LIMIT ?""",
+            (before_iso, limit),
+        ).fetchall()
+        return [self._row_to_delivery(r) for r in rows]
 
     # ────────── 告警路由规则 CRUD（S15-2） ──────────
 
@@ -449,30 +410,27 @@ class WebhookStore:
         rule_id = _gen_id("rule")
         now = _now_iso()
         conn = _get_db()
-        try:
-            conn.execute(
-                """INSERT INTO alert_rules
-                   (id, name, description, event_type_pattern, severity,
-                    payload_matchers, target_subscription_ids, enabled, priority,
-                    created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    rule_id,
-                    name,
-                    description,
-                    event_type_pattern,
-                    severity,
-                    json.dumps(payload_matchers or [], ensure_ascii=False),
-                    json.dumps(target_subscription_ids or [], ensure_ascii=False),
-                    1 if enabled else 0,
-                    int(priority),
-                    now,
-                    now,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        conn.execute(
+            """INSERT INTO alert_rules
+               (id, name, description, event_type_pattern, severity,
+                payload_matchers, target_subscription_ids, enabled, priority,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                rule_id,
+                name,
+                description,
+                event_type_pattern,
+                severity,
+                json.dumps(payload_matchers or [], ensure_ascii=False),
+                json.dumps(target_subscription_ids or [], ensure_ascii=False),
+                1 if enabled else 0,
+                int(priority),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
         logger.info(
             "alert_rule.created", rule_id=rule_id, name=name, pattern=event_type_pattern
         )
@@ -493,25 +451,19 @@ class WebhookStore:
     def list_alert_rules(self, enabled_only: bool = False) -> list[dict[str, Any]]:
         """列出告警路由规则（默认按 priority 升序）"""
         conn = _get_db()
-        try:
-            sql = "SELECT * FROM alert_rules"
-            if enabled_only:
-                sql += " WHERE enabled = 1"
-            sql += " ORDER BY priority ASC, created_at DESC"
-            rows = conn.execute(sql).fetchall()
-            return [self._row_to_rule(r) for r in rows]
-        finally:
-            conn.close()
+        sql = "SELECT * FROM alert_rules"
+        if enabled_only:
+            sql += " WHERE enabled = 1"
+        sql += " ORDER BY priority ASC, created_at DESC"
+        rows = conn.execute(sql).fetchall()
+        return [self._row_to_rule(r) for r in rows]
 
     def get_alert_rule(self, rule_id: str) -> dict[str, Any] | None:
         conn = _get_db()
-        try:
-            row = conn.execute(
-                "SELECT * FROM alert_rules WHERE id = ?", (rule_id,)
-            ).fetchone()
-            return self._row_to_rule(row) if row else None
-        finally:
-            conn.close()
+        row = conn.execute(
+            "SELECT * FROM alert_rules WHERE id = ?", (rule_id,)
+        ).fetchone()
+        return self._row_to_rule(row) if row else None
 
     def update_alert_rule(
         self,
@@ -526,73 +478,67 @@ class WebhookStore:
         priority: int | None = None,
     ) -> dict[str, Any] | None:
         conn = _get_db()
-        try:
-            row = conn.execute(
-                "SELECT * FROM alert_rules WHERE id = ?", (rule_id,)
-            ).fetchone()
-            if not row:
-                return None
-            now = _now_iso()
-            new_name = name if name is not None else row["name"]
-            new_desc = description if description is not None else row["description"]
-            new_pattern = (
-                event_type_pattern
-                if event_type_pattern is not None
-                else row["event_type_pattern"]
-            )
-            if not new_name or not new_pattern:
-                raise ValueError("name 和 event_type_pattern 不能为空")
-            new_severity = severity if severity is not None else row["severity"]
-            new_matchers = (
-                json.dumps(payload_matchers, ensure_ascii=False)
-                if payload_matchers is not None
-                else row["payload_matchers"]
-            )
-            new_targets = (
-                json.dumps(target_subscription_ids, ensure_ascii=False)
-                if target_subscription_ids is not None
-                else row["target_subscription_ids"]
-            )
-            new_enabled = (
-                (1 if enabled else 0) if enabled is not None else row["enabled"]
-            )
-            new_priority = (
-                int(priority) if priority is not None else row["priority"]
-            )
-            conn.execute(
-                """UPDATE alert_rules
-                   SET name = ?, description = ?, event_type_pattern = ?,
-                       severity = ?, payload_matchers = ?, target_subscription_ids = ?,
-                       enabled = ?, priority = ?, updated_at = ?
-                   WHERE id = ?""",
-                (
-                    new_name,
-                    new_desc,
-                    new_pattern,
-                    new_severity,
-                    new_matchers,
-                    new_targets,
-                    new_enabled,
-                    new_priority,
-                    now,
-                    rule_id,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        row = conn.execute(
+            "SELECT * FROM alert_rules WHERE id = ?", (rule_id,)
+        ).fetchone()
+        if not row:
+            return None
+        now = _now_iso()
+        new_name = name if name is not None else row["name"]
+        new_desc = description if description is not None else row["description"]
+        new_pattern = (
+            event_type_pattern
+            if event_type_pattern is not None
+            else row["event_type_pattern"]
+        )
+        if not new_name or not new_pattern:
+            raise ValueError("name 和 event_type_pattern 不能为空")
+        new_severity = severity if severity is not None else row["severity"]
+        new_matchers = (
+            json.dumps(payload_matchers, ensure_ascii=False)
+            if payload_matchers is not None
+            else row["payload_matchers"]
+        )
+        new_targets = (
+            json.dumps(target_subscription_ids, ensure_ascii=False)
+            if target_subscription_ids is not None
+            else row["target_subscription_ids"]
+        )
+        new_enabled = (
+            (1 if enabled else 0) if enabled is not None else row["enabled"]
+        )
+        new_priority = (
+            int(priority) if priority is not None else row["priority"]
+        )
+        conn.execute(
+            """UPDATE alert_rules
+               SET name = ?, description = ?, event_type_pattern = ?,
+                   severity = ?, payload_matchers = ?, target_subscription_ids = ?,
+                   enabled = ?, priority = ?, updated_at = ?
+               WHERE id = ?""",
+            (
+                new_name,
+                new_desc,
+                new_pattern,
+                new_severity,
+                new_matchers,
+                new_targets,
+                new_enabled,
+                new_priority,
+                now,
+                rule_id,
+            ),
+        )
+        conn.commit()
         return self.get_alert_rule(rule_id)
 
     def delete_alert_rule(self, rule_id: str) -> bool:
         conn = _get_db()
-        try:
-            cur = conn.execute(
-                "DELETE FROM alert_rules WHERE id = ?", (rule_id,)
-            )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            conn.close()
+        cur = conn.execute(
+            "DELETE FROM alert_rules WHERE id = ?", (rule_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
     # ────────── 静默窗口 CRUD（S15-2） ──────────
 
@@ -630,28 +576,25 @@ class WebhookStore:
         win_id = _gen_id("silence")
         now = _now_iso()
         conn = _get_db()
-        try:
-            conn.execute(
-                """INSERT INTO silence_windows
-                   (id, name, event_type_pattern, reason, start_time, end_time,
-                    payload_matchers, enabled, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    win_id,
-                    name,
-                    event_type_pattern,
-                    reason,
-                    start_time,
-                    end_time,
-                    json.dumps(payload_matchers or [], ensure_ascii=False),
-                    1 if enabled else 0,
-                    now,
-                    now,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        conn.execute(
+            """INSERT INTO silence_windows
+               (id, name, event_type_pattern, reason, start_time, end_time,
+                payload_matchers, enabled, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                win_id,
+                name,
+                event_type_pattern,
+                reason,
+                start_time,
+                end_time,
+                json.dumps(payload_matchers or [], ensure_ascii=False),
+                1 if enabled else 0,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
         logger.info(
             "silence_window.created",
             win_id=win_id,
@@ -675,25 +618,19 @@ class WebhookStore:
     def list_silence_windows(self, enabled_only: bool = False) -> list[dict[str, Any]]:
         """列出静默窗口（按 start_time 升序）"""
         conn = _get_db()
-        try:
-            sql = "SELECT * FROM silence_windows"
-            if enabled_only:
-                sql += " WHERE enabled = 1"
-            sql += " ORDER BY start_time ASC"
-            rows = conn.execute(sql).fetchall()
-            return [self._row_to_silence(r) for r in rows]
-        finally:
-            conn.close()
+        sql = "SELECT * FROM silence_windows"
+        if enabled_only:
+            sql += " WHERE enabled = 1"
+        sql += " ORDER BY start_time ASC"
+        rows = conn.execute(sql).fetchall()
+        return [self._row_to_silence(r) for r in rows]
 
     def get_silence_window(self, win_id: str) -> dict[str, Any] | None:
         conn = _get_db()
-        try:
-            row = conn.execute(
-                "SELECT * FROM silence_windows WHERE id = ?", (win_id,)
-            ).fetchone()
-            return self._row_to_silence(row) if row else None
-        finally:
-            conn.close()
+        row = conn.execute(
+            "SELECT * FROM silence_windows WHERE id = ?", (win_id,)
+        ).fetchone()
+        return self._row_to_silence(row) if row else None
 
     def update_silence_window(
         self,
@@ -707,68 +644,62 @@ class WebhookStore:
         enabled: bool | None = None,
     ) -> dict[str, Any] | None:
         conn = _get_db()
-        try:
-            row = conn.execute(
-                "SELECT * FROM silence_windows WHERE id = ?", (win_id,)
-            ).fetchone()
-            if not row:
-                return None
-            now = _now_iso()
-            new_name = name if name is not None else row["name"]
-            new_pattern = (
-                event_type_pattern
-                if event_type_pattern is not None
-                else row["event_type_pattern"]
-            )
-            if not new_name or not new_pattern:
-                raise ValueError("name 和 event_type_pattern 不能为空")
-            new_reason = reason if reason is not None else row["reason"]
-            new_start = start_time if start_time is not None else row["start_time"]
-            new_end = end_time if end_time is not None else row["end_time"]
-            if start_time is not None:
-                datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-            if end_time is not None:
-                datetime.fromisoformat(end_time.replace("Z", "+00:00"))
-            new_matchers = (
-                json.dumps(payload_matchers, ensure_ascii=False)
-                if payload_matchers is not None
-                else row["payload_matchers"]
-            )
-            new_enabled = (
-                (1 if enabled else 0) if enabled is not None else row["enabled"]
-            )
-            conn.execute(
-                """UPDATE silence_windows
-                   SET name = ?, event_type_pattern = ?, reason = ?, start_time = ?,
-                       end_time = ?, payload_matchers = ?, enabled = ?, updated_at = ?
-                   WHERE id = ?""",
-                (
-                    new_name,
-                    new_pattern,
-                    new_reason,
-                    new_start,
-                    new_end,
-                    new_matchers,
-                    new_enabled,
-                    now,
-                    win_id,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        row = conn.execute(
+            "SELECT * FROM silence_windows WHERE id = ?", (win_id,)
+        ).fetchone()
+        if not row:
+            return None
+        now = _now_iso()
+        new_name = name if name is not None else row["name"]
+        new_pattern = (
+            event_type_pattern
+            if event_type_pattern is not None
+            else row["event_type_pattern"]
+        )
+        if not new_name or not new_pattern:
+            raise ValueError("name 和 event_type_pattern 不能为空")
+        new_reason = reason if reason is not None else row["reason"]
+        new_start = start_time if start_time is not None else row["start_time"]
+        new_end = end_time if end_time is not None else row["end_time"]
+        if start_time is not None:
+            datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        if end_time is not None:
+            datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+        new_matchers = (
+            json.dumps(payload_matchers, ensure_ascii=False)
+            if payload_matchers is not None
+            else row["payload_matchers"]
+        )
+        new_enabled = (
+            (1 if enabled else 0) if enabled is not None else row["enabled"]
+        )
+        conn.execute(
+            """UPDATE silence_windows
+               SET name = ?, event_type_pattern = ?, reason = ?, start_time = ?,
+                   end_time = ?, payload_matchers = ?, enabled = ?, updated_at = ?
+               WHERE id = ?""",
+            (
+                new_name,
+                new_pattern,
+                new_reason,
+                new_start,
+                new_end,
+                new_matchers,
+                new_enabled,
+                now,
+                win_id,
+            ),
+        )
+        conn.commit()
         return self.get_silence_window(win_id)
 
     def delete_silence_window(self, win_id: str) -> bool:
         conn = _get_db()
-        try:
-            cur = conn.execute(
-                "DELETE FROM silence_windows WHERE id = ?", (win_id,)
-            )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            conn.close()
+        cur = conn.execute(
+            "DELETE FROM silence_windows WHERE id = ?", (win_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
     # ────────── 工具方法 ──────────
 

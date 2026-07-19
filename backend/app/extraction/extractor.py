@@ -138,7 +138,7 @@ class KnowledgeExtractor:
             return []
 
         results = []
-        batch_size = 5
+        batch_size = 20  # P1: E1 — 5→20 减少 LLM 调用次数
         doc_title = doc.title or ""
         for i in range(0, len(paragraphs), batch_size):
             batch = paragraphs[i:i + batch_size]

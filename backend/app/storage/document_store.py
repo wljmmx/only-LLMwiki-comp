@@ -18,6 +18,8 @@ from typing import Any
 
 import structlog
 
+from app.storage.connection import ConnectionPool
+
 logger = structlog.get_logger()
 
 # 存储根目录
@@ -32,11 +34,7 @@ def _ensure_dirs() -> None:
 
 def _get_db() -> sqlite3.Connection:
     _ensure_dirs()
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    _init_schema(conn)
-    return conn
+    return ConnectionPool.get(str(DB_PATH), _init_schema).get_connection()
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:

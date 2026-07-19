@@ -83,13 +83,17 @@ class WikiCompiler:
         result = await compiler.compile_raw_to_wiki(doc_id)
     """
 
+    # P1: 类级别持久化 LLM 缓存，跨编译复用
+    _persistent_llm_cache: dict[str, str] = {}
+    _CACHE_MAX_SIZE = 500  # 最多缓存 500 条
+
     def __init__(self) -> None:
         self.llm = get_llm_client()
         self.settings = get_settings()
         self.extractor = KnowledgeExtractor()
         self.vc = get_version_control()
         self.store = get_document_store()
-        self._llm_cache: dict[str, str] = {}
+        self._llm_cache = WikiCompiler._persistent_llm_cache  # P1: 引用类级别持久化缓存
 
     # ── LLM 包装 ──
 
@@ -239,8 +243,9 @@ class WikiCompiler:
             pass
         _t_compile_start = time.monotonic()
 
-        # 每次编译开始时清空 LLM 缓存（缓存仅在单次编译期间有效）
-        self._llm_cache.clear()
+        # P1: 仅强制重编译时清空缓存，普通编译复用持久化缓存
+        if force:
+            self._llm_cache.clear()
 
         # L1: 初始化任务状态
         if task_state is not None:
@@ -382,6 +387,10 @@ class WikiCompiler:
             _emit(ProgressEventType.STEP_START, {"step": "compile", "total": len(entities)})
             total_entities = len(entities)
 
+            # P1 (K4): 预取所有实体的图谱关系，避免逐实体查询
+            entity_names = [e.name for e in entities]
+            relations_map = self._fetch_graph_relations_batch(entity_names)
+
             # P0-1: 实体编译并行化 — Phase 1: 并行执行 LLM 调用（信号量限制并发数）
             max_concurrency = max(getattr(self.settings, 'compile_concurrency', 3), 1)
             sem = asyncio.Semaphore(max_concurrency)
@@ -408,6 +417,7 @@ class WikiCompiler:
                         })
                         page = await self._compile_entity_page(
                             entity, source_entry, para_labels=doc_labels,
+                            relations_map=relations_map,
                         )
                         return (idx, entity, page, None)
                     except Exception as e:
@@ -654,7 +664,7 @@ class WikiCompiler:
             pass
         _t_compile_start = time.monotonic()
 
-        # 每次编译开始时清空 LLM 缓存（缓存仅在单次编译期间有效）
+        # P1: recompile_section 总是强制重编译，清空缓存以获取最新结果
         self._llm_cache.clear()
 
         # 1. 加载原始文档
@@ -882,12 +892,14 @@ H{level}
         entity: ExtractedEntity,
         source_entry: dict,
         para_labels: list[str] | None = None,
+        relations_map: dict[str, str] | None = None,
     ) -> WikiPage | None:
         """把单个实体编译为 wiki 页面
 
         - 用 LLM 生成正文（按 AGENTS.md 骨架）
         - LLM 不可用时退化为模板化正文（基于 evidence_span）
         - S1: 段落分类标签作为页面标签
+        - relations_map: P1 (K4) 预取的关系映射
         """
         slug = make_slug(entity.entity_type, entity.name)
         page_type = ENTITY_TYPE_TO_PAGE_TYPE.get(entity.entity_type, "concept")
@@ -910,7 +922,7 @@ H{level}
             tags = tags[:5]
 
         # 调 LLM 写正文
-        body_md = await self._llm_write_body(entity, page_type)
+        body_md = await self._llm_write_body(entity, page_type, relations_map=relations_map)
         if not body_md:
             body_md = self._template_body(entity, page_type)
 
@@ -1060,6 +1072,38 @@ H{level}
                     pass
 
         count = 0
+
+        # P1 (K5): Phase 1 — 同级节点并行 LLM 编译
+        # 收集需要 LLM 编译的节点，预分配 section_index 避免并发争用
+        compile_nodes: list[dict] = []
+        node_section_indices: dict[str, int] = {}
+        for node in nodes:
+            slug = node.get("slug")
+            if slug and node.get("level", 1) <= 3:
+                _section_index[0] += 1
+                node_section_indices[slug] = _section_index[0]
+                compile_nodes.append(node)
+
+        # 并行编译所有同级节点（LLM 调用是主要瓶颈）
+        compiled_results: dict[str, tuple[str, bool, float]] = {}  # slug -> (body_md, llm_success, processing_time_ms)
+        if compile_nodes:
+            async def _compile_one_parallel(node: dict) -> tuple[str, str, bool, float]:
+                slug = node.get("slug")
+                t_start = time.monotonic()
+                try:
+                    body_md = await self._llm_compile_section(node, parent_slug)
+                    processing_time_ms = (time.monotonic() - t_start) * 1000
+                    return (slug, body_md, True, processing_time_ms)
+                except Exception:
+                    processing_time_ms = (time.monotonic() - t_start) * 1000
+                    return (slug, self._build_section_body(node, parent_slug), False, processing_time_ms)
+
+            tasks = [_compile_one_parallel(n) for n in compile_nodes]
+            parallel_results = await asyncio.gather(*tasks)
+            for slug_key, body, success, elapsed in parallel_results:
+                compiled_results[slug_key] = (body, success, elapsed)
+
+        # P1 (K5): Phase 2 — 串行保存和子节点递归（SQLite 写入安全）
         for node in nodes:
             slug = node.get("slug")
             title = node.get("title", "")
@@ -1077,8 +1121,7 @@ H{level}
                     count += child_count
                 continue
 
-            _section_index[0] += 1
-            section_idx = _section_index[0]
+            section_idx = node_section_indices.get(slug, _section_index[0])
 
             # 发射 section_start 事件
             _emit(ProgressEventType.SECTION_START, {
@@ -1098,17 +1141,10 @@ H{level}
             raw_content = self._render_elements_to_text(elements)
             raw_chars = len(raw_content)
 
-            llm_success = True
-            processing_time_ms = 0.0
-            try:
-                t_start = time.monotonic()
-                body_md = await self._llm_compile_section(node, parent_slug)
-                processing_time_ms = (time.monotonic() - t_start) * 1000
-            except Exception as e:
-                logger.warning("llm_compile_section_failed", slug=slug, error=str(e))
-                body_md = self._build_section_body(node, parent_slug)
-                llm_success = False
-                processing_time_ms = 0.0
+            # 使用 Phase 1 预编译的结果
+            body_md, llm_success, processing_time_ms = compiled_results.get(
+                slug, (self._build_section_body(node, parent_slug), False, 0.0)
+            )
 
             if on_section_progress:
                 on_section_progress(title, level, "done" if llm_success else "failed")
@@ -1276,6 +1312,11 @@ H{level}
         try:
             text = await self._llm_complete(user_prompt, system=system_prompt, temperature=0.2)
             result = self._strip_codefence(text).strip()
+            # P1: LRU 淘汰 — 缓存超限时移除最旧条目
+            if len(self._llm_cache) >= self._CACHE_MAX_SIZE:
+                remove_count = max(1, self._CACHE_MAX_SIZE // 10)
+                for _ in range(remove_count):
+                    self._llm_cache.pop(next(iter(self._llm_cache)), None)
             self._llm_cache[cache_key] = result
             return result
         except Exception as e:
@@ -1366,8 +1407,13 @@ H{level}
 
         return "\n".join(lines)
 
-    async def _llm_write_body(self, entity: ExtractedEntity, page_type: str) -> str:
+    async def _llm_write_body(self, entity: ExtractedEntity, page_type: str, relations_map: dict[str, str] | None = None) -> str:
         """让 LLM 按 AGENTS.md 骨架写页面正文
+
+        Args:
+            entity: 抽取实体
+            page_type: wiki 页面类型
+            relations_map: P1 (K4) 预取的关系映射
 
         返回不含 frontmatter 的 Markdown 正文。
         """
@@ -1388,16 +1434,27 @@ H{level}
             "使用 [[slug]] 双向链接到相关概念。"
             "只输出 Markdown 正文，不要 YAML frontmatter，不要 ```md 包裹。"
         )
-        prompt = self._build_writing_prompt(entity, page_type)
+        prompt = self._build_writing_prompt(entity, page_type, relations_map=relations_map)
         text = await self._llm_complete(prompt, system=system, temperature=0.2)
         # 防御：剥离可能误加的代码块围栏
         text = self._strip_codefence(text)
         result = text.strip()
+        # P1: LRU 淘汰 — 缓存超限时移除最旧条目
+        if len(self._llm_cache) >= self._CACHE_MAX_SIZE:
+            remove_count = max(1, self._CACHE_MAX_SIZE // 10)
+            for _ in range(remove_count):
+                self._llm_cache.pop(next(iter(self._llm_cache)), None)
         self._llm_cache[cache_key] = result
         return result
 
-    def _build_writing_prompt(self, entity: ExtractedEntity, page_type: str) -> str:
-        """构造写作 prompt（P3-1: 融合图谱关系作为编译上下文）"""
+    def _build_writing_prompt(self, entity: ExtractedEntity, page_type: str, relations_map: dict[str, str] | None = None) -> str:
+        """构造写作 prompt（P3-1: 融合图谱关系作为编译上下文）
+
+        Args:
+            entity: 抽取实体
+            page_type: wiki 页面类型
+            relations_map: P1 (K4) 预取的关系映射，避免逐实体查询
+        """
         props_str = (
             "\n".join(f"- {k}: {v}" for k, v in entity.properties.items() if v)
             or "（无）"
@@ -1412,8 +1469,11 @@ H{level}
             "concept": "概念页（必含：概述/原理/应用场景/来源）",
         }.get(page_type, "概念页（必含：概述/原理/应用场景/来源）")
 
-        # P3-1: 查询图谱关系，作为编译上下文注入 prompt
-        relations_str = self._fetch_graph_relations(entity.name)
+        # P1 (K4): 优先使用预取的关系映射，避免逐实体查询
+        if relations_map is not None and entity.name in relations_map:
+            relations_str = relations_map[entity.name]
+        else:
+            relations_str = self._fetch_graph_relations(entity.name)
 
         return f"""请把以下运维知识编译为一个 wiki 页面。
 
@@ -1467,6 +1527,49 @@ H{level}
         except Exception:  # noqa: BLE001
             # GraphStore 不可用（Neo4j 未配置）→ 优雅降级
             return "（图谱不可用）"
+
+    @staticmethod
+    def _fetch_graph_relations_batch(entity_names: list[str]) -> dict[str, str]:
+        """P1 (K4): 批量查询图谱关系，减少网络往返
+
+        TODO: graph_store 应提供原生 query_related_batch() 方法，
+        当前实现逐个调用 query_related()，但集中收集避免了逐实体
+        初始化 graph_store 连接的开销。
+
+        Args:
+            entity_names: 实体名称列表
+
+        Returns:
+            {entity_name: formatted_relations_str} 映射
+        """
+        if not entity_names:
+            return {}
+        try:
+            from app.knowledge.graph_store import get_graph_store
+
+            store = get_graph_store()
+            result: dict[str, str] = {}
+            for name in entity_names:
+                try:
+                    relations = store.query_related(name, depth=1)
+                    if not relations:
+                        result[name] = "（无图谱关系）"
+                        continue
+                    lines: list[str] = []
+                    for rel in relations[:20]:
+                        target = rel.get("target", "")
+                        relation = rel.get("relation", "")
+                        target_type = rel.get("target_type", "")
+                        confidence = rel.get("confidence", 0)
+                        lines.append(
+                            f"- [{relation}] → {target}（类型: {target_type}, 置信度: {confidence:.2f}）"
+                        )
+                    result[name] = "\n".join(lines)
+                except Exception:
+                    result[name] = "（图谱不可用）"
+            return result
+        except Exception:  # noqa: BLE001
+            return {name: "（图谱不可用）" for name in entity_names}
 
     @staticmethod
     def _strip_codefence(text: str) -> str:
@@ -1599,6 +1702,17 @@ H{level}
         # 构建新页面的词袋（标题权重 ×3）
         new_bow = self._build_bow(page.title, page.body_md)
 
+        # P0: 批量预加载所有同类型已有页面的内容（单次 SQL 查询替代 N 次 get_latest）
+        same_type_keys = [
+            _key_from_slug(ep["slug"])
+            for ep in existing_pages
+            if ep.get("type", "") == page.type and ep.get("slug", "") != page.slug
+        ]
+        if not same_type_keys:
+            return None
+
+        batch_data = self.vc.get_latest_batch(same_type_keys)
+
         best_slug: str | None = None
         best_score = 0.0
 
@@ -1610,20 +1724,17 @@ H{level}
             if ep.get("type", "") != page.type:
                 continue
 
-            try:
-                ep_key = _key_from_slug(ep_slug)
-                ep_data = self.vc.get_latest(ep_key)
-                if not ep_data:
-                    continue
-                ep_title = ep.get("title", "")
-                ep_body = ep_data.get("content", "")
-                ep_bow = self._build_bow(ep_title, ep_body)
-                score = _cosine_similarity(new_bow, ep_bow)
-                if score > best_score:
-                    best_score = score
-                    best_slug = ep_slug
-            except Exception:
+            ep_key = _key_from_slug(ep_slug)
+            ep_data = batch_data.get(ep_key)
+            if not ep_data:
                 continue
+            ep_title = ep.get("title", "")
+            ep_body = ep_data.get("content", "")
+            ep_bow = self._build_bow(ep_title, ep_body)
+            score = _cosine_similarity(new_bow, ep_bow)
+            if score > best_score:
+                best_score = score
+                best_slug = ep_slug
 
         if best_score >= self._SIMILARITY_THRESHOLD and best_slug:
             logger.info(
@@ -2163,6 +2274,15 @@ H{level}
 
         # 列出所有已有 wiki 页面
         existing_pages = list_wiki_pages(limit=10000)
+        # P0: 批量预加载所有已有页面内容（单次 SQL 查询替代 N 次 get_latest）
+        all_keys = [
+            ep["doc_key"] for ep in existing_pages
+            if ep["slug"] != new_slug and ep["slug"] != "index"
+        ]
+        if not all_keys:
+            return 0
+
+        batch_data = self.vc.get_latest_batch(all_keys)
         updated_count = 0
 
         for page_meta in existing_pages:
@@ -2172,7 +2292,7 @@ H{level}
                 continue
 
             doc_key = page_meta["doc_key"]
-            latest = self.vc.get_latest(doc_key)
+            latest = batch_data.get(doc_key)
             if not latest:
                 continue
             original_content = latest["content"]

@@ -20,6 +20,7 @@ httpx>=0.28
 neo4j>=5.0
 markitdown[docx,xlsx]>=0.0.2
 unstructured>=0.16
+pdfplumber>=0.11.0,<1.0  # P1: E2 — PDF 解析依赖版本锁定
 langgraph>=1.0
 langgraph-checkpoint>=4.0
 pyyaml>=6.0

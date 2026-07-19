@@ -25,6 +25,8 @@ from typing import Any
 
 import structlog
 
+from app.storage.connection import ConnectionPool
+
 logger = structlog.get_logger("audit")
 
 # 审计日志 DB 路径：data/audit.db
@@ -33,12 +35,7 @@ DB_PATH = Path(__file__).parent.parent.parent / "data" / "audit.db"
 
 def _get_db() -> sqlite3.Connection:
     """获取 SQLite 连接（幂等初始化 schema）"""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    _init_schema(conn)
-    return conn
+    return ConnectionPool.get(str(DB_PATH), _init_schema).get_connection()
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:
@@ -104,29 +101,26 @@ class AuditStore:
         """
         timestamp = _now_iso()
         conn = _get_db()
-        try:
-            cur = conn.execute(
-                """INSERT INTO audit_log
-                   (timestamp, user, method, path, status, duration_ms,
-                    request_id, payload_summary, user_agent, ip)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    timestamp,
-                    user or "anonymous",
-                    method,
-                    path,
-                    int(status),
-                    float(duration_ms),
-                    request_id or "",
-                    payload_summary,
-                    user_agent,
-                    ip,
-                ),
-            )
-            conn.commit()
-            log_id = cur.lastrowid or 0
-        finally:
-            conn.close()
+        cur = conn.execute(
+            """INSERT INTO audit_log
+               (timestamp, user, method, path, status, duration_ms,
+                request_id, payload_summary, user_agent, ip)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                timestamp,
+                user or "anonymous",
+                method,
+                path,
+                int(status),
+                float(duration_ms),
+                request_id or "",
+                payload_summary,
+                user_agent,
+                ip,
+            ),
+        )
+        conn.commit()
+        log_id = cur.lastrowid or 0
         logger.info(
             "audit.write",
             id=log_id,
@@ -188,11 +182,8 @@ class AuditStore:
         sql += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         conn = _get_db()
-        try:
-            rows = conn.execute(sql, params).fetchall()
-            return [self._row_to_dict(r) for r in rows]
-        finally:
-            conn.close()
+        rows = conn.execute(sql, params).fetchall()
+        return [self._row_to_dict(r) for r in rows]
 
     def get_audit_stats(self) -> dict[str, Any]:
         """获取审计日志统计摘要
@@ -202,48 +193,39 @@ class AuditStore:
              "by_user": {user: count}}
         """
         conn = _get_db()
-        try:
-            total = conn.execute("SELECT COUNT(*) AS c FROM audit_log").fetchone()["c"]
-            by_method: dict[str, int] = {}
-            for row in conn.execute(
-                "SELECT method, COUNT(*) AS c FROM audit_log GROUP BY method"
-            ).fetchall():
-                by_method[row["method"]] = row["c"]
-            by_status: dict[str, int] = {}
-            for row in conn.execute(
-                "SELECT status, COUNT(*) AS c FROM audit_log GROUP BY status"
-            ).fetchall():
-                by_status[str(row["status"])] = row["c"]
-            by_user: dict[str, int] = {}
-            for row in conn.execute(
-                "SELECT user, COUNT(*) AS c FROM audit_log GROUP BY user ORDER BY c DESC LIMIT 20"
-            ).fetchall():
-                by_user[row["user"]] = row["c"]
-            return {
-                "total": total,
-                "by_method": by_method,
-                "by_status": by_status,
-                "by_user": by_user,
-            }
-        finally:
-            conn.close()
+        total = conn.execute("SELECT COUNT(*) AS c FROM audit_log").fetchone()["c"]
+        by_method: dict[str, int] = {}
+        for row in conn.execute(
+            "SELECT method, COUNT(*) AS c FROM audit_log GROUP BY method"
+        ).fetchall():
+            by_method[row["method"]] = row["c"]
+        by_status: dict[str, int] = {}
+        for row in conn.execute(
+            "SELECT status, COUNT(*) AS c FROM audit_log GROUP BY status"
+        ).fetchall():
+            by_status[str(row["status"])] = row["c"]
+        by_user: dict[str, int] = {}
+        for row in conn.execute(
+            "SELECT user, COUNT(*) AS c FROM audit_log GROUP BY user ORDER BY c DESC LIMIT 20"
+        ).fetchall():
+            by_user[row["user"]] = row["c"]
+        return {
+            "total": total,
+            "by_method": by_method,
+            "by_status": by_status,
+            "by_user": by_user,
+        }
 
     def count(self) -> int:
         """总记录数（测试辅助）"""
         conn = _get_db()
-        try:
-            return conn.execute("SELECT COUNT(*) AS c FROM audit_log").fetchone()["c"]
-        finally:
-            conn.close()
+        return conn.execute("SELECT COUNT(*) AS c FROM audit_log").fetchone()["c"]
 
     def clear(self) -> None:
         """清空所有审计日志（测试辅助）"""
         conn = _get_db()
-        try:
-            conn.execute("DELETE FROM audit_log")
-            conn.commit()
-        finally:
-            conn.close()
+        conn.execute("DELETE FROM audit_log")
+        conn.commit()
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

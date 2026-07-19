@@ -47,12 +47,14 @@ class LlmCache:
         *,
         ttl: int = 300,
         max_size: int = 1000,
+        persist_path: str | None = None,
     ) -> None:
         """初始化缓存
 
         Args:
             ttl: 条目存活时间（秒），默认 300 秒
             max_size: 最大缓存条目数，默认 1000
+            persist_path: SQLite 持久化路径，None 表示仅内存缓存
         """
         self._ttl = ttl
         self._max_size = max_size
@@ -64,6 +66,11 @@ class LlmCache:
         self._misses: int = 0
         self._evictions: int = 0
         self._expirations: int = 0
+
+        # P1: SQLite 持久化
+        self._persist_path = persist_path
+        if persist_path:
+            self._load_from_disk()
 
     def _key(self, model: str, messages: list[ChatMessage],
              temperature: float | None, max_tokens: int | None) -> str:
@@ -127,6 +134,63 @@ class LlmCache:
 
             self._store[cache_key] = (response, time.monotonic())
 
+        # P1: 持久化到 SQLite
+        if self._persist_path:
+            self._save_to_disk(cache_key, response)
+
+    # P1: 从 SQLite 加载缓存条目
+    def _load_from_disk(self) -> None:
+        """启动时从 SQLite 加载未过期的缓存条目"""
+        try:
+            import sqlite3
+            import json as _json
+
+            conn = sqlite3.connect(self._persist_path)
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS llm_cache "
+                "(key TEXT PRIMARY KEY, value TEXT, expires_at REAL)"
+            )
+            now = time.time()
+            rows = conn.execute(
+                "SELECT key, value, expires_at FROM llm_cache WHERE expires_at > ?",
+                (now,),
+            ).fetchall()
+            for row in rows:
+                data = _json.loads(row[1])
+                resp = LLMResponse(**data)
+                # 将 wall-clock 过期时间反算为 monotonic 时间戳
+                # expires_at = saved_at + ttl, 因此 saved_at = expires_at - ttl
+                # 但 monotonic 与 wall-clock 不可直接换算，这里用剩余 TTL 反推
+                remaining = row[2] - now
+                monotonic_ts = time.monotonic() - (self._ttl - remaining)
+                self._store[row[0]] = (resp, monotonic_ts)
+            conn.close()
+        except Exception:
+            pass
+
+    # P1: 保存单条缓存到 SQLite
+    def _save_to_disk(self, key: str, response: LLMResponse) -> None:
+        """保存单条缓存条目到 SQLite"""
+        if not self._persist_path:
+            return
+        try:
+            import sqlite3
+            import json as _json
+
+            conn = sqlite3.connect(self._persist_path)
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS llm_cache "
+                "(key TEXT PRIMARY KEY, value TEXT, expires_at REAL)"
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_cache VALUES (?, ?, ?)",
+                (key, _json.dumps(response.__dict__), time.time() + self._ttl),
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
     def clear(self) -> None:
         """清空所有缓存条目和统计信息"""
         with self._lock:
@@ -135,6 +199,17 @@ class LlmCache:
             self._misses = 0
             self._evictions = 0
             self._expirations = 0
+
+        # P1: 同步清空 SQLite 持久化数据
+        if self._persist_path:
+            try:
+                import sqlite3
+                conn = sqlite3.connect(self._persist_path)
+                conn.execute("DELETE FROM llm_cache")
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
 
     def stats(self) -> dict[str, Any]:
         """返回缓存统计信息

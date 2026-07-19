@@ -136,6 +136,15 @@ function handleSelect(keys: string[]) {
   flex: 1;
   overflow-y: auto;
   padding-right: 4px;
+  /* P1: CSS containment 实现浏览器级虚拟滚动，大列表时性能优化 */
+  contain: layout style;
+  content-visibility: auto;
+}
+
+/* P1: 树节点项启用 CSS containment，减少布局/绘制开销 */
+.wiki-tree :deep(.n-tree-node) {
+  contain: layout style;
+  content-visibility: auto;
 }
 
 .tree-skeleton {

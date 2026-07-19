@@ -11,6 +11,28 @@ from app.core.llm.base import ChatMessage, LLMResponse
 
 logger = structlog.get_logger()
 
+# P1: 模块级 httpx 连接池单例，避免每次请求创建新连接
+_httpx_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _httpx_client
+    if _httpx_client is None:
+        _httpx_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0, connect=10.0),
+            limits=httpx.Limits(max_keepalive_connections=10, max_connections=50),
+            http2=True,
+        )
+    return _httpx_client
+
+
+async def close_client() -> None:
+    """P1: 关闭全局 httpx 连接池"""
+    global _httpx_client
+    if _httpx_client:
+        await _httpx_client.aclose()
+        _httpx_client = None
+
 
 class OllamaClient:
     backend_name = "ollama"
@@ -44,10 +66,11 @@ class OllamaClient:
                 "num_predict": max_tokens or self._default_max_tokens,
             },
         }
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(f"{self._base_url}/api/chat", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        # P1: 使用模块级连接池单例
+        client = _get_client()
+        resp = await client.post(f"{self._base_url}/api/chat", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
         return LLMResponse(
             text=data.get("message", {}).get("content", ""),
             model=data.get("model", self._model),
@@ -76,26 +99,28 @@ class OllamaClient:
                 "num_predict": max_tokens or self._default_max_tokens,
             },
         }
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            async with client.stream(
-                "POST", f"{self._base_url}/api/chat", json=payload
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    import orjson
+        # P1: 使用模块级连接池单例
+        client = _get_client()
+        async with client.stream(
+            "POST", f"{self._base_url}/api/chat", json=payload
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                import orjson
 
-                    chunk = orjson.loads(line)
-                    content = chunk.get("message", {}).get("content", "")
-                    if content:
-                        yield content
+                chunk = orjson.loads(line)
+                content = chunk.get("message", {}).get("content", "")
+                if content:
+                    yield content
 
     async def health(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(f"{self._base_url}/api/tags")
-                return resp.status_code == 200
+            # P1: 使用模块级连接池单例
+            client = _get_client()
+            resp = await client.get(f"{self._base_url}/api/tags")
+            return resp.status_code == 200
         except Exception as e:
             logger.warning("ollama_health_failed", error=str(e))
             return False
@@ -116,14 +141,15 @@ class OllamaClient:
             return []
         emb_model = model or self._embedding_model
         results: list[list[float]] = []
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            for text in texts:
-                resp = await client.post(
-                    f"{self._base_url}/api/embeddings",
-                    json={"model": emb_model, "prompt": text, **kwargs},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                emb = data.get("embedding") or []
-                results.append(list(emb))
+        # P1: 使用模块级连接池单例
+        client = _get_client()
+        for text in texts:
+            resp = await client.post(
+                f"{self._base_url}/api/embeddings",
+                json={"model": emb_model, "prompt": text, **kwargs},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            emb = data.get("embedding") or []
+            results.append(list(emb))
         return results

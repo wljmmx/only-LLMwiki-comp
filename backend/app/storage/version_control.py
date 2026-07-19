@@ -14,18 +14,15 @@ from pathlib import Path
 
 import structlog
 
+from app.storage.connection import ConnectionPool
+
 logger = structlog.get_logger()
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "versions.db"
 
 
 def _get_db() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    _init_schema(conn)
-    return conn
+    return ConnectionPool.get(str(DB_PATH), _init_schema).get_connection()
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:
