@@ -219,52 +219,62 @@ def _graph_recall(
 
     hits: dict[str, WikiPageHit] = {}
 
-    # 限制 token 数量避免过多图谱查询（最多 10 个）
+    # P1: 批量收集所有 token 的实体（第一阶段—聚合）
+    # TODO: 未来可改为 search_entities_batch() 一次 Neo4j session 内批量查询
+    all_entities: list[dict] = []
+    seen_entity_names: set[str] = set()
     for tok in tokens[:10]:
         try:
             entities = store.search_entities(tok, limit=5)
         except Exception:  # noqa: BLE001
             continue
-
         for ent in entities:
             ent_name = ent.get("name", "")
-            ent_type = ent.get("type", "")
-            if not ent_name:
-                continue
+            if ent_name and ent_name not in seen_entity_names:
+                seen_entity_names.add(ent_name)
+                all_entities.append(ent)
 
-            # 匹配实体本身 → 映射为 slug（直接匹配，分数较高）
-            slug = make_slug(ent_type, ent_name)
-            if slug in wiki_slugs and slug not in hits:
-                p = slug_to_page[slug]
-                hits[slug] = WikiPageHit(
-                    slug=slug,
-                    title=p.get("title") or slug,
+    # P1: 批量查询所有实体的关系（第二阶段—关系扩展）
+    # 限制总实体数，避免图谱查询爆炸
+    for ent in all_entities[:20]:
+        ent_name = ent.get("name", "")
+        ent_type = ent.get("type", "")
+        if not ent_name:
+            continue
+
+        # 匹配实体本身 → 映射为 slug（直接匹配，分数较高）
+        slug = make_slug(ent_type, ent_name)
+        if slug in wiki_slugs and slug not in hits:
+            p = slug_to_page[slug]
+            hits[slug] = WikiPageHit(
+                slug=slug,
+                title=p.get("title") or slug,
+                type=p["type"],
+                score=2.0,
+                snippet="",
+            )
+
+        # 一跳邻居 → 映射为 slug（邻居降权）
+        try:
+            relations = store.query_related(ent_name, depth=1)
+        except Exception:  # noqa: BLE001
+            continue
+
+        for rel in relations[:10]:  # 每个实体最多取 10 个邻居
+            target_name = rel.get("target", "")
+            target_type = rel.get("target_type", "")
+            if not target_name:
+                continue
+            neighbor_slug = make_slug(target_type, target_name)
+            if neighbor_slug in wiki_slugs and neighbor_slug not in hits:
+                p = slug_to_page[neighbor_slug]
+                hits[neighbor_slug] = WikiPageHit(
+                    slug=neighbor_slug,
+                    title=p.get("title") or neighbor_slug,
                     type=p["type"],
-                    score=2.0,
+                    score=1.0,
                     snippet="",
                 )
-
-            # 一跳邻居 → 映射为 slug（邻居降权）
-            try:
-                relations = store.query_related(ent_name, depth=1)
-            except Exception:  # noqa: BLE001
-                continue
-
-            for rel in relations[:10]:  # 每个实体最多取 10 个邻居
-                target_name = rel.get("target", "")
-                target_type = rel.get("target_type", "")
-                if not target_name:
-                    continue
-                neighbor_slug = make_slug(target_type, target_name)
-                if neighbor_slug in wiki_slugs and neighbor_slug not in hits:
-                    p = slug_to_page[neighbor_slug]
-                    hits[neighbor_slug] = WikiPageHit(
-                        slug=neighbor_slug,
-                        title=p.get("title") or neighbor_slug,
-                        type=p["type"],
-                        score=1.0,
-                        snippet="",
-                    )
 
     return hits
 
@@ -357,6 +367,11 @@ async def recall_pages(
             if query_emb:
                 wiki_embs = await _get_wiki_embeddings(pages, vc, body_cache)
                 if wiki_embs:
+                    # P1: 两阶段召回 — 先用关键词快速过滤，再向量精排
+                    if len(wiki_embs) > 100:
+                        wiki_embs = _keyword_prefilter(
+                            tokens, wiki_embs, pages, body_cache, top_k=50
+                        )
                     scored = _rank_by_cosine(query_emb, wiki_embs)
                     # 取更多候选以保证 RRF 融合后 top-K 质量
                     candidate_limit = max(limit * 3, 15)
@@ -512,6 +527,69 @@ async def _get_wiki_embeddings(
         result[slug] = emb
 
     return result
+
+
+def _keyword_prefilter(
+    tokens: list[str],
+    wiki_embs: dict[str, list[float]],
+    pages: list[dict],
+    body_cache: dict[str, str],
+    top_k: int = 50,
+) -> dict[str, list[float]]:
+    """P1: 两阶段召回 — 先用关键词快速过滤候选集，再进入向量精排
+
+    当 wiki 页面数量超过阈值时，对每个候选页面计算 query token 在 title/tags/body
+    中的命中权重，只保留 top_k 个候选进入后续余弦相似度计算。
+
+    Args:
+        tokens: 用户问题分词结果
+        wiki_embs: slug → embedding 的完整映射
+        pages: 所有 wiki 页面元数据列表
+        body_cache: slug → body_md 缓存
+        top_k: 保留的候选数量
+
+    Returns:
+        过滤后的 slug → embedding 映射（仅 top_k 个候选）
+    """
+    if not tokens or len(wiki_embs) <= top_k:
+        return wiki_embs
+
+    slug_to_page = {p["slug"]: p for p in pages if p["slug"] != "index"}
+
+    # Stage 1: 关键词命中计分（cheap，无向量运算）
+    candidate_scores: dict[str, float] = {}
+    for slug in wiki_embs:
+        p = slug_to_page.get(slug)
+        if not p:
+            candidate_scores[slug] = 0.0
+            continue
+
+        title = (p.get("title") or slug).lower()
+        tags = [t.lower() for t in p.get("tags", [])]
+        body_md = body_cache.get(slug, "")
+        body_text = render_wikilinks_text(body_md).lower() if body_md else ""
+
+        score = 0.0
+        matched: set[str] = set()
+        for tok in tokens:
+            if tok in matched:
+                continue
+            if tok in title:
+                score += 5
+                matched.add(tok)
+            elif any(tok in t for t in tags):
+                score += 3
+                matched.add(tok)
+            elif body_text and tok in body_text:
+                score += 1
+                matched.add(tok)
+        candidate_scores[slug] = score
+
+    # Stage 2: 取 top_k 候选进入向量精排
+    ranked = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)
+    top_slugs = {slug for slug, _ in ranked[:top_k]}
+
+    return {slug: emb for slug, emb in wiki_embs.items() if slug in top_slugs}
 
 
 def _rank_by_cosine(

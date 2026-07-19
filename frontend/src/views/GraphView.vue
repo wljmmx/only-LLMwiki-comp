@@ -49,8 +49,11 @@ const graphData = ref<{ nodes: GraphNode[]; links: GraphLink[] }>({ nodes: [], l
 const stats = ref<GraphStats | null>(null)
 const neo4jError = ref<string>('')
 
+// P1: 限制图谱加载数量，防止大型图谱渲染卡顿
+const MAX_GRAPH_NODES = 200
+
 const entityTypeFilter = ref<string | null>(null)
-const limitFilter = ref<number>(200)
+const limitFilter = ref<number>(MAX_GRAPH_NODES)
 const searchKeyword = ref('')
 
 const entityTypeOptions = [

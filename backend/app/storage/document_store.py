@@ -203,15 +203,25 @@ class DocumentStore:
         row = conn.execute(query, params).fetchone()
         return row["cnt"] if row else 0
 
-    def read_content(self, doc_id: str) -> bytes | None:
-        """读取文档原始内容"""
+    def read_content(self, doc_id: str, verify_checksum: bool = False) -> bytes | None:
+        """读取文档原始内容
+
+        P2: verify_checksum=True 时校验文件内容与 DB 中 checksum 是否一致，
+        不一致时记录告警并返回 None（防止返回损坏或被篡改的数据）。
+        """
         doc = self.get(doc_id)
         if not doc:
             return None
         path = Path(doc["stored_path"])
         if not path.exists():
             return None
-        return path.read_bytes()
+        content = path.read_bytes()
+        if verify_checksum:
+            actual = hashlib.sha256(content).hexdigest()
+            if doc.get("checksum") != actual:
+                logger.warning("document_checksum_mismatch", doc_id=doc_id)
+                return None
+        return content
 
     def update_status(
         self,

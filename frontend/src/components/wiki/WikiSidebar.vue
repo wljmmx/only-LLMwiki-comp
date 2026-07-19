@@ -142,9 +142,11 @@ function handleSelect(keys: string[]) {
 }
 
 /* P1: 树节点项启用 CSS containment，减少布局/绘制开销 */
+/* contain-intrinsic-size 提供预估高度，配合 content-visibility 实现虚拟滚动效果 */
 .wiki-tree :deep(.n-tree-node) {
   contain: layout style;
   content-visibility: auto;
+  contain-intrinsic-size: auto 40px;
 }
 
 .tree-skeleton {

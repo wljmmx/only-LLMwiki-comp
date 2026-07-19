@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """OpsKG 性能基准测试
 
+P2: 运行前需确保本地 Ollama 实例已启动（默认 http://localhost:11434），
+否则 /api/llm-wiki/index 等 LLM 相关端点会超时。
+
 运行：
     python scripts/benchmark.py --concurrency 5 --requests 20 --json | tee benchmark-results.json
 

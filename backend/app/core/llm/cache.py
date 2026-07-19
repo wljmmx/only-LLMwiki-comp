@@ -142,8 +142,8 @@ class LlmCache:
     def _load_from_disk(self) -> None:
         """启动时从 SQLite 加载未过期的缓存条目"""
         try:
-            import sqlite3
             import json as _json
+            import sqlite3
 
             conn = sqlite3.connect(self._persist_path)
             conn.execute(
@@ -174,8 +174,8 @@ class LlmCache:
         if not self._persist_path:
             return
         try:
-            import sqlite3
             import json as _json
+            import sqlite3
 
             conn = sqlite3.connect(self._persist_path)
             conn.execute(

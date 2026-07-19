@@ -449,7 +449,7 @@ async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool =
             async for event in event_gen():
                 yield event
         except asyncio.CancelledError:
-            yield f"event: error\ndata: {{\"error\": \"timeout\"}}\n\n"
+            yield "event: error\ndata: {\"error\": \"timeout\"}\n\n"
 
     return StreamingResponse(
         event_gen_with_timeout(),
@@ -459,7 +459,6 @@ async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool =
             "Connection": "keep-alive",  # P1: R2
             "X-Accel-Buffering": "no",
         },
-        timeout_keep_alive=30,  # P1: R2 — SSE 超时保护
     )
 
 
@@ -986,7 +985,7 @@ async def llm_wiki_query_stream(request: Request, payload: dict):
             async for event in event_gen():
                 yield event
         except asyncio.CancelledError:
-            yield f"event: error\ndata: {{\"error\": \"timeout\"}}\n\n"
+            yield "event: error\ndata: {\"error\": \"timeout\"}\n\n"
 
     return StreamingResponse(
         event_gen_with_timeout(),
@@ -996,7 +995,6 @@ async def llm_wiki_query_stream(request: Request, payload: dict):
             "Connection": "keep-alive",  # P1: R2
             "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲，确保实时推送
         },
-        timeout_keep_alive=30,  # P1: R2 — SSE 超时保护
     )
 
 

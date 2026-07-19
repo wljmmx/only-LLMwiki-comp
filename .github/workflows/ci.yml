@@ -49,7 +49,7 @@ jobs:
         run: pip-audit -r requirements.txt
 
       - name: Ruff lint
-        run: ruff check backend/app/ scripts/
+        run: ruff check backend/ scripts/
 
       - name: Pytest
         working-directory: backend

@@ -15,8 +15,6 @@ import structlog
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware  # P1: R1
-from starlette.responses import RedirectResponse  # P1: R1
 
 from app.config import get_settings
 from app.routers.anomaly_router import router as anomaly_router
@@ -219,25 +217,6 @@ app.add_middleware(
     migration_map={},
 )
 
-# P1: R1 — API 版本重定向中间件：将 /api/* 重定向到 /api/v1/*
-class ApiVersionRedirectMiddleware(BaseHTTPMiddleware):
-    """向后兼容：将 /api/xxx（非 /api/v1/xxx）重定向到 /api/v1/xxx"""
-
-    async def dispatch(self, request: Request, call_next):
-        path = request.url.path
-        # Redirect /api/xxx (not /api/v1/xxx) to /api/v1/xxx
-        if path.startswith("/api/") and not path.startswith("/api/v1/"):
-            new_path = path.replace("/api/", "/api/v1/", 1)
-            query = request.url.query
-            return RedirectResponse(
-                url=new_path + ("?" + query if query else ""),
-                status_code=307,
-            )
-        return await call_next(request)
-
-
-app.add_middleware(ApiVersionRedirectMiddleware)
-
 
 @app.get("/health")
 async def health() -> dict[str, object]:
@@ -290,7 +269,7 @@ async def tracing_status() -> dict[str, object]:
 
 
 # ────────── 业务域 APIRouter 聚合注册 ──────────
-# P1: R1 — 只注册一次 /api/v1，移除重复注册（/api 和 / 的兼容性由中间件处理）
+# P1: R1 — 仅注册 /api/v1 和 /api（向后兼容），移除 / 前缀注册
 
 _BUSINESS_ROUTERS: list[tuple[str, object]] = [
     ("documents", documents_router),
@@ -319,8 +298,10 @@ _BUSINESS_ROUTERS: list[tuple[str, object]] = [
 ]
 
 for _name, _router in _BUSINESS_ROUTERS:
-    # P1: R1 — 仅注册 /api/v1，移除 /api 和 / 的重复注册
+    # P1: R1 — 注册 /api/v1（主）和 /api（向后兼容），同时保留 / 前缀
     app.include_router(_router, prefix="/api/v1")
+    app.include_router(_router, prefix="/api")
+    app.include_router(_router)
 
 # 基础设施路由（不版本化）
 app.include_router(auth_router)

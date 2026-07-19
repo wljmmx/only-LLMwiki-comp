@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import re
@@ -130,3 +131,12 @@ class MarkItDownAdapter:
 
 def make_markitdown_factory(fmt: str) -> Callable[[], DocumentParser]:
     return lambda: MarkItDownAdapter(fmt)
+
+
+# P2: async wrapper，避免同步 parse 阻塞事件循环
+async def parse_async(self, stored_path: str, doc_id: str) -> ParsedDocument:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, self.parse, stored_path, doc_id)
+
+
+MarkItDownAdapter.parse_async = parse_async

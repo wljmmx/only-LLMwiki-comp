@@ -17,7 +17,7 @@ import structlog
 
 logger = structlog.get_logger()
 
-COLLECT_INTERVAL_SECONDS = 30
+COLLECT_INTERVAL_SECONDS = 60  # P2: 降低采集频率，减少系统开销
 
 
 async def collect_business_metrics() -> None:

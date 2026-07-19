@@ -2,6 +2,19 @@
 import { ref, onUnmounted } from 'vue'
 import { getApiBaseUrl, getAuthToken } from '@/api/index'
 
+// P2: 自动重连 — 指数退避参数
+const MAX_RECONNECT_DELAY = 30000
+let reconnectDelay = 1000
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleReconnect(connectFn: () => void) {
+  if (reconnectTimer) clearTimeout(reconnectTimer)
+  reconnectTimer = setTimeout(() => {
+    connectFn()
+    reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY)
+  }, reconnectDelay)
+}
+
 export interface SseEvent {
   type: string
   data: Record<string, any>

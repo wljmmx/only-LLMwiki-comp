@@ -5,7 +5,7 @@
 #
 # 镜像层级：
 #   Stage 1: frontend-builder  构建 Vue 前端 → /build/dist
-#   Stage 2: runtime           python:3.12-slim + nginx + supervisor + 后端代码 + 前端 dist
+#   Stage 2: runtime           python:3.14-slim + nginx + supervisor + 后端代码 + 前端 dist
 #
 # 设计要点：
 #   - 前端构建与运行时分离，最终镜像不含 node_modules（节省 ~500MB）
@@ -36,7 +36,8 @@ COPY frontend/ ./
 
 # 类型检查 + 构建（生成 dist/）
 # 注：typecheck 失败会阻断构建，保证镜像内前端类型安全
-RUN npm run build
+# P1: 构建前先 typecheck，失败阻断构建，保证镜像内前端类型安全
+RUN npm run typecheck && npm run build
 
 # ────────── Stage 2: 运行时 ──────────
 FROM python:3.14-slim AS runtime
