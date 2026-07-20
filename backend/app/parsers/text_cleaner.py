@@ -1,11 +1,14 @@
 """文本清洗与规范化管道
 
 处理混乱格式的文档，在解析前进行预处理：
+- Word 特有噪声清洗（smart quotes / 分页符 / 域代码 / 可选连字符 / 制表符）
 - 空白字符规范化
 - 编码规范化（BOM / 换行符 / 全角空格）
 - HTML 残留清理（标签去除 + 实体解码）
 - 智能段落分割
 - 标题规范化（非标准格式检测）
+- 无标题文档的结构推断（从纯平文本构建章节树）
+- 段落语义分类（概述/原因/分析/解决/配置/步骤/示例/警告/参考）
 - 代码块保护（清洗期间保护，清洗后还原）
 - 表格检测（Markdown 表格 + 对齐列）
 - 重复行去除
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import html as _html
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 
 
@@ -25,6 +29,8 @@ class CleanedDocument:
     cleaned_text: str
     paragraphs: list[str] = field(default_factory=list)
     detected_headings: list[dict] = field(default_factory=list)
+    inferred_headings: list[dict] = field(default_factory=list)
+    paragraph_classes: list[dict] = field(default_factory=list)
     detected_code_blocks: list[dict] = field(default_factory=list)
     detected_tables: list[dict] = field(default_factory=list)
     stats: dict = field(default_factory=dict)
@@ -69,6 +75,84 @@ class TextCleaner:
         (re.compile(r'^([A-Z\u4e00-\u9fff][A-Z\u4e00-\u9fff\s]{2,60})$', re.MULTILINE), 2),
     ]
 
+    # ── Word 特有噪声映射 ──
+    # Smart quotes → straight quotes
+    _WORD_SMART_QUOTES = {
+        '\u201c': '"', '\u201d': '"',  # left/right double quotation mark
+        '\u2018': "'", '\u2019': "'",  # left/right single quotation mark
+        '\u201a': "'", '\u201b': "'",  # single low-9 / reversed-9
+        '\u201e': '"', '\u201f': '"',  # double low-9 / reversed-9
+        '\u00ab': '"', '\u00bb': '"',  # guillemets
+        '\u2039': "'", '\u203a': "'",  # single guillemets
+    }
+    # Word 特殊字符 → 替换
+    _WORD_SPECIAL = {
+        '\u00ad': '',       # optional hyphen (soft hyphen) — 不可见，删除
+        '\u000c': '\n\n',   # form feed (page break) → 双换行
+        '\u00a0': ' ',      # non-breaking space → 普通空格
+        '\u202f': ' ',      # narrow non-breaking space
+        '\u200b': '',       # zero-width space
+        '\u200c': '',       # zero-width non-joiner
+        '\u200d': '',       # zero-width joiner
+        '\u200e': '',       # left-to-right mark
+        '\u200f': '',       # right-to-left mark
+        '\ufeff': '',       # zero-width no-break space (BOM already handled, but may appear mid-text)
+        '\t': '    ',       # tab → 4 spaces
+        '\u2022': '- ',     # bullet → dash
+        '\u2023': '- ',     # triangular bullet
+        '\u25e6': '- ',     # white bullet
+        '\u2043': '- ',     # hyphen bullet
+        '\u25cb': '- ',     # white circle
+        '\u25cf': '- ',     # black circle
+    }
+    # Word 列表编号模式（Word 导出时常见 "1)"  "(1)"  "①"  "一、"  "（一）" 等）
+    _WORD_LIST_NUM = re.compile(
+        r'^[\(（]?(\d+|[一二三四五六七八九十]+|[①②③④⑤⑥⑦⑧⑨⑩])[\)）\.\、]?\s*'
+    )
+    # Word 域代码模式（{ HYPERLINK ... }, { PAGE }, { DATE ... }, { SEQ ... } 等）
+    _WORD_FIELD_CODE = re.compile(
+        r'\{\s*(?:HYPERLINK|PAGE|DATE|TIME|SEQ|REF|CITATION|BIBLIOGRAPHY|TOC|XE|INDEX|'
+        r'FORMULA|SYMBOL|AUTONUM|AUTONUMLGL|AUTONUMOUT|BARCODE|COMMENTS|DOCPROPERTY|'
+        r'FILLIN|GREETINGLINE|IF|INCLUDEPICTURE|INCLUDETEXT|LINK|LISTNUM|MERGEFIELD|'
+        r'MERGEREC|MERGESEQ|NEXT|NEXTIF|NOTE|PRINT|PRIVATE|QUOTE|RD|SET|SKIPIF|STYLEREF|'
+        r'SUBJECT|TEMPLATE|USERADDRESS|USERINITIALS|USERNAME)[^}]*\}',
+        re.IGNORECASE,
+    )
+    # Word 段落编号 + 加粗样式的标题模式（如 "1.1  标题" 中点号后有多个空格）
+    _WORD_NUMBERED_HEADING = re.compile(
+        r'^(\d+(?:\.\d+)*)\s{2,}(.+)$', re.MULTILINE,
+    )
+    # Word 加粗/下划线转义后的残余标记
+    _WORD_STYLE_RESIDUE = re.compile(r'[\*_]{1,3}([^\*_]+)[\*_]{1,3}')
+
+    # ── 段落语义分类关键词 ──
+    PARAGRAPH_CLASSIFIERS: dict[str, list[str]] = {
+        'overview': ['概述', '简介', '背景', '介绍', '前言', '总览', '概览', '摘要',
+                      'overview', 'introduction', 'background', 'summary', 'abstract'],
+        'cause': ['原因', '成因', '起因', '根源', '源头', '为什么会', '触发条件',
+                   'cause', 'root cause', 'trigger'],
+        'analysis': ['分析', '排查', '诊断', '定位', '调查', '检查', '追踪',
+                      'analysis', 'diagnosis', 'troubleshoot', 'investigate', 'debug'],
+        'solution': ['解决', '方案', '处置', '修复', '处理', '应对', '恢复', '补救',
+                      'solution', 'fix', 'resolve', 'mitigation', 'recovery', 'workaround'],
+        'config': ['配置', '参数', '设置', '选项', '属性', '变量',
+                    'config', 'parameter', 'setting', 'option', 'property', 'variable'],
+        'steps': ['步骤', '流程', '操作', '过程', '指南', '做法',
+                   'step', 'procedure', 'process', 'guide', 'howto', 'how-to'],
+        'example': ['示例', '例如', '比如', '举例', '样例', '实例',
+                     'example', 'sample', 'instance', 'e.g.', 'for instance'],
+        'warning': ['注意', '警告', '重要', '危险', '须知', '切记', '谨慎',
+                     'warning', 'caution', 'important', 'danger', 'note', 'notice'],
+        'reference': ['参考', '参见', '引用', '来源', '相关文档', '延伸阅读',
+                       'reference', 'see also', 'related', 'further reading'],
+    }
+
+    # ── 结构推断：标题候选评分权重 ──
+    _STRUCTURE_MIN_PARAGRAPHS = 3       # 至少 3 段才尝试推断结构
+    _STRUCTURE_MAX_HEADING_LEN = 80     # 超过此长度的行不可能是标题
+    _STRUCTURE_SHORT_LINE_LEN = 40      # 短行更可能是标题
+    _STRUCTURE_HEADING_GAP = 6          # 至少每隔 N 段才出现一个标题
+
     # P0: 代码块占位符模板（用于清洗期间保护代码块）
     _CODE_PLACEHOLDER = '__CODE_BLOCK_{}__'
 
@@ -80,14 +164,17 @@ class TextCleaner:
             preserve_code_blocks: 是否在清洗期间保护代码块（默认 True）
 
         Returns:
-            CleanedDocument 包含清洗后文本、段落、标题、代码块、表格和统计信息
+            CleanedDocument 包含清洗后文本、段落、标题、推断结构、段落分类、代码块、表格和统计信息
         """
-        stats = {}
+        stats: dict[str, object] = {}
         original = text
 
         # 1. 编码规范化（BOM / 换行符 / 全角空格）
         text = self._normalize_encoding(text)
         stats['encoding_normalized'] = text != original
+
+        # 1.5. Word 特有噪声清洗（smart quotes / 分页符 / 域代码 / 样式残留）
+        text = self._clean_word_noise(text)
 
         # 2. HTML 实体解码
         text = self._decode_html_entities(text)
@@ -116,13 +203,26 @@ class TextCleaner:
         # 9. 标题检测
         headings = self._detect_headings(text)
 
-        # 10. 表格检测
+        # 10. 结构推断：当标题不足以覆盖文档时，从纯平文本推断章节结构
+        inferred: list[dict] = []
+        para_count = len(paragraphs)
+        heading_count = len(headings)
+        if para_count >= self._STRUCTURE_MIN_PARAGRAPHS:
+            # 触发条件：标题少（<3）或大量段落无标题覆盖（段落/标题比 > 5）
+            if heading_count < 3 or (heading_count > 0 and para_count / heading_count > 5):
+                inferred = self._infer_structure(paragraphs, headings)
+
+        # 11. 段落语义分类
+        para_classes = self._classify_paragraphs(paragraphs)
+
+        # 12. 表格检测
         tables = self._detect_tables(text)
 
         stats['original_length'] = len(original)
         stats['cleaned_length'] = len(text)
         stats['paragraph_count'] = len(paragraphs)
         stats['heading_count'] = len(headings)
+        stats['inferred_heading_count'] = len(inferred)
         stats['code_block_count'] = len(code_blocks)
         stats['table_count'] = len(tables)
 
@@ -131,6 +231,8 @@ class TextCleaner:
             cleaned_text=text,
             paragraphs=paragraphs,
             detected_headings=headings,
+            inferred_headings=inferred,
+            paragraph_classes=para_classes,
             detected_code_blocks=code_blocks,
             detected_tables=tables,
             stats=stats,
@@ -147,6 +249,37 @@ class TextCleaner:
         text = text.replace('\r\n', '\n').replace('\r', '\n')
         # P0: 全角空格（U+3000，中文文档常见）→ 半角空格
         text = text.replace('\u3000', ' ')
+        return text
+
+    def _clean_word_noise(self, text: str) -> str:
+        """清洗 Word 特有噪声
+
+        处理从 Word 文档粘贴/导出时产生的干扰字符：
+        - Smart quotes → straight quotes
+        - 可选连字符（soft hyphen）→ 删除
+        - 分页符（form feed）→ 双换行
+        - 域代码（{ HYPERLINK ... } 等）→ 删除
+        - 非断行空格 → 普通空格
+        - 零宽字符 → 删除
+        - 制表符 → 4 空格
+        - 特殊 bullet 字符 → 标准 dash
+        - 样式残留（** / __ 标记）→ 保留文本
+        """
+        # 1. 域代码：先删除（在 smart quotes 转换前，因为域代码含花括号）
+        text = self._WORD_FIELD_CODE.sub('', text)
+
+        # 2. Smart quotes → straight quotes
+        for smart, straight in self._WORD_SMART_QUOTES.items():
+            text = text.replace(smart, straight)
+
+        # 3. 特殊字符替换
+        for char, replacement in self._WORD_SPECIAL.items():
+            text = text.replace(char, replacement)
+
+        # 4. 样式残留：**text** / __text__ → text（保留加粗/下划线标记的内容）
+        #    注意：仅在非标题行、非代码块行处理（避免破坏 Markdown 语法）
+        text = self._WORD_STYLE_RESIDUE.sub(r'\1', text)
+
         return text
 
     def _decode_html_entities(self, text: str) -> str:
@@ -407,3 +540,242 @@ class TextCleaner:
                 i += 1
 
         return tables
+
+    # ─── 结构推断 ─────────────────────────────────────────────────
+
+    def _infer_structure(
+        self, paragraphs: list[str], existing_headings: list[dict],
+    ) -> list[dict]:
+        """从纯平文本推断文档章节结构
+
+        当文档没有显式标题（如 Word 导出后的纯文本）时，
+        通过分析段落特征推断标题层级。
+
+        策略：
+        1. 扫描每个段落，计算"标题候选"评分
+        2. 按评分阈值筛选候选标题
+        3. 按文档位置和编号模式分配层级
+        4. 合并过于密集的候选标题
+
+        Returns:
+            inferred_headings 列表，格式与 detected_headings 一致
+        """
+        candidates: list[dict] = []
+
+        for idx, para in enumerate(paragraphs):
+            score, reason = self._score_heading_candidate(para, idx, paragraphs)
+            if score > 0:
+                candidates.append({
+                    'para_idx': idx,
+                    'text': para,
+                    'score': score,
+                    'reason': reason,
+                })
+
+        if not candidates:
+            return []
+
+        # 按评分降序排序，取前 60% 或最多 8 个候选
+        candidates.sort(key=lambda c: c['score'], reverse=True)
+        max_candidates = min(len(candidates), max(3, len(paragraphs) // self._STRUCTURE_HEADING_GAP))
+        candidates = candidates[:max_candidates]
+
+        # 按段落位置排序
+        candidates.sort(key=lambda c: c['para_idx'])
+
+        # 分配层级：第一段（如有）为 h1，后续按编号模式或关键词权重分配
+        inferred: list[dict] = []
+        used_indices: set[int] = set()
+        for h in existing_headings:
+            used_indices.add(h.get('line', -1))
+
+        for i, cand in enumerate(candidates):
+            if cand['para_idx'] in used_indices:
+                continue
+
+            level = self._assign_heading_level(cand, i, len(candidates), paragraphs)
+            inferred.append({
+                'para_idx': cand['para_idx'],
+                'text': cand['text'],
+                'level': level,
+                'type': 'inferred',
+                'confidence': min(cand['score'] / 10.0, 1.0),
+                'reason': cand['reason'],
+            })
+
+        return inferred
+
+    def _score_heading_candidate(
+        self, para: str, idx: int, paragraphs: list[str],
+    ) -> tuple[int, str]:
+        """计算段落作为标题候选的评分
+
+        评分维度（满分 10）：
+        - 长度：短行 +2～+3（< 20 chars: +3, < 40: +2, < 80: +1）
+        - 无句末标点：+2（标题不以句号结尾）
+        - 编号检测：+3（含数字编号或列表编号）
+        - 关键词匹配：+3（含分类关键词）
+        - 全大写：+1
+        - 后续内容：+1（后面紧跟较长的正文段落）
+        - 位置：+1（文档前 1/3 的标题更可信）
+
+        Returns:
+            (score, reason) 评分和理由
+        """
+        score = 0
+        reasons: list[str] = []
+        stripped = para.strip()
+
+        # 过长 → 不可能是标题
+        if len(stripped) > self._STRUCTURE_MAX_HEADING_LEN:
+            return 0, 'too long'
+
+        # 长度评分
+        if len(stripped) < 20:
+            score += 3
+            reasons.append('very short')
+        elif len(stripped) < self._STRUCTURE_SHORT_LINE_LEN:
+            score += 2
+            reasons.append('short')
+        elif len(stripped) < self._STRUCTURE_MAX_HEADING_LEN:
+            score += 1
+            reasons.append('moderate')
+
+        # 无句末标点
+        sentence_ends = ('.', '\u3002', '!', '\uff01', '?', '\uff1f', ';', '\uff1b', '：', ':')
+        if not stripped.endswith(sentence_ends):
+            score += 2
+            reasons.append('no sentence end')
+
+        # 编号检测
+        if re.match(r'^\d+(?:\.\d+)*\s', stripped):
+            score += 3
+            reasons.append('numbered')
+        elif re.match(r'^[\(（]?\d+[\)）\.\、]', stripped):
+            score += 2
+            reasons.append('list-like')
+        elif re.match(r'^[一二三四五六七八九十]+[、\s]', stripped):
+            score += 2
+            reasons.append('cn-numbered')
+
+        # 关键词匹配
+        for kw_list in self.PARAGRAPH_CLASSIFIERS.values():
+            for kw in kw_list:
+                if kw in stripped.lower():
+                    score += 3
+                    reasons.append(f'keyword:{kw}')
+                    break
+            else:
+                continue
+            break
+
+        # 全大写（至少 3 个字符）
+        if len(stripped) >= 3 and stripped == stripped.upper() and re.search(r'[A-Z]', stripped):
+            score += 1
+            reasons.append('all caps')
+
+        # 后续内容：后一段是更长正文
+        if idx + 1 < len(paragraphs):
+            next_para = paragraphs[idx + 1].strip()
+            if len(next_para) > len(stripped) * 1.5:
+                score += 1
+                reasons.append('followed by content')
+
+        # 位置：文档前 1/3 更可能含标题
+        if idx < len(paragraphs) / 3:
+            score += 1
+            reasons.append('early position')
+
+        return score, '+'.join(reasons)
+
+    def _assign_heading_level(
+        self, cand: dict, index: int, total: int, paragraphs: list[str],
+    ) -> int:
+        """为标题候选分配层级（1-6）"""
+        text = cand['text']
+
+        # 规则 1：编号深度决定层级（如 "1.2.3" → level 3）
+        m = re.match(r'^(\d+(?:\.\d+)*)', text)
+        if m:
+            depth = len(m.group(1).split('.'))
+            return min(depth, 6)
+
+        # 规则 2：中文编号（一、二、三）→ h2
+        if re.match(r'^[一二三四五六七八九十]+[、\s]', text):
+            return 2
+
+        # 规则 3：第一段为 h1，最后一段如果短则为 h2
+        if index == 0:
+            return 1
+        if index == total - 1 and len(text) < 30:
+            return 2
+
+        # 规则 4：关键词决定层级
+        for kw in self.PARAGRAPH_CLASSIFIERS.get('overview', []):
+            if kw in text.lower():
+                return 1
+        for kw in self.PARAGRAPH_CLASSIFIERS.get('solution', []):
+            if kw in text.lower():
+                return 2
+        for kw_list in [self.PARAGRAPH_CLASSIFIERS.get(k, []) for k in
+                        ['cause', 'analysis', 'steps', 'config']]:
+            for kw in kw_list:
+                if kw in text.lower():
+                    return 3
+
+        # 规则 5：位置决定层级（早期 → 更高层级）
+        if index < 2:
+            return 1
+        if index < total * 0.3:
+            return 2
+        return 3
+
+    # ─── 段落语义分类 ─────────────────────────────────────────────
+
+    def _classify_paragraphs(self, paragraphs: list[str]) -> list[dict]:
+        """对段落进行语义分类
+
+        基于关键词匹配，将每个段落归类到以下类别之一：
+        overview / cause / analysis / solution / config / steps /
+        example / warning / reference / general
+
+        Returns:
+            [{para_idx, text_preview, class, confidence}, ...]
+        """
+        results: list[dict] = []
+        for idx, para in enumerate(paragraphs):
+            stripped = para.strip()
+            if not stripped:
+                continue
+
+            # 跳过可能的标题（短文本）
+            if len(stripped) < 15 and self._looks_like_heading(stripped):
+                results.append({
+                    'para_idx': idx,
+                    'text_preview': stripped[:80],
+                    'class': 'heading',
+                    'confidence': 0.8,
+                })
+                continue
+
+            best_class = 'general'
+            best_score = 0
+
+            for cls_name, keywords in self.PARAGRAPH_CLASSIFIERS.items():
+                matches = sum(1 for kw in keywords if kw in stripped.lower())
+                if matches > best_score:
+                    best_score = matches
+                    best_class = cls_name
+
+            # 置信度：匹配关键词数 / 该类别关键词总数
+            max_kw = len(self.PARAGRAPH_CLASSIFIERS.get(best_class, []))
+            confidence = min(best_score / max(max_kw, 1), 1.0) if best_score > 0 else 0.3
+
+            results.append({
+                'para_idx': idx,
+                'text_preview': stripped[:120],
+                'class': best_class,
+                'confidence': round(confidence, 2),
+            })
+
+        return results

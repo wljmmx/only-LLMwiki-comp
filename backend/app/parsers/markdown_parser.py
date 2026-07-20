@@ -38,11 +38,18 @@ class MarkdownParser:
         else:
             text = raw
 
+        # P0: 当清洗器推断出标题，注入推断标题（补充显式标题不足的情况）
+        if cleaned and cleaned.inferred_headings:
+            text = self._inject_inferred_headings(
+                text, cleaned.paragraphs, cleaned.inferred_headings,
+                existing_headings=cleaned.detected_headings,
+            )
+
         checksum = hashlib.sha256(text.encode()).hexdigest()
         title = self._extract_title(text)
         elements, heading_tree = self._parse_markdown(text)
 
-        # P0: 将清洗器检测到的标题/段落作为解析提示存入 metadata
+        # P0: 将清洗器检测到的标题/段落/推断结构/段落分类作为解析提示存入 metadata
         if cleaned is not None:
             for elem in elements:
                 if elem.metadata is None:
@@ -53,6 +60,12 @@ class MarkdownParser:
             if cleaned.paragraphs:
                 for elem in elements:
                     elem.metadata.setdefault('cleaner_paragraph_count', len(cleaned.paragraphs))
+            if cleaned.inferred_headings:
+                for elem in elements:
+                    elem.metadata.setdefault('inferred_headings', cleaned.inferred_headings)
+            if cleaned.paragraph_classes:
+                for elem in elements:
+                    elem.metadata.setdefault('paragraph_classes', cleaned.paragraph_classes)
 
         return ParsedDocument(
             doc_id=doc_id,
@@ -243,3 +256,81 @@ class MarkdownParser:
 
     def _is_special_line(self, line: str) -> bool:
         return bool(re.match(r"^(#{1,6}\s|```|[-*+]\s|\d+\.\s|\||\d+(?:\.\d+)*\s)", line))
+
+    def _inject_inferred_headings(
+        self, text: str, paragraphs: list[str], inferred: list[dict],
+        existing_headings: list[dict] | None = None,
+    ) -> str:
+        """将推断的标题注入原文本，转换为 Markdown 标题语法
+
+        当文档无显式标题或标题不足以覆盖文档时，将推断出的标题候选行
+        转换为 `#` 前缀标题，使后续 `_parse_markdown` 能正常构建标题树。
+
+        Args:
+            text: 原始清洗后文本
+            paragraphs: 段落列表
+            inferred: 推断的标题列表 [{para_idx, text, level, ...}]
+            existing_headings: 已有的检测标题列表，用于跳过已覆盖的段落
+
+        Returns:
+            注入标题后的文本
+        """
+        if not inferred:
+            return text
+
+        # 构建已有标题覆盖的段落索引集合（通过文本匹配）
+        covered_paras: set[int] = set()
+        if existing_headings:
+            for h in existing_headings:
+                h_text = h.get('text', '')
+                for pi, para in enumerate(paragraphs):
+                    if h_text in para or para in h_text:
+                        covered_paras.add(pi)
+
+        # 按段落索引排序，过滤已覆盖的段落
+        inferred_sorted = sorted(
+            [h for h in inferred if h['para_idx'] not in covered_paras],
+            key=lambda h: h['para_idx'],
+        )
+
+        if not inferred_sorted:
+            return text
+
+        # 逐段重建文本，在推断标题前插入 Markdown 标题行
+        lines = text.split('\n')
+        para_to_heading: dict[int, dict] = {}
+        for h in inferred_sorted:
+            para_to_heading[h['para_idx']] = h
+
+        result: list[str] = []
+        para_idx = -1
+        buffer: list[str] = []
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                if buffer:
+                    para_idx += 1
+                    if para_idx in para_to_heading:
+                        heading_info = para_to_heading[para_idx]
+                        prefix = '#' * heading_info['level']
+                        result.append(f'\n{prefix} {heading_info["text"]}\n')
+                    else:
+                        result.append('\n'.join(buffer))
+                    buffer = []
+                result.append('')
+                continue
+
+            buffer.append(line)
+
+        # 处理最后一段
+        if buffer:
+            para_idx += 1
+            if para_idx in para_to_heading:
+                heading_info = para_to_heading[para_idx]
+                prefix = '#' * heading_info['level']
+                result.append(f'\n{prefix} {heading_info["text"]}\n')
+            else:
+                result.append('\n'.join(buffer))
+
+        return '\n'.join(result)
