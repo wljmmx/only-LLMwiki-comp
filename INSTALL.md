@@ -299,9 +299,11 @@ OPENAI_COMPAT_MODEL=deepseek-chat
 ollama pull qwen2.5:7b
 
 LLM_BACKEND=ollama
-OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_BASE_URL=http://localhost:11434/v1   # 注意：OpenAI SDK 要求 /v1 后缀
 OLLAMA_MODEL=qwen2.5:7b
 ```
+
+> **重要**：`OLLAMA_BASE_URL` 必须以 `/v1` 结尾，因为后端使用 OpenAI SDK 调用 Ollama 的兼容端点。若缺少 `/v1` 会报 `404 page not found`。
 
 ### vLLM（本地，需 GPU）
 
@@ -459,6 +461,28 @@ A: 删除 `backend/data/*.db` 文件后重启，会自动重建空数据库：
 rm backend/data/*.db
 cd backend && python -m uvicorn app.main:app --reload
 ```
+
+### Q: Windows 本地部署有什么注意事项
+
+A: Windows 本地部署（非 Docker）需注意以下几点：
+
+1. **Python 版本**：项目要求 Python 3.11+，确保使用正确版本创建虚拟环境。
+
+2. **uvloop 不支持 Windows**：`requirements.txt` 中的 `uvloop` 在 Windows 上无法安装，可安全跳过（后端会自动降级到 asyncio 默认事件循环，不影响功能）。
+
+3. **Neo4j 启动方式**：若 Docker/wslc 因网络问题无法拉取镜像，可直接下载 Neo4j Windows 社区版（zip 包），解压后运行：
+   ```powershell
+   neo4j-admin.bat set-initial-password password
+   neo4j.bat console
+   ```
+
+4. **SSRF 防护与 localhost**：后端默认阻止访问 localhost 地址（SSRF 防护）。若 LLM 和 Neo4j 均部署在本地，需在 `.env` 中设置：
+   ```bash
+   OPSKG_ALLOW_LOOPBACK_URLS=1
+   ```
+   否则 Setup Wizard 中的"测试连通"会失败。
+
+5. **Ollama base_url 必须带 /v1**：Windows 本地 Ollama 的 `OLLAMA_BASE_URL` 应为 `http://localhost:11434/v1`（OpenAI SDK 要求）。
 
 ### Q: 如何备份
 
