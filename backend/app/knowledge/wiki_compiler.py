@@ -932,9 +932,19 @@ H{level}
             tags = tags[:5]
 
         # 调 LLM 写正文
-        body_md = await self._llm_write_body(entity, page_type, relations_map=relations_map)
+        # P0: 增强 fallback — LLM 不可用时从源文档提取内容生成结构化 Wiki
+        try:
+            body_md = await self._llm_write_body(entity, page_type, relations_map=relations_map)
+        except Exception:
+            body_md = ""
         if not body_md:
-            body_md = self._template_body(entity, page_type)
+            body_md = self._build_template_fallback(
+                entity.entity_type,
+                entity.name,
+                entity.properties or {},
+                source_content=(entity.evidence_span or "").strip(),
+                paragraph_classifications=None,
+            )
 
         review_status = (
             "review_needed"
@@ -1595,48 +1605,209 @@ H{level}
             return "\n".join(lines)
         return t
 
-    def _template_body(self, entity: ExtractedEntity, page_type: str) -> str:
-        """LLM 不可用时的模板化兜底正文"""
-        props = entity.properties or {}
-        props_lines = (
-            "\n".join(f"- **{k}**: {v}" for k, v in props.items() if v)
-            or "- （暂无属性）"
+    # P0: 增强模板兜底 — 当 LLM 不可用时，从源文档提取内容生成结构化 Wiki 页面
+    def _build_template_fallback(
+        self,
+        entity_type: str,
+        entity_name: str,
+        properties: dict,
+        source_content: str = "",
+        paragraph_classifications: list[dict] | None = None,
+    ) -> str:
+        """构建增强的模板兜底正文（当 LLM 不可用时）
+
+        从源文档中提取相关段落，生成结构化 Wiki 页面。
+        """
+        sections: list[str] = []
+
+        # 1. 概述
+        overview = self._extract_overview(entity_name, source_content, paragraph_classifications)
+        sections.append(f"## 概述\n\n{overview}")
+
+        # 2. 根据实体类型生成相应章节
+        if entity_type == "incident":
+            sections.append(self._build_cause_section(entity_name, source_content))
+            sections.append(self._build_troubleshoot_section(entity_name, source_content))
+            sections.append(self._build_resolution_section(entity_name, source_content))
+        elif entity_type == "service":
+            sections.append(self._build_architecture_section(entity_name, source_content, properties))
+            sections.append(self._build_config_section(entity_name, source_content, properties))
+        elif entity_type == "concept":
+            sections.append(self._build_explanation_section(entity_name, source_content))
+            sections.append(self._build_usage_section(entity_name, source_content))
+        elif entity_type == "runbook":
+            sections.append(self._build_impact_section(entity_name, source_content))
+            sections.append(self._build_steps_section(entity_name, source_content))
+        elif entity_type == "host":
+            sections.append(self._build_role_section(entity_name, source_content, properties))
+            sections.append(self._build_services_section(entity_name, source_content, properties))
+        else:
+            # Generic: extract body paragraphs
+            sections.append(self._build_body_section(entity_name, source_content))
+
+        # 3. 来源引用
+        sections.append("## 来源\n\n" + self._build_source_section(properties))
+
+        return "\n\n".join(sections)
+
+    def _extract_overview(
+        self, name: str, content: str, classifications: list[dict] | None = None
+    ) -> str:
+        """从源文档提取概述段落"""
+        if not content:
+            return f"{name} 的相关信息。"
+
+        # 按段落分割源文档
+        paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+
+        # 优先使用分类为 overview/summary 的段落
+        if classifications:
+            for pc in classifications:
+                if pc.get('label') in ('overview', 'summary', '介绍'):
+                    body = pc.get('body', '')
+                    if body:
+                        return body
+
+        # 使用前几个段落作为概述
+        overview_paras = paragraphs[:min(3, len(paragraphs))]
+        overview = ' '.join(overview_paras)
+
+        # 截断过长概述
+        if len(overview) > 500:
+            overview = overview[:497] + '...'
+
+        return overview if overview else f"{name} 的相关信息。"
+
+    def _build_cause_section(self, name: str, content: str) -> str:
+        """构建成因分析章节"""
+        causes = self._extract_list_items(content, ['原因', '导致', '引起', '因为', 'cause'])
+        if causes:
+            items = '\n'.join(f'- {c}' for c in causes[:8])
+            return f"## 成因分析\n\n{items}"
+        return "## 成因分析\n\n> 待补充。请参考原始文档了解详细原因。"
+
+    def _build_troubleshoot_section(self, name: str, content: str) -> str:
+        """构建排查步骤章节"""
+        steps = self._extract_list_items(content, ['检查', '排查', '查看', '验证', '确认', 'check', 'verify'])
+        if steps:
+            items = '\n'.join(f"{i+1}. {s}" for i, s in enumerate(steps[:10]))
+            return f"## 排查步骤\n\n{items}"
+        return "## 排查步骤\n\n> 待补充。"
+
+    def _build_resolution_section(self, name: str, content: str) -> str:
+        """构建处置方案章节"""
+        solutions = self._extract_list_items(
+            content, ['解决', '修复', '方案', '处理', '重启', '修改', '调整', '配置', 'fix', 'resolve']
         )
-        evidence = (entity.evidence_span or "").strip()
+        if solutions:
+            items = '\n'.join(f"- {s}" for s in solutions[:8])
+            return f"## 处置方案\n\n{items}"
+        return "## 处置方案\n\n> 待补充。"
 
-        sections: list[str] = [f"# {entity.name}", ""]
-        sections.append("## 概述")
-        sections.append(
-            f"{entity.name} 是一个 {entity.entity_type.lower()} 实体，"
-            f"由文档 `{entity.source_doc_id}` 编译而来。"
-        )
-        sections.append("")
+    def _build_architecture_section(
+        self, name: str, content: str, properties: dict
+    ) -> str:
+        """构建架构章节（service 类型）"""
+        arch_lines = self._extract_list_items(content, ['架构', '依赖', '调用', '上游', '下游', 'architecture'])
+        if arch_lines:
+            items = '\n'.join(f"- {a}" for a in arch_lines[:8])
+            return f"## 架构\n\n{items}"
+        return "## 架构\n\n> 待补充。"
 
-        if page_type in ("entity", "service", "host", "concept"):
-            sections.append("## 属性")
-            sections.append(props_lines)
-            sections.append("")
+    def _build_config_section(
+        self, name: str, content: str, properties: dict
+    ) -> str:
+        """构建配置参数章节（service 类型）"""
+        config_lines = self._extract_list_items(content, ['配置', '参数', '端口', 'config', 'port', 'timeout'])
+        if config_lines:
+            items = '\n'.join(f"- {c}" for c in config_lines[:8])
+            return f"## 配置参数\n\n{items}"
+        return "## 配置参数\n\n> 待补充。"
 
-        if page_type in ("incident", "runbook"):
-            sections.append("## 成因分析")
-            sections.append(f"> 待补全。原始证据：{evidence[:200] or '（无）'}")
-            sections.append("")
-            sections.append("## 排查步骤")
-            sections.append("1. （待 LLM 重编译补充）")
-            sections.append("")
-            sections.append("## 处置方案")
-            sections.append("- （待 LLM 重编译补充）")
-            sections.append("")
+    def _build_explanation_section(self, name: str, content: str) -> str:
+        """构建原理章节（concept 类型）"""
+        explanation = self._extract_list_items(content, ['原理', '定义', '概念', '机制', '原理'])
+        if explanation:
+            items = '\n'.join(f"- {e}" for e in explanation[:8])
+            return f"## 原理\n\n{items}"
+        return "## 原理\n\n> 待补充。"
 
-        if page_type == "service":
-            sections.append("## 依赖")
-            sections.append("- （待补全，建议建立 [[wikilink]] 到上下游服务）")
-            sections.append("")
+    def _build_usage_section(self, name: str, content: str) -> str:
+        """构建应用场景章节（concept 类型）"""
+        usage = self._extract_list_items(content, ['场景', '应用', '使用', '示例', '例子', '场景', 'usage', 'example'])
+        if usage:
+            items = '\n'.join(f"- {u}" for u in usage[:8])
+            return f"## 应用场景\n\n{items}"
+        return "## 应用场景\n\n> 待补充。"
 
-        sections.append("## 来源")
-        sections.append(f"- doc_id: `{entity.source_doc_id}`")
-        sections.append("")
-        return "\n".join(sections)
+    def _build_impact_section(self, name: str, content: str) -> str:
+        """构建影响分析章节（runbook 类型）"""
+        impact = self._extract_list_items(content, ['影响', '风险', '范围', '影响范围', 'impact'])
+        if impact:
+            items = '\n'.join(f"- {i}" for i in impact[:8])
+            return f"## 影响分析\n\n{items}"
+        return "## 影响分析\n\n> 待补充。"
+
+    def _build_steps_section(self, name: str, content: str) -> str:
+        """构建操作步骤章节（runbook 类型）"""
+        steps = self._extract_list_items(content, ['步骤', '操作', '执行', '运行', '启动', '停止', 'step', 'run'])
+        if steps:
+            items = '\n'.join(f"{i+1}. {s}" for i, s in enumerate(steps[:10]))
+            return f"## 操作步骤\n\n{items}"
+        return "## 操作步骤\n\n> 待补充。"
+
+    def _build_role_section(
+        self, name: str, content: str, properties: dict
+    ) -> str:
+        """构建角色章节（host 类型）"""
+        role = properties.get('role', '') or properties.get('功能', '')
+        if role:
+            return f"## 角色\n\n{role}"
+        return "## 角色\n\n> 待补充。"
+
+    def _build_services_section(
+        self, name: str, content: str, properties: dict
+    ) -> str:
+        """构建运行服务章节（host 类型）"""
+        services = self._extract_list_items(content, ['服务', '进程', 'service', 'process', 'nginx', 'tomcat', 'docker'])
+        if services:
+            items = '\n'.join(f"- {s}" for s in services[:8])
+            return f"## 运行服务\n\n{items}"
+        return "## 运行服务\n\n> 待补充。"
+
+    def _build_body_section(self, name: str, content: str) -> str:
+        """构建通用正文章节（兜底类型）"""
+        if not content:
+            return "## 内容\n\n> 待补充。"
+        paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+        if paragraphs:
+            body = '\n\n'.join(paragraphs[:5])
+            return f"## 内容\n\n{body}"
+        return "## 内容\n\n> 待补充。"
+
+    @staticmethod
+    def _build_source_section(properties: dict) -> str:
+        """构建来源章节"""
+        source_doc_id = properties.get('source_doc_id', '')
+        if source_doc_id:
+            return f"- doc_id: `{source_doc_id}`\n"
+        return "- （暂无来源信息）\n"
+
+    @staticmethod
+    def _extract_list_items(content: str, keywords: list[str]) -> list[str]:
+        """从内容中提取包含关键词的列表项"""
+        items: list[str] = []
+        lines = content.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # 去除列表标记
+            cleaned = re.sub(r'^[\s]*[-*•\d]+[\.\)、]\s*', '', line)
+            if any(kw in cleaned.lower() for kw in keywords):
+                if len(cleaned) > 10 and cleaned not in items:
+                    items.append(cleaned)
+        return items
 
     # ── GS-6: 双向同步 — Wiki 页面保存后同步更新图谱 ──
 
@@ -2133,6 +2304,89 @@ H{level}
             else:
                 parts.append(f"## {header}\n\n{content}" if content else f"## {header}")
         return "\n\n".join(parts) + "\n"
+
+    # P0: 智能章节合并 — 保留结构，按章节去重合并
+    def _merge_body_sections_smart(self, existing: str, new: str) -> str:
+        """智能合并章节，保留结构
+
+        策略：
+        1. 解析已有和新正文为章节字典
+        2. 新章节优先，旧章节中不冲突的部分保留
+        3. 同章节合并：按段落去重（Jaccard >= 0.7 跳过）
+        """
+        # 解析章节为 dict（保留顺序）
+        existing_sections = self._parse_sections_to_dict(existing)
+        new_sections = self._parse_sections_to_dict(new)
+
+        # 合并：新章节优先，保留旧章节中不冲突的部分
+        merged: dict[str, str] = {}
+        for title, body in existing_sections.items():
+            merged[title] = body
+        for title, body in new_sections.items():
+            if title in merged:
+                merged[title] = self._merge_section_content_smart(merged[title], body)
+            else:
+                merged[title] = body
+
+        # 按章节顺序重建
+        result: list[str] = []
+        for title, body in merged.items():
+            if body.strip():
+                result.append(f"## {title}\n\n{body.strip()}")
+
+        return '\n\n'.join(result)
+
+    @staticmethod
+    def _parse_sections_to_dict(text: str) -> dict[str, str]:
+        """解析 Markdown 章节为有序字典 {section_title: section_body}"""
+        sections: dict[str, str] = {}
+        current_title = '概述'
+        current_body: list[str] = []
+
+        for line in text.split('\n'):
+            m = re.match(r'^##\s+(.+)$', line)
+            if m:
+                if current_body:
+                    sections[current_title] = '\n'.join(current_body)
+                current_title = m.group(1).strip()
+                current_body = []
+            else:
+                current_body.append(line)
+
+        if current_body:
+            sections[current_title] = '\n'.join(current_body)
+
+        return sections
+
+    def _merge_section_content_smart(self, old: str, new: str) -> str:
+        """合并同一章节的内容，按段落去重"""
+        old_paras = [p.strip() for p in old.split('\n\n') if p.strip()]
+        new_paras = [p.strip() for p in new.split('\n\n') if p.strip()]
+
+        merged = list(old_paras)
+        for np_para in new_paras:
+            is_dup = False
+            for op_para in merged:
+                if self._jaccard_similarity(op_para[:100], np_para[:100]) > 0.7:
+                    is_dup = True
+                    break
+            if not is_dup:
+                merged.append(np_para)
+
+        return '\n\n'.join(merged)
+
+    @staticmethod
+    def _jaccard_similarity(text1: str, text2: str) -> float:
+        """计算两个文本的 Jaccard 相似度（基于字符级 bigram）"""
+        if not text1 or not text2:
+            return 0.0
+        set1 = set(text1[i:i+2] for i in range(len(text1) - 1))
+        set2 = set(text2[i:i+2] for i in range(len(text2) - 1))
+        if not set1 or not set2:
+            return 0.0
+        intersection = len(set1 & set2)
+        union = len(set1 | set2)
+        return intersection / union if union > 0 else 0.0
 
     @staticmethod
     def _content_equal(a: str, b: str) -> bool:

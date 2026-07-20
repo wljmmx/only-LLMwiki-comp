@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { NSplit } from 'naive-ui'
+import { NSplit, NButton, NIcon, NResult, NBreadcrumb, NBreadcrumbItem, NDrawer, NDrawerContent } from 'naive-ui'
+import { MenuOutline, HomeOutline, ChevronForwardOutline } from '@vicons/ionicons5'
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
 import { parseFrontmatter } from '@/utils/frontmatter'
+import { getTypeLabel } from '@/utils/format'
 import type { WikiPage, BacklinkItem } from '@/types/api'
 import WikiSidebar from '@/components/wiki/WikiSidebar.vue'
 import WikiContent from '@/components/wiki/WikiContent.vue'
@@ -34,6 +36,13 @@ const lockHolder = ref<string | null>(null)
 // P1-11：版本历史抽屉
 const showVersionHistory = ref(false)
 
+// P0: 响应式侧边栏状态
+const sidebarVisible = ref(true)
+const mobileDrawerVisible = ref(false)
+
+// P0: 页面加载错误状态
+const pageError = ref<string | null>(null)
+
 /** P1-11：回滚后刷新当前页面 */
 async function handleVersionRollback() {
   if (selectedKey.value) {
@@ -61,6 +70,14 @@ function cancelEditing() {
 async function handleSaved() {
   isEditing.value = false
   if (selectedKey.value) {
+    await loadPage(selectedKey.value)
+  }
+}
+
+// P0: 重试加载页面
+async function retryLoadPage() {
+  if (selectedKey.value) {
+    pageError.value = null
     await loadPage(selectedKey.value)
   }
 }
@@ -97,6 +114,22 @@ const pageMeta = computed(() => {
   }
 })
 
+// P0: 面包屑数据
+const breadcrumbItems = computed(() => {
+  const items = [{ label: 'Wiki', key: 'wiki-root' }]
+  if (currentPage.value) {
+    items.push({
+      label: getTypeLabel(currentPage.value.type),
+      key: `type-${currentPage.value.type}`,
+    })
+    items.push({
+      label: currentPage.value.title,
+      key: currentPage.value.slug,
+    })
+  }
+  return items
+})
+
 async function loadPages() {
   treeLoading.value = true
   try {
@@ -120,12 +153,16 @@ async function loadPages() {
 async function loadPage(slug: string) {
   contentLoading.value = true
   backlinksLoading.value = true
+  pageError.value = null
   try {
     const [page, bl] = await Promise.all([getWikiPage(slug), getWikiBacklinks(slug)])
     currentPage.value = page
     backlinks.value = bl
     // P2-6: 记录最近访问
     trackPage(page.slug, page.title, page.type)
+  } catch (err: any) {
+    pageError.value = err?.response?.data?.detail || err?.message || '加载页面失败'
+    console.error(err)
   } finally {
     contentLoading.value = false
     backlinksLoading.value = false
@@ -134,6 +171,8 @@ async function loadPage(slug: string) {
 
 function handleSelect(key: string) {
   selectedKey.value = key
+  // P0: 移动端选择后关闭抽屉
+  mobileDrawerVisible.value = false
   loadPage(key)
 }
 
@@ -147,6 +186,16 @@ function handleContentClick(slug: string) {
   loadPage(slug)
 }
 
+// P0: 切换侧边栏
+function toggleSidebar() {
+  sidebarVisible.value = !sidebarVisible.value
+}
+
+// P0: 移动端打开侧边栏抽屉
+function openMobileDrawer() {
+  mobileDrawerVisible.value = true
+}
+
 onMounted(() => {
   loadPages()
 })
@@ -154,8 +203,34 @@ onMounted(() => {
 
 <template>
   <div class="wiki-view">
-    <NSplit :default-size="280" :min-size="200" :max-size="400">
-      <template #1>
+    <!-- P0: 面包屑导航 -->
+    <div class="wiki-breadcrumb">
+      <NBreadcrumb>
+        <NBreadcrumbItem>
+          <NIcon size="16" :component="HomeOutline" />
+        </NBreadcrumbItem>
+        <NBreadcrumbItem
+          v-for="item in breadcrumbItems"
+          :key="item.key"
+        >
+          {{ item.label }}
+        </NBreadcrumbItem>
+      </NBreadcrumb>
+    </div>
+
+    <!-- P0: 移动端侧边栏切换按钮 -->
+    <div class="mobile-sidebar-toggle">
+      <NButton quaternary size="small" @click="openMobileDrawer">
+        <template #icon>
+          <NIcon :component="MenuOutline" />
+        </template>
+        Wiki 页面
+      </NButton>
+    </div>
+
+    <div class="wiki-layout">
+      <!-- P0: 桌面端可折叠侧边栏 -->
+      <div v-show="sidebarVisible" class="wiki-sidebar-desktop">
         <WikiSidebar
           :pages="pages"
           :tree-loading="treeLoading"
@@ -164,27 +239,74 @@ onMounted(() => {
           @update:tree-search-text="(val: string) => treeSearchText = val"
           @select="handleSelect"
         />
-      </template>
-      <template #2>
-        <WikiContent
-          :current-page="currentPage"
-          :content-loading="contentLoading"
-          :backlinks="backlinks"
-          :is-editing="isEditing"
-          :has-lock="hasLock"
+      </div>
+
+      <!-- P0: 侧边栏折叠按钮 -->
+      <div class="sidebar-toggle-btn">
+        <NButton
+          quaternary
+          size="tiny"
+          @click="toggleSidebar"
+        >
+          <template #icon>
+            <NIcon
+              :component="ChevronForwardOutline"
+              :style="{ transform: sidebarVisible ? 'rotate(0deg)' : 'rotate(180deg)' }"
+            />
+          </template>
+        </NButton>
+      </div>
+
+      <!-- P0: 错误状态 -->
+      <div v-if="pageError" class="wiki-error">
+        <NResult
+          status="error"
+          title="页面加载失败"
+          :description="pageError"
+        >
+          <template #footer>
+            <NButton type="primary" @click="retryLoadPage">
+              重试
+            </NButton>
+          </template>
+        </NResult>
+      </div>
+
+      <!-- 正常内容 -->
+      <WikiContent
+        v-else
+        :current-page="currentPage"
+        :content-loading="contentLoading"
+        :backlinks="backlinks"
+        :is-editing="isEditing"
+        :has-lock="hasLock"
+        :selected-key="selectedKey"
+        :rendered-content="renderedContent"
+        :page-meta="pageMeta"
+        @start-editing="startEditing"
+        @cancel-editing="cancelEditing"
+        @saved="handleSaved"
+        @backlink-click="handleBacklinkClick"
+        @content-click="handleContentClick"
+        @toggle-version-history="showVersionHistory = true"
+        @lock-change="handleLockChange"
+      />
+    </div>
+
+    <!-- P0: 移动端侧边栏抽屉 -->
+    <NDrawer v-model:show="mobileDrawerVisible" :width="280" placement="left">
+      <NDrawerContent title="Wiki 页面" :closable="true">
+        <WikiSidebar
+          :pages="pages"
+          :tree-loading="treeLoading"
           :selected-key="selectedKey"
-          :rendered-content="renderedContent"
-          :page-meta="pageMeta"
-          @start-editing="startEditing"
-          @cancel-editing="cancelEditing"
-          @saved="handleSaved"
-          @backlink-click="handleBacklinkClick"
-          @content-click="handleContentClick"
-          @toggle-version-history="showVersionHistory = true"
-          @lock-change="handleLockChange"
+          :tree-search-text="treeSearchText"
+          @update:tree-search-text="(val: string) => treeSearchText = val"
+          @select="handleSelect"
         />
-      </template>
-    </NSplit>
+      </NDrawerContent>
+    </NDrawer>
+
     <!-- P1-11：版本历史抽屉 -->
     <WikiVersionHistory
       v-model:show="showVersionHistory"
@@ -198,5 +320,82 @@ onMounted(() => {
 .wiki-view {
   height: 100%;
   width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* P0: 面包屑 */
+.wiki-breadcrumb {
+  padding: 8px 16px;
+  background: var(--n-card-color, #fff);
+  border-bottom: 1px solid var(--n-border-color, #e5e7eb);
+  flex-shrink: 0;
+}
+
+/* P0: 移动端侧边栏切换按钮 */
+.mobile-sidebar-toggle {
+  display: none;
+  padding: 8px 16px;
+  background: var(--n-card-color, #fff);
+  border-bottom: 1px solid var(--n-border-color, #e5e7eb);
+  flex-shrink: 0;
+}
+
+.wiki-layout {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+/* P0: 内容区域填充剩余空间 */
+.wiki-layout > :deep(.n-card) {
+  flex: 1;
+  min-width: 0;
+}
+
+/* P0: 桌面端侧边栏 */
+.wiki-sidebar-desktop {
+  width: 280px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--n-border-color, #e5e7eb);
+  background: var(--n-card-color, #fff);
+}
+
+/* P0: 侧边栏折叠按钮 */
+.sidebar-toggle-btn {
+  position: absolute;
+  left: 280px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  transition: left 0.2s ease;
+}
+
+/* P0: 错误状态 */
+.wiki-error {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* P0: 响应式布局 */
+@media (max-width: 768px) {
+  .wiki-breadcrumb {
+    display: none;
+  }
+  .mobile-sidebar-toggle {
+    display: flex;
+  }
+  .wiki-sidebar-desktop {
+    display: none;
+  }
+  .sidebar-toggle-btn {
+    display: none;
+  }
+  .wiki-layout {
+    flex-direction: column;
+  }
 }
 </style>

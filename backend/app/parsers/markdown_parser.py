@@ -16,18 +16,43 @@ import hashlib
 import re
 
 from app.parsers.base import ElementType, HeadingNode, ParsedDocument, ParsedElement
+from app.parsers.text_cleaner import CleanedDocument, TextCleaner
 
 
 class MarkdownParser:
     format = "markdown"
 
-    def parse(self, path: str, doc_id: str) -> ParsedDocument:
+    def __init__(self) -> None:
+        # P0: 文本清洗器，在解析前预处理混乱格式文档
+        self.cleaner = TextCleaner()
+
+    def parse(self, path: str, doc_id: str, clean_text: bool = True) -> ParsedDocument:
         with open(path, encoding="utf-8") as f:
-            text = f.read()
+            raw = f.read()
+
+        # P0: 文本清洗管道 — 规范化空白、去除 HTML 残留、检测标题/段落/表格
+        cleaned: CleanedDocument | None = None
+        if clean_text:
+            cleaned = self.cleaner.clean(raw)
+            text = cleaned.cleaned_text
+        else:
+            text = raw
 
         checksum = hashlib.sha256(text.encode()).hexdigest()
         title = self._extract_title(text)
         elements, heading_tree = self._parse_markdown(text)
+
+        # P0: 将清洗器检测到的标题/段落作为解析提示存入 metadata
+        if cleaned is not None:
+            for elem in elements:
+                if elem.metadata is None:
+                    elem.metadata = {}
+            if cleaned.detected_headings:
+                for elem in elements:
+                    elem.metadata.setdefault('cleaner_headings', cleaned.detected_headings)
+            if cleaned.paragraphs:
+                for elem in elements:
+                    elem.metadata.setdefault('cleaner_paragraph_count', len(cleaned.paragraphs))
 
         return ParsedDocument(
             doc_id=doc_id,

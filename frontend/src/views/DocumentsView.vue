@@ -24,7 +24,7 @@ import {
   NSlider,
   useMessage,
 } from 'naive-ui'
-import type { UploadCustomRequestOptions } from 'naive-ui'
+import type { UploadFileInfo } from 'naive-ui'
 import { listDocuments, deleteDocument, parseDocument, getDocumentContent, searchDocuments, getPipelineStatus, compileToWiki } from '@/api/documents'
 import { getCompileTrace, recompileSection, updateWikiPage } from '@/api/wiki'
 import { formatFileSize, formatDateTime as formatDateTimeUtil } from '@/utils/format'
@@ -174,7 +174,7 @@ function handleSearchInput(val: string) {
   }, 300)
 }
 
-function handleUpload({ file, onFinish, onError }: UploadCustomRequestOptions) {
+async function handleUpload(file: UploadFileInfo): Promise<void> {
   const fileName = file.name
   const ext = fileName.split('.').pop()?.toLowerCase() || ''
   const fmt = ext === 'md' ? 'markdown' : ext
@@ -182,17 +182,9 @@ function handleUpload({ file, onFinish, onError }: UploadCustomRequestOptions) {
   const formData = new FormData()
   formData.append('file', file.file as File)
 
-  parseDocument(fmt, formData)
-    .then(() => {
-      message.success('上传成功，正在解析...')
-      onFinish()
-      fetchDocuments()
-    })
-    .catch((err) => {
-      message.error('上传失败')
-      console.error(err)
-      onError()
-    })
+  await parseDocument(fmt, formData)
+  message.success('上传成功，正在解析...')
+  fetchDocuments()
 }
 
 async function handleView(doc: DocumentMeta) {

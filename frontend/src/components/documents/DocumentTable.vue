@@ -50,6 +50,28 @@ const statusText: Record<string, string> = {
   error: '失败',
 }
 
+// P0: 文件格式图标映射
+const formatIcons: Record<string, string> = {
+  md: '📝',
+  txt: '📄',
+  docx: '📘',
+  xlsx: '📊',
+  pdf: '📕',
+  html: '🌐',
+  sql: '🗄️',
+  csv: '📋',
+  json: '📦',
+  xml: '📰',
+  yaml: '⚙️',
+  yml: '⚙️',
+  log: '📜',
+  conf: '🔧',
+}
+
+function getFormatIcon(format: string): string {
+  return formatIcons[format.toLowerCase()] || '📎'
+}
+
 const columns = [
   {
     type: 'selection' as const,
@@ -65,7 +87,7 @@ const columns = [
     key: 'format',
     width: 100,
     render(row: DocumentMeta) {
-      return row.format.toUpperCase()
+      return h('span', {}, `${getFormatIcon(row.format)} ${row.format.toUpperCase()}`)
     },
   },
   {

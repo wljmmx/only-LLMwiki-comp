@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { NCard, NTag, NSpace, NSkeleton, NEmpty, NThing, NButton, NTooltip } from 'naive-ui'
+import { ref, computed } from 'vue'
+import { NCard, NTag, NSpace, NSkeleton, NEmpty, NThing, NButton, NTooltip, NDivider } from 'naive-ui'
 import CollabPanel from '@/components/collab/CollabPanel.vue'
 import WikiEditor from '@/components/wiki/WikiEditor.vue'
 import WikiToc from '@/components/wiki/WikiToc.vue'
@@ -24,6 +24,16 @@ const props = defineProps<{
     sourcesCount: number
   } | null
 }>()
+
+// P0: 估算阅读时间（中文约 400 字/分钟，英文约 200 词/分钟）
+const readingTime = computed(() => {
+  if (!props.currentPage?.content) return 0
+  const text = props.currentPage.content
+  // 粗略估算：按字符数 / 400 计算中文阅读分钟数
+  const chars = text.replace(/\s/g, '').length
+  const minutes = Math.max(1, Math.ceil(chars / 400))
+  return minutes
+})
 
 const emit = defineEmits<{
   'start-editing': []
@@ -94,6 +104,14 @@ function handleContentClick(e: MouseEvent) {
         </NSpace>
       </div>
       <div v-if="pageMeta" class="page-meta-bar">
+        <!-- P0: 阅读时间 -->
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <span class="meta-item" tabindex="0" title="预计阅读时间">阅读 ~{{ readingTime }} 分钟</span>
+          </template>
+          预计阅读时间，基于内容字符数估算
+        </NTooltip>
+        <span class="meta-sep" aria-hidden="true">·</span>
         <NTooltip trigger="hover">
           <template #trigger>
             <span class="meta-item" tabindex="0" title="页面最后更新时间">更新于 {{ formatDate(pageMeta.updatedAt) }}</span>
@@ -342,6 +360,88 @@ function handleContentClick(e: MouseEvent) {
 
 .page-content :deep(a:hover) {
   text-decoration: underline;
+}
+
+/* P0: 表格样式增强 */
+.page-content :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 14px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--n-border-color, #e5e7eb);
+}
+
+.page-content :deep(th) {
+  background: var(--n-color-target, #f0f5ff);
+  color: var(--n-text-color, #111827);
+  font-weight: 600;
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 2px solid var(--n-border-color, #d1d5db);
+  font-size: 13px;
+}
+
+.page-content :deep(td) {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--n-border-color, #e5e7eb);
+  color: var(--n-text-color, #1f2937);
+  vertical-align: top;
+}
+
+.page-content :deep(tr:nth-child(even)) {
+  background: var(--n-base-color, #f9fafb);
+}
+
+.page-content :deep(tr:hover) {
+  background: var(--n-color-target, #f0f5ff);
+}
+
+/* P0: 代码块语法高亮样式 */
+.page-content :deep(pre) {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  padding: 16px 20px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 16px 0;
+  border: 1px solid var(--n-border-color, #e5e7eb);
+}
+
+.page-content :deep(pre code) {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+  border-radius: 0;
+}
+
+/* P0: 行内代码保持浅色 */
+.page-content :deep(code) {
+  background: var(--n-color-info-weak, #eff6ff);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 13px;
+  color: var(--n-text-color, #1f2937);
+}
+
+/* P0: blockquote 样式 */
+.page-content :deep(blockquote) {
+  border-left: 4px solid var(--n-primary-color, #3b82f6);
+  margin: 16px 0;
+  padding: 8px 16px;
+  background: var(--n-color-target, #f0f5ff);
+  border-radius: 0 6px 6px 0;
+  color: var(--n-text-color-2, #4b5563);
+}
+
+.page-content :deep(blockquote p) {
+  margin: 6px 0;
 }
 
 .backlinks-section {
