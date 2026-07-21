@@ -104,11 +104,14 @@ async def output_generate(body: GenerateRequest) -> dict:
         raise HTTPException(400, "Wiki 知识库为空，无法生成文档")
 
     # 生成
-    from app.core.llm.base import get_llm
-    llm = get_llm()
-    llm_call = llm.complete if llm else None
+    from app.core.llm import ChatMessage, get_llm_client
 
-    generator = DocumentGenerator(llm_call=llm_call)
+    llm = get_llm_client()
+    async def llm_call(prompt: str) -> str:
+        resp = await llm.chat(messages=[ChatMessage(role="user", content=prompt)])
+        return resp.text or ""
+
+    generator = DocumentGenerator(llm_call=llm_call if body.use_llm else None)
     result = await generator.generate(
         template_id=body.template_id,
         wiki_pages=wiki_summaries,
@@ -182,12 +185,12 @@ async def output_experience_distill(body: DistillRequest) -> dict:
     批量分析 Wiki 页面，识别重复故障模式、最佳实践、反模式等。
     结果可作为经验页面保存到 Wiki。
     """
+    from app.core.llm import ChatMessage, get_llm_client
     from app.knowledge import (
         ExperienceDistiller,
         list_wiki_pages,
         rebuild_index,
     )
-    from app.core.llm.base import get_llm
     from app.storage import get_version_control
 
     # 收集页面摘要
@@ -212,12 +215,14 @@ async def output_experience_distill(body: DistillRequest) -> dict:
         raise HTTPException(400, "需要至少 3 个 Wiki 页面才能蒸馏经验")
 
     # 蒸馏
-    llm = get_llm()
-    llm_call = llm.complete if llm else None
-    distiller = ExperienceDistiller(llm_call=llm_call)
+    llm = get_llm_client()
+    async def distill_llm_call(prompt: str) -> str:
+        resp = await llm.chat(messages=[ChatMessage(role="user", content=prompt)])
+        return resp.text or ""
+    distiller = ExperienceDistiller(llm_call=distill_llm_call if body.use_llm else None)
     result = await distiller.distill(
         summaries,
-        use_llm=body.use_llm and llm_call is not None,
+        use_llm=body.use_llm and distill_llm_call is not None,
     )
 
     # 保存经验页面到 Wiki
@@ -262,8 +267,8 @@ async def output_experience_distill(body: DistillRequest) -> dict:
 @router.post("/output/index/rebuild", dependencies=[Depends(verify_token)])
 async def output_index_rebuild() -> dict:
     """使用 IndexGenerator 重建 Wiki 目录树"""
+    from app.core.llm import ChatMessage, get_llm_client
     from app.knowledge import IndexGenerator, list_wiki_pages
-    from app.core.llm.base import get_llm
 
     pages = list_wiki_pages(limit=200)
     summaries = [
@@ -277,9 +282,11 @@ async def output_index_rebuild() -> dict:
         for p in pages
     ]
 
-    llm = get_llm()
-    llm_call = llm.complete if llm else None
-    generator = IndexGenerator(llm_call=llm_call)
+    llm = get_llm_client()
+    async def index_llm_call(prompt: str) -> str:
+        resp = await llm.chat(messages=[ChatMessage(role="user", content=prompt)])
+        return resp.text or ""
+    generator = IndexGenerator(llm_call=index_llm_call)
     tree = await generator.generate(summaries)
 
     # 保存为 index 页面

@@ -248,7 +248,7 @@ JSON:
     def to_markdown(self, tree: IndexTree) -> str:
         """将目录树渲染为 Markdown"""
         lines: list[str] = []
-        lines.append(f'# Wiki 知识库目录\n')
+        lines.append('# Wiki 知识库目录\n')
         lines.append(f'> 生成时间: {tree.generated_at}')
         lines.append(f'> 页面总数: {tree.total_pages}')
         lines.append('')

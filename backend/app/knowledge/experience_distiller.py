@@ -236,7 +236,6 @@ JSON:
         existing: list[dict],
     ) -> list[ExperienceInsight]:
         """合并新旧洞见"""
-        existing_slugs = {e.get('slug', '') for e in existing}
         merged = list(new_insights)
         for e in existing:
             if e.get('slug') not in {i.slug for i in new_insights}:

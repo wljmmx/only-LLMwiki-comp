@@ -18,14 +18,12 @@ attachment_index 表结构:
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-from app.attachments.extractor import AttachmentRef, AttachmentExtractionResult
+from app.attachments.extractor import AttachmentExtractionResult
 
 
 @dataclass

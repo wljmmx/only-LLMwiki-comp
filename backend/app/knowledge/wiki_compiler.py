@@ -120,7 +120,7 @@ class WikiCompiler:
         messages.append(ChatMessage(role="user", content=prompt))
 
         # P2-1: LLM 并发控制
-        from app.core.llm.concurrency import get_llm_concurrency_controller, TaskPriority
+        from app.core.llm.concurrency import TaskPriority, get_llm_concurrency_controller
 
         controller = get_llm_concurrency_controller()
         for attempt in range(1, _MAX_LLM_RETRIES + 1):

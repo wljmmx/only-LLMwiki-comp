@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any
 
 from app.parsers.markdown_parser import ParsedDocument, ParsedElement
 from app.parsers.text_cleaner import CleanedDocument

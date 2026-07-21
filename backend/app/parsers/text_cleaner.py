@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import html as _html
 import re
-from collections import Counter
 from dataclasses import dataclass, field
 
 
@@ -525,7 +524,6 @@ class TextCleaner:
                 next_line = lines[i + 1].strip()
                 if next_line and self._should_merge_lines(stripped, next_line):
                     # 合并: 当前行 + 下一行
-                    merged = stripped + next_line
                     result.append(line.rstrip() + next_line)
                     i += 2
                     continue

@@ -9,11 +9,25 @@ from app.knowledge.doc_generator import (
     DocGenState,
     get_pipeline,
 )
+from app.knowledge.experience_distiller import (
+    DistillationResult,
+    ExperienceDistiller,
+    ExperienceInsight,
+    get_experience_distiller,
+)
 from app.knowledge.graph_store import (
     GraphEntity,
     GraphRelation,
     GraphStore,
     get_graph_store,
+)
+
+# ── P4 新增模块 ──
+from app.knowledge.index_generator import (
+    IndexGenerator,
+    IndexNode,
+    IndexTree,
+    get_index_generator,
 )
 from app.knowledge.okf_adapter import (
     DIR_TO_TYPE,
@@ -171,19 +185,6 @@ from app.knowledge.wikilink import (
     update_backlinks,
     validate_links,
 )
-# ── P4 新增模块 ──
-from app.knowledge.index_generator import (
-    IndexGenerator,
-    IndexNode,
-    IndexTree,
-    get_index_generator,
-)
-from app.knowledge.experience_distiller import (
-    DistillationResult,
-    ExperienceDistiller,
-    ExperienceInsight,
-    get_experience_distiller,
-)
 
 __all__ = [
     "GraphStore",
@@ -333,4 +334,5 @@ __all__ = [
     "ExperienceDistiller",
     "ExperienceInsight",
     "DistillationResult",
+    "get_experience_distiller",
 ]

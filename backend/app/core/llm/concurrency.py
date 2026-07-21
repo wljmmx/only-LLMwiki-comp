@@ -23,7 +23,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Coroutine
+from typing import Any, Coroutine
 
 
 class TaskPriority(Enum):
@@ -348,7 +348,6 @@ class LLMConcurrencyController:
         for stage, limit in stage_limits.items():
             self._stage_limits[stage] = limit
             if stage in self._stage_semaphores:
-                old = self._stage_semaphores[stage]
                 self._stage_semaphores[stage] = asyncio.Semaphore(limit)
 
 

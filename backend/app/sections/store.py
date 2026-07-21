@@ -18,9 +18,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-from app.sections.splitter import Section, SectionSplitResult
+from app.sections.splitter import SectionSplitResult
 
 
 @dataclass
