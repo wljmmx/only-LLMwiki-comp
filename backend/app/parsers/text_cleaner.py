@@ -33,6 +33,8 @@ class CleanedDocument:
     paragraph_classes: list[dict] = field(default_factory=list)
     detected_code_blocks: list[dict] = field(default_factory=list)
     detected_tables: list[dict] = field(default_factory=list)
+    attachment_refs: list[dict] = field(default_factory=list)
+    code_block_classes: list[dict] = field(default_factory=list)
     stats: dict = field(default_factory=dict)
 
 
@@ -156,18 +158,28 @@ class TextCleaner:
     # P0: 代码块占位符模板（用于清洗期间保护代码块）
     _CODE_PLACEHOLDER = '__CODE_BLOCK_{}__'
 
-    def clean(self, text: str, preserve_code_blocks: bool = True) -> CleanedDocument:
+    def clean(
+        self, text: str, preserve_code_blocks: bool = True,
+        extract_attachments: bool = True,
+    ) -> CleanedDocument:
         """执行完整的文本清洗管道
 
         Args:
             text: 原始文本
             preserve_code_blocks: 是否在清洗期间保护代码块（默认 True）
+            extract_attachments: 是否提取嵌入附件（默认 True）
 
         Returns:
-            CleanedDocument 包含清洗后文本、段落、标题、推断结构、段落分类、代码块、表格和统计信息
+            CleanedDocument 包含清洗后文本、段落、标题、推断结构、段落分类、
+            代码块、表格、附件引用、代码块分类和统计信息
         """
         stats: dict[str, object] = {}
         original = text
+
+        # 0. 附件提取（Base64 图片、文件引用）→ 占位符
+        attachment_refs: list[dict] = []
+        if extract_attachments:
+            text, attachment_refs = self._extract_attachments(text)
 
         # 1. 编码规范化（BOM / 换行符 / 全角空格）
         text = self._normalize_encoding(text)
@@ -181,6 +193,14 @@ class TextCleaner:
 
         # 3. HTML 标签去除
         text = self._strip_html_tags(text)
+
+        # 3.5. 段落重建：修复 Word 导出导致的错误断行
+        text = self._rebuild_paragraphs(text)
+
+        # 3.6. 代码块分类：识别 SQL/Shell/Python/Config/Log 等语言类型
+        code_block_classes: list[dict] = []
+        if preserve_code_blocks:
+            code_block_classes = self._classify_code_blocks(text)
 
         # 4. 代码块保护（提取代码块→占位符，避免后续清洗破坏代码）
         code_blocks: list[dict] = []
@@ -208,7 +228,6 @@ class TextCleaner:
         para_count = len(paragraphs)
         heading_count = len(headings)
         if para_count >= self._STRUCTURE_MIN_PARAGRAPHS:
-            # 触发条件：标题少（<3）或大量段落无标题覆盖（段落/标题比 > 5）
             if heading_count < 3 or (heading_count > 0 and para_count / heading_count > 5):
                 inferred = self._infer_structure(paragraphs, headings)
 
@@ -225,6 +244,7 @@ class TextCleaner:
         stats['inferred_heading_count'] = len(inferred)
         stats['code_block_count'] = len(code_blocks)
         stats['table_count'] = len(tables)
+        stats['attachment_count'] = len(attachment_refs)
 
         return CleanedDocument(
             original_text=original,
@@ -235,6 +255,8 @@ class TextCleaner:
             paragraph_classes=para_classes,
             detected_code_blocks=code_blocks,
             detected_tables=tables,
+            attachment_refs=attachment_refs,
+            code_block_classes=code_block_classes,
             stats=stats,
         )
 
@@ -250,6 +272,143 @@ class TextCleaner:
         # P0: 全角空格（U+3000，中文文档常见）→ 半角空格
         text = text.replace('\u3000', ' ')
         return text
+
+    # ── 附件提取 ─────────────────────────────────────────────────
+
+    # Base64 图片模式: data:image/{type};base64,{data}
+    _BASE64_IMAGE_RE = re.compile(
+        r'data:image/(\w+);base64,([A-Za-z0-9+/=]+)',
+    )
+    # 图片引用模式: ![alt](path) 或 <img src="path">
+    _IMAGE_REF_RE = re.compile(
+        r'!\[([^\]]*)\]\(([^)]+\.(?:png|jpg|jpeg|gif|svg|bmp|webp))\)',
+        re.IGNORECASE,
+    )
+    _IMG_TAG_RE = re.compile(
+        r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>',
+        re.IGNORECASE,
+    )
+    # 附件引用模式: [附件: name](path) 或 (参见 file.xlsx)
+    _ATTACHMENT_REF_RE = re.compile(
+        r'[\[\(]?\s*(?:附件|参见|详见|参考|见|attachment|see|refer)\s*[:：]?\s*'
+        r'([^\s\]\)]+\.(?:yaml|yml|json|xml|conf|cfg|ini|toml|'
+        r'xlsx|xls|docx|doc|pptx|ppt|pdf|csv|zip|tar|gz|sql|log|txt))',
+        re.IGNORECASE,
+    )
+    # 中文引用: 见图1, 如图1所示, 参见图2, (图1)
+    _FIGURE_REF_RE = re.compile(
+        r'(?:见|如图|参见|参考|参照)\s*(?:图|表|附件|附录)\s*(\d+[a-zA-Z]?)',
+    )
+
+    def _extract_attachments(self, text: str) -> tuple[str, list[dict]]:
+        """提取嵌入的附件和引用，返回占位符替换后的文本和引用列表
+
+        处理:
+        - Base64 内嵌图片: data:image/png;base64,... → 解码为文件
+        - Markdown 图片引用: ![alt](path) → 保留引用
+        - HTML img 标签: <img src="path"> → 保留引用
+        - 附件引用: [附件: config.yaml] → 保留引用
+        - 图表引用: 见图1, 参见图2 → 保留引用
+
+        Returns:
+            (text_with_placeholders, attachment_refs)
+        """
+        refs: list[dict] = []
+        seq = 0
+
+        # 1. Base64 图片提取
+        def _save_base64(m):
+            nonlocal seq
+            img_type = m.group(1)
+            data = m.group(2)
+            ref_id = f'img_{seq:03d}'
+            refs.append({
+                'ref_id': ref_id,
+                'type': 'image',
+                'subtype': 'base64',
+                'format': img_type,
+                'data': data,
+                'original_text': m.group(0)[:80],
+                'placeholder': f'<!-- attachment_ref: {ref_id} -->',
+            })
+            seq += 1
+            return f'<!-- attachment_ref: {ref_id} -->\n📷 内嵌图片 ({img_type})'
+
+        text = self._BASE64_IMAGE_RE.sub(_save_base64, text)
+
+        # 2. Markdown 图片引用
+        def _save_md_img(m):
+            nonlocal seq
+            alt = m.group(1) or '图片'
+            path = m.group(2)
+            ref_id = f'img_{seq:03d}'
+            refs.append({
+                'ref_id': ref_id,
+                'type': 'image',
+                'subtype': 'markdown_ref',
+                'path': path,
+                'alt': alt,
+                'original_text': m.group(0),
+                'placeholder': f'<!-- attachment_ref: {ref_id} -->',
+            })
+            seq += 1
+            return f'<!-- attachment_ref: {ref_id} -->\n📷 {alt}'
+
+        text = self._IMAGE_REF_RE.sub(_save_md_img, text)
+
+        # 3. HTML img 标签
+        def _save_html_img(m):
+            nonlocal seq
+            path = m.group(1)
+            ref_id = f'img_{seq:03d}'
+            refs.append({
+                'ref_id': ref_id,
+                'type': 'image',
+                'subtype': 'html_tag',
+                'path': path,
+                'original_text': m.group(0)[:80],
+                'placeholder': f'<!-- attachment_ref: {ref_id} -->',
+            })
+            seq += 1
+            return f'<!-- attachment_ref: {ref_id} -->'
+
+        text = self._IMG_TAG_RE.sub(_save_html_img, text)
+
+        # 4. 附件文件引用
+        def _save_attachment(m):
+            nonlocal seq
+            filename = m.group(1)
+            ref_id = f'att_{seq:03d}'
+            refs.append({
+                'ref_id': ref_id,
+                'type': 'file',
+                'filename': filename,
+                'original_text': m.group(0),
+                'placeholder': f'<!-- attachment_ref: {ref_id} -->',
+            })
+            seq += 1
+            return f'<!-- attachment_ref: {ref_id} -->\n📎 附件: {filename}'
+
+        text = self._ATTACHMENT_REF_RE.sub(_save_attachment, text)
+
+        # 5. 图表引用（见图1, 参见表2）
+        def _save_figure_ref(m):
+            nonlocal seq
+            num = m.group(1)
+            ref_id = f'fig_{seq:03d}'
+            refs.append({
+                'ref_id': ref_id,
+                'type': 'figure_ref',
+                'figure_num': num,
+                'original_text': m.group(0),
+                'placeholder': f'<!-- attachment_ref: {ref_id} -->',
+            })
+            seq += 1
+            return f'<!-- attachment_ref: {ref_id} -->📊 {m.group(0)}'
+
+        text = self._FIGURE_REF_RE.sub(_save_figure_ref, text)
+
+        return text, refs
 
     def _clean_word_noise(self, text: str) -> str:
         """清洗 Word 特有噪声
@@ -327,6 +486,224 @@ class TextCleaner:
         # P0: 去除其余标签
         text = re.sub(r'<[^>]+>', '', text)
         return text
+
+    # ── 段落重建 ─────────────────────────────────────────────────
+
+    # 行末无句末标点（可能被错误截断）
+    _BROKEN_LINE_END_RE = re.compile(r'[^。！？.!?\u3002\uff01\uff1f\uff0c,;；:\uff1a\uff1b\-\u2014]$')
+    # 下一行以小写或中文开头（应合并）
+    _CONTINUATION_START_RE = re.compile(r'^[a-z\u4e00-\u9fff]')
+
+    def _rebuild_paragraphs(self, text: str) -> str:
+        """修复 Word 导出导致的错误断行
+
+        Word 导出时可能在句子中间插入换行符，导致错误分段。
+        例如:
+          "Nginx 502错误表示作为反向代理\n时，上游服务器无法提供"
+          → "Nginx 502错误表示作为反向代理时，上游服务器无法提供"
+
+        策略:
+        1. 识别非自然断行（行末无句末标点 + 下一行以小写/中文开头）
+        2. 合并被错误截断的行
+        3. 保护代码块、表格、列表、标题等不应合并的行
+        """
+        lines = text.split('\n')
+        result: list[str] = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            # 保护特殊行：空行、标题、代码块、表格、列表
+            if not stripped or self._is_protected_line(stripped):
+                result.append(line)
+                i += 1
+                continue
+
+            # 检查是否应该与下一行合并
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line and self._should_merge_lines(stripped, next_line):
+                    # 合并: 当前行 + 下一行
+                    merged = stripped + next_line
+                    result.append(line.rstrip() + next_line)
+                    i += 2
+                    continue
+
+            result.append(line)
+            i += 1
+
+        return '\n'.join(result)
+
+    def _is_protected_line(self, stripped: str) -> bool:
+        """判断是否是不应合并的保护行"""
+        # 标题
+        if re.match(r'^#{1,6}\s', stripped):
+            return True
+        # 代码块围栏
+        if stripped.startswith('```'):
+            return True
+        # 表格行
+        if stripped.startswith('|') and stripped.endswith('|'):
+            return True
+        if re.match(r'^\|[-| :]+\|$', stripped):
+            return True
+        # 列表项
+        if re.match(r'^[-*+]\s', stripped):
+            return True
+        if re.match(r'^\d+[\.\)]\s', stripped):
+            return True
+        # HTML 注释
+        if stripped.startswith('<!--'):
+            return True
+        # 附件引用占位符
+        if stripped.startswith('📷') or stripped.startswith('📎') or stripped.startswith('📊'):
+            return True
+        return False
+
+    def _should_merge_lines(self, current: str, next_line: str) -> bool:
+        """判断两行是否应该合并"""
+        # 当前行以句末标点结尾 → 自然断行，不应合并
+        if current.endswith(('。', '！', '？', '.', '!', '?', '\u3002', '\uff01', '\uff1f')):
+            return False
+        # 当前行以冒号结尾 → 自然断行（可能是列表或说明）
+        if current.endswith(('：', ':', '\uff1a')):
+            return False
+        # 当前行以逗号或分号结尾 → 自然断行
+        if current.endswith((',', '，', ';', '；', '\uff0c', '\uff1b')):
+            return False
+        # 下一行以大写字母开头 → 可能是新句子
+        if re.match(r'^[A-Z]', next_line):
+            return False
+        # 下一行以数字+点号开头 → 可能是新列表项
+        if re.match(r'^\d+[\.\)]', next_line):
+            return False
+        # 当前行较短且下一行以中文/小写开头 → 可能是被截断
+        if len(current) < 80 and self._CONTINUATION_START_RE.match(next_line):
+            return True
+        # 当前行不以标点结尾且下一行是连续文字 → 合并
+        if self._BROKEN_LINE_END_RE.search(current) and self._CONTINUATION_START_RE.match(next_line):
+            return True
+        return False
+
+    # ── 代码块分类 ─────────────────────────────────────────────────
+
+    # 各语言的关键词模式
+    _CODE_LANG_PATTERNS: dict[str, re.Pattern] = {
+        'sql': re.compile(
+            r'\b(SELECT|INSERT|UPDATE|DELETE|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE|'
+            r'FROM|WHERE|JOIN|GROUP\s+BY|ORDER\s+BY|HAVING|UNION|LIMIT|OFFSET|'
+            r'BEGIN|COMMIT|ROLLBACK|TRUNCATE|GRANT|REVOKE)\b',
+            re.IGNORECASE,
+        ),
+        'shell': re.compile(
+            r'(^\s*[\$#]\s|^\s*\w+@\w+|^\s*(?:apt|yum|brew|pip|npm|docker|kubectl|'
+            r'systemctl|service|chmod|chown|mkdir|rm|cp|mv|grep|awk|sed|curl|wget|'
+            r'echo|export|source|cd|ls|cat|tail|head|ps|kill|top|df|du|netstat|'
+            r'ssh|scp|rsync|git|make|cmake)\b)',
+            re.MULTILINE | re.IGNORECASE,
+        ),
+        'python': re.compile(
+            r'\b(def|class|import|from|return|yield|async|await|try|except|raise|'
+            r'with|as|if\s+__name__|lambda|self\.|print\(|\.py\b)',
+        ),
+        'config': re.compile(
+            r'(^\s*\[[^\]]+\]\s*$|^\s*[A-Za-z_][\w.]*\s*[=:]\s*|'
+            r'^\s*<\w+>\s*$|^\s*server\s*\{|^\s*location\s+)',
+            re.MULTILINE,
+        ),
+        'json': re.compile(
+            r'^\s*[{\[]\s*$|^\s*"[^"]+"\s*:\s*|^\s*[}\]]\s*,?\s*$',
+            re.MULTILINE,
+        ),
+        'log': re.compile(
+            r'^\d{4}[-/]\d{2}[-/]\d{2}\s+\d{2}:\d{2}:\d{2}|'
+            r'^\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}|'
+            r'\b(ERROR|WARN|INFO|DEBUG|TRACE|FATAL|CRITICAL)\b',
+            re.MULTILINE,
+        ),
+    }
+
+    def _classify_code_blocks(self, text: str) -> list[dict]:
+        """识别代码块的语言类型
+
+        扫描文本中的代码块（``` 围栏），通过关键词模式判断语言类型。
+
+        Returns:
+            [{start_line, end_line, lang, confidence, context}, ...]
+        """
+        classifications: list[dict] = []
+        lines = text.split('\n')
+        in_code = False
+        code_start = 0
+        code_content: list[str] = []
+        fence_lang = ''
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('```'):
+                if not in_code:
+                    # 进入代码块
+                    in_code = True
+                    code_start = i
+                    fence_lang = stripped[3:].strip().lower()
+                    code_content = []
+                else:
+                    # 退出代码块
+                    in_code = False
+                    code_text = '\n'.join(code_content)
+
+                    # 如果已有语言标注，直接使用
+                    if fence_lang:
+                        lang = fence_lang
+                        confidence = 0.95
+                    else:
+                        lang, confidence = self._detect_code_lang(code_text)
+
+                    # 提取上下文（代码块前的段落）
+                    context = self._extract_code_context(lines, code_start)
+
+                    classifications.append({
+                        'start_line': code_start,
+                        'end_line': i,
+                        'lang': lang,
+                        'confidence': confidence,
+                        'context': context,
+                        'line_count': len(code_content),
+                    })
+            elif in_code:
+                code_content.append(line)
+
+        return classifications
+
+    def _detect_code_lang(self, code: str) -> tuple[str, float]:
+        """通过关键词模式检测代码语言
+
+        Returns:
+            (lang, confidence)
+        """
+        scores: dict[str, float] = {}
+        for lang, pattern in self._CODE_LANG_PATTERNS.items():
+            matches = len(pattern.findall(code))
+            if matches > 0:
+                # 匹配数越多，置信度越高（上限 0.9）
+                scores[lang] = min(matches * 0.2, 0.9)
+
+        if not scores:
+            return 'text', 0.3
+
+        best = max(scores, key=lambda k: scores[k])
+        return best, scores[best]
+
+    def _extract_code_context(self, lines: list[str], code_start: int) -> str:
+        """提取代码块前面的上下文描述"""
+        context_lines: list[str] = []
+        for j in range(code_start - 1, max(code_start - 5, -1), -1):
+            line = lines[j].strip()
+            if not line or line.startswith('```') or line.startswith('#'):
+                break
+            context_lines.insert(0, line)
+        return ' '.join(context_lines)[:200]
 
     def _protect_code_blocks(self, text: str) -> tuple[str, list[dict]]:
         """保护代码块：提取代码块并用占位符替换，避免被清洗破坏
