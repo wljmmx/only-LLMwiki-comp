@@ -43,7 +43,7 @@ from pathlib import Path
 
 import structlog
 
-from app.extraction.rule_extractor import RuleBasedExtractor
+from app.extraction.compiled_extractor import CompiledKnowledgeExtractor
 from app.parsers import get_parser
 from app.storage import get_document_store
 
@@ -160,7 +160,7 @@ class TopologyBuilder:
 
     def __init__(self) -> None:
         self.store = get_document_store()
-        self.extractor = RuleBasedExtractor()
+        self.extractor = CompiledKnowledgeExtractor()
 
     def rebuild(self, max_docs: int = 100) -> dict:
         """全量重建拓扑（清空旧数据后重新扫描所有文档）
@@ -678,7 +678,9 @@ class TopologyBuilder:
         fmt = doc_meta.get("format", "txt")
         parser = get_parser(fmt)
         parsed = parser.parse(doc_meta.get("stored_path", ""), doc_meta["doc_id"])
-        entities, relations = self.extractor.extract(parsed)
+        result = self.extractor.extract_from_document(parsed)
+        entities = result.entities
+        relations = result.relations
 
         # 节点：仅保留 Host/Service/Component，附带 P2-4.6 metadata
         nodes = []

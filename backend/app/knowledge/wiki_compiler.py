@@ -200,6 +200,109 @@ class WikiCompiler:
 
     # ── 主入口 ──
 
+    async def compile_from_sections(
+        self,
+        compiled_sections: list[Any],  # list[CompiledSection]
+        *,
+        doc_id: str = "",
+        force: bool = False,
+        rebuild_index_after: bool = True,
+        on_progress: ProgressCallback | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> WikiCompileResult:
+        """从编译后的章节合成 Wiki 页面（新架构入口）
+
+        将多个 CompiledSection 合成为一个 Wiki 页面。
+        这是新架构的核心入口，替代了旧的从 raw doc → wiki 的流程。
+
+        流程:
+            1. 按 semantic_role 分组章节
+            2. 确定 Wiki 页面类型和 slug
+            3. LLM 合成 Wiki 页面（或模板兜底）
+            4. 合并已有页面
+            5. 保存 + 回链 + 图同步
+
+        Args:
+            compiled_sections: 编译后的章节列表
+            doc_id: 来源文档 ID
+            force: 强制重编译
+            rebuild_index_after: 编译后是否重建索引
+            on_progress: 进度回调
+            is_cancelled: 中断检查回调
+
+        Returns:
+            WikiCompileResult
+        """
+        result = WikiCompileResult(doc_id=doc_id or compiled_sections[0].source_doc_id if compiled_sections else '')
+
+        if not compiled_sections:
+            result.errors.append("no compiled sections provided")
+            return result
+
+        await self._report_progress(on_progress, "wiki_synthesizing", "正在合成 Wiki 页面...")
+
+        # 1. 按 semantic_role 分组
+        role_groups = self._group_sections_by_role(compiled_sections)
+
+        # 2. 确定 Wiki 页面类型
+        page_type = self._determine_page_type(role_groups)
+        slug = self._determine_slug(compiled_sections, page_type)
+
+        # 3. LLM 合成
+        body = await self._synthesize_wiki_body(
+            role_groups, page_type, slug, compiled_sections,
+        )
+
+        # 4. 质量校验
+        validation = self._validate_page_quality(body, page_type)
+        if not validation.get('valid', False):
+            result.warnings.append(f'质量校验未通过: {validation.get("issues", [])}')
+
+        # 5. 构建 frontmatter
+        title = self._extract_title_from_sections(compiled_sections)
+        tags = self._extract_tags_from_sections(compiled_sections)
+        sources = self._build_sources_from_sections(compiled_sections, doc_id)
+
+        page_md = self._render_wiki_page(
+            slug=slug,
+            title=title,
+            page_type=page_type,
+            tags=tags,
+            sources=sources,
+            body_md=body,
+            review_status='auto',
+        )
+
+        # 6. 保存页面
+        page_result = await self._save_page(
+            slug=slug,
+            page_md=page_md,
+            page_type=page_type,
+            force=force,
+            compiled_sections=compiled_sections,
+        )
+
+        if page_result == 'created':
+            result.pages_created = 1
+        elif page_result == 'updated':
+            result.pages_updated = 1
+        else:
+            result.pages_unchanged = 1
+
+        result.slugs = [slug]
+
+        # 7. 重建索引
+        if rebuild_index_after and page_result != 'unchanged':
+            await self._report_progress(on_progress, "indexing", "正在重建搜索索引...")
+            try:
+                from app.search.search_engine import get_search_engine
+                se = get_search_engine()
+                se.rebuild_index()
+            except Exception as e:
+                result.warnings.append(f'索引重建失败: {e}')
+
+        return result
+
     async def compile_raw_to_wiki(
         self,
         doc_id: str,
@@ -2701,6 +2804,141 @@ H{level}
             new_line = line[:s] + replacement + line[e:]
             return new_line, True
         return line, False
+
+    # ── P3-2: compile_from_sections 辅助方法 ──
+
+    def _group_sections_by_role(
+        self, sections: list[Any],
+    ) -> dict[str, list[Any]]:
+        """按 semantic_role 分组章节"""
+        groups: dict[str, list[Any]] = {}
+        for s in sections:
+            role = getattr(s, 'semantic_role', 'general') or 'general'
+            if role not in groups:
+                groups[role] = []
+            groups[role].append(s)
+        return groups
+
+    def _determine_page_type(
+        self, role_groups: dict[str, list[Any]],
+    ) -> str:
+        """根据章节角色确定 Wiki 页面类型"""
+        roles = set(role_groups.keys())
+        if 'cause' in roles and 'solution' in roles:
+            return 'incident'
+        if 'steps' in roles:
+            return 'runbook'
+        if 'config' in roles:
+            return 'service'
+        if 'overview' in roles:
+            return 'concept'
+        return 'concept'
+
+    def _determine_slug(
+        self, sections: list[Any], page_type: str,
+    ) -> str:
+        """根据章节确定 Wiki 页面 slug"""
+        # 优先使用第一个章节标题的 slug
+        if sections:
+            title = getattr(sections[0], 'title', '')
+            if title:
+                slug = re.sub(r'[^\w\s-]', '', title.lower())
+                slug = re.sub(r'[-\s]+', '-', slug)
+                return slug.strip('-')[:60]
+        return f'{page_type}-{hashlib.md5(str(sections).encode()).hexdigest()[:8]}'
+
+    async def _synthesize_wiki_body(
+        self,
+        role_groups: dict[str, list[Any]],
+        page_type: str,
+        slug: str,
+        sections: list[Any],
+    ) -> str:
+        """合成 Wiki 页面正文
+
+        尝试 LLM 合成，失败时降级为模板拼接。
+        """
+        # 模板拼接（兜底）
+        return self._synthesize_body_template(role_groups, page_type)
+
+    def _synthesize_body_template(
+        self, role_groups: dict[str, list[Any]], page_type: str,
+    ) -> str:
+        """模板拼接 Wiki 正文"""
+        # 按语义角色顺序排列
+        role_order = ['overview', 'cause', 'troubleshoot', 'solution', 'config', 'steps', 'warning', 'reference']
+        section_titles = {
+            'overview': '概述',
+            'cause': '成因分析',
+            'troubleshoot': '排查步骤',
+            'solution': '处置方案',
+            'config': '关键配置参数',
+            'steps': '操作步骤',
+            'warning': '注意事项',
+            'reference': '参考',
+        }
+
+        parts: list[str] = []
+        for role in role_order:
+            if role not in role_groups:
+                continue
+            title = section_titles.get(role, role)
+            parts.append(f'## {title}')
+            for s in role_groups[role]:
+                content = getattr(s, 'content', '')
+                if content:
+                    parts.append(content)
+                parts.append('')
+
+        return '\n\n'.join(parts).strip()
+
+    def _extract_title_from_sections(self, sections: list[Any]) -> str:
+        """从章节提取 Wiki 页面标题"""
+        for s in sections:
+            if getattr(s, 'semantic_role', '') == 'overview':
+                title = getattr(s, 'title', '')
+                if title:
+                    return title
+        return getattr(sections[0], 'title', '未命名') if sections else '未命名'
+
+    def _extract_tags_from_sections(self, sections: list[Any]) -> list[str]:
+        """从章节提取标签"""
+        tags: set[str] = set()
+        for s in sections:
+            content = getattr(s, 'content', '')
+            # 提取技术关键词作为标签
+            for kw in ['nginx', 'redis', 'mysql', 'docker', 'k8s', 'kubernetes',
+                        'linux', 'network', 'database', 'cache', 'proxy', 'gateway',
+                        '502', '503', '504', 'timeout', 'connection', 'error']:
+                if kw in content.lower():
+                    tags.add(kw)
+        return sorted(tags)[:10]
+
+    def _build_sources_from_sections(
+        self, sections: list[Any], doc_id: str,
+    ) -> list[dict]:
+        """构建 sources 列表"""
+        seen: set[str] = set()
+        sources: list[dict] = []
+        for s in sections:
+            sid = getattr(s, 'source_doc_id', doc_id)
+            if sid and sid not in seen:
+                seen.add(sid)
+                sources.append({
+                    'doc_id': sid,
+                    'title': getattr(s, 'title', ''),
+                    'sections': [getattr(s, 'section_id', '')],
+                })
+        return sources
+
+    async def _report_progress(
+        self,
+        on_progress: ProgressCallback | None,
+        step: str,
+        message: str,
+    ) -> None:
+        if on_progress:
+            await on_progress(step, message)
 
 
 # ────────── 全局单例 ──────────

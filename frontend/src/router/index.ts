@@ -116,6 +116,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '编译流水线', icon: 'pipeline', menuGroup: '知识管理', menuOrder: 5 },
       },
       {
+        path: 'output-doc',
+        name: 'output-doc',
+        component: () => import('@/views/OutputDocView.vue'),
+        meta: { title: '文档生成', icon: 'wiki', menuGroup: '知识管理', menuOrder: 6 },
+      },
+      {
         path: 'wiki-health',
         name: 'wiki-health',
         component: () => import('@/views/WikiHealthView.vue'),

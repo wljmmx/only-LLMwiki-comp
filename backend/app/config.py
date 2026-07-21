@@ -41,6 +41,21 @@ class Settings(BaseSettings):
     # 留空则不启用降级
     llm_fallback_backends: str = ""
 
+    # ── LLM 阶段并发控制 (P2-2) ──
+    # 全局最大并行 LLM 调用数（本地 Ollama 推荐 4-8，API 可设更高）
+    llm_max_global: int = 4
+    # 各阶段最大并发数（JSON 字符串）
+    # 格式: {"section_compile":3,"wiki_generate":1,"entity_resolve":1,"experience_distill":1}
+    # 留空则使用内置默认值
+    llm_stage_concurrency: str = ""
+    # 各阶段超时时间（秒）
+    llm_timeout_section_compile: int = 120
+    llm_timeout_wiki_generate: int = 180
+    llm_timeout_entity_resolve: int = 60
+    llm_timeout_experience_distill: int = 300
+    llm_timeout_index_generate: int = 120
+    llm_timeout_document_generate: int = 240
+
     # LLM 调用缓存（减少重复 API 调用）
     # 设为 False 可关闭缓存
     llm_cache_enabled: bool = True

@@ -640,3 +640,265 @@ def _load_graph_snapshot() -> dict[str, str]:
         "SELECT entity_name, props_hash FROM graph_entity_snapshots"
     ).fetchall()
     return {r["entity_name"]: r["props_hash"] for r in rows}
+
+
+# ────────── P5-2: 章节级漂移检测 ──────────
+
+
+@dataclass
+class SectionDriftReport:
+    """章节级漂移检测报告"""
+    section_id: str
+    source_doc_id: str
+    changed: bool
+    old_checksum: str = ""
+    new_checksum: str = ""
+    affected_wiki_slugs: list[str] = field(default_factory=list)
+    affected_graph_entities: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SectionDriftBatch:
+    """批量章节漂移检测结果"""
+    reports: list[SectionDriftReport] = field(default_factory=list)
+    changed_sections: int = 0
+    total_sections: int = 0
+    affected_wiki_slugs: list[str] = field(default_factory=list)
+    affected_graph_entities: list[str] = field(default_factory=list)
+
+
+def _init_section_checksum_table(conn: sqlite3.Connection) -> None:
+    """初始化章节 checksum 表"""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS section_checksums (
+            section_id TEXT PRIMARY KEY,
+            source_doc_id TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            compiled_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sc_doc ON section_checksums(source_doc_id);
+    """)
+
+
+def record_section_checksum(
+    section_id: str,
+    source_doc_id: str,
+    checksum: str,
+) -> None:
+    """记录章节编译时的 checksum
+
+    Args:
+        section_id: 章节 ID
+        source_doc_id: 来源文档 ID
+        checksum: 编译产物的 checksum
+    """
+    conn = _get_db()
+    _init_section_checksum_table(conn)
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT OR REPLACE INTO section_checksums
+           (section_id, source_doc_id, checksum, compiled_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (section_id, source_doc_id, checksum, now, now),
+    )
+    conn.commit()
+    logger.info(
+        "section_checksum_recorded",
+        section_id=section_id,
+        checksum=checksum[:12],
+    )
+
+
+def get_section_checksum(section_id: str) -> str | None:
+    """获取章节上次编译的 checksum"""
+    conn = _get_db()
+    _init_section_checksum_table(conn)
+    row = conn.execute(
+        "SELECT checksum FROM section_checksums WHERE section_id = ?",
+        (section_id,),
+    ).fetchone()
+    return row["checksum"] if row else None
+
+
+def detect_section_drift(
+    section_id: str,
+    new_checksum: str,
+    source_doc_id: str = "",
+) -> SectionDriftReport:
+    """检测单个章节是否发生漂移
+
+    Args:
+        section_id: 章节 ID
+        new_checksum: 新编译产物的 checksum
+        source_doc_id: 来源文档 ID
+
+    Returns:
+        SectionDriftReport
+    """
+    old_checksum = get_section_checksum(section_id)
+
+    if not old_checksum:
+        # 首次编译：记录 checksum，不算 changed
+        record_section_checksum(section_id, source_doc_id, new_checksum)
+        return SectionDriftReport(
+            section_id=section_id,
+            source_doc_id=source_doc_id,
+            changed=False,
+            new_checksum=new_checksum,
+        )
+
+    if old_checksum == new_checksum:
+        return SectionDriftReport(
+            section_id=section_id,
+            source_doc_id=source_doc_id,
+            changed=False,
+            old_checksum=old_checksum,
+            new_checksum=new_checksum,
+        )
+
+    # 章节内容变化 → 查找受影响的 Wiki 页面和图谱实体
+    affected_wiki, affected_graph = _find_targets_by_section(section_id)
+
+    logger.info(
+        "section_drift_detected",
+        section_id=section_id,
+        old=old_checksum[:12],
+        new=new_checksum[:12],
+        affected_wiki=len(affected_wiki),
+        affected_graph=len(affected_graph),
+    )
+
+    return SectionDriftReport(
+        section_id=section_id,
+        source_doc_id=source_doc_id,
+        changed=True,
+        old_checksum=old_checksum,
+        new_checksum=new_checksum,
+        affected_wiki_slugs=affected_wiki,
+        affected_graph_entities=affected_graph,
+    )
+
+
+def detect_section_batch_drift(
+    section_checksums: list[tuple[str, str, str]],  # [(section_id, source_doc_id, new_checksum)]
+) -> SectionDriftBatch:
+    """批量检测章节漂移
+
+    Args:
+        section_checksums: [(section_id, source_doc_id, new_checksum)]
+
+    Returns:
+        SectionDriftBatch
+    """
+    batch = SectionDriftBatch()
+    all_wiki_slugs: set[str] = set()
+    all_graph_entities: set[str] = set()
+
+    for section_id, source_doc_id, new_checksum in section_checksums:
+        report = detect_section_drift(section_id, new_checksum, source_doc_id)
+        batch.reports.append(report)
+        batch.total_sections += 1
+        if report.changed:
+            batch.changed_sections += 1
+            all_wiki_slugs.update(report.affected_wiki_slugs)
+            all_graph_entities.update(report.affected_graph_entities)
+
+    batch.affected_wiki_slugs = list(all_wiki_slugs)
+    batch.affected_graph_entities = list(all_graph_entities)
+
+    logger.info(
+        "section_batch_drift_done",
+        total=batch.total_sections,
+        changed=batch.changed_sections,
+        affected_wiki=len(batch.affected_wiki_slugs),
+    )
+
+    return batch
+
+
+def _find_targets_by_section(
+    section_id: str,
+) -> tuple[list[str], list[str]]:
+    """通过 section_contributions 表查找受影响的 Wiki 页面和图谱实体
+
+    Returns:
+        (wiki_slugs, graph_entity_slugs)
+    """
+    wiki_slugs: list[str] = []
+    graph_entities: list[str] = []
+
+    try:
+        conn = _get_db()
+        # 查询 section_contributions 表
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS section_contributions (
+                section_id TEXT NOT NULL,
+                source_doc_id TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_slug TEXT NOT NULL,
+                contribution_type TEXT NOT NULL DEFAULT 'primary',
+                compiled_version INTEGER NOT NULL DEFAULT 1,
+                compiled_at TEXT NOT NULL,
+                PRIMARY KEY (section_id, target_type, target_slug)
+            )"""
+        )
+        rows = conn.execute(
+            """SELECT target_type, target_slug FROM section_contributions
+               WHERE section_id = ?""",
+            (section_id,),
+        ).fetchall()
+        for row in rows:
+            if row["target_type"] == "wiki_page":
+                wiki_slugs.append(row["target_slug"])
+            elif row["target_type"] in ("graph_entity", "graph_relation"):
+                graph_entities.append(row["target_slug"])
+    except Exception as e:
+        logger.warning(
+            "section_contribution_lookup_failed",
+            section_id=section_id,
+            error=str(e),
+        )
+
+    return wiki_slugs, graph_entities
+
+
+def mark_sections_stale(
+    section_ids: list[str],
+    source_doc_id: str = "",
+) -> int:
+    """标记受影响的章节为 stale（通过 section_contributions 找到关联 Wiki 页面）
+
+    Args:
+        section_ids: 变化的章节 ID 列表
+        source_doc_id: 来源文档 ID
+
+    Returns:
+        标记的 Wiki 页面数
+    """
+    all_wiki_slugs: set[str] = set()
+    for sid in section_ids:
+        wiki_slugs, _ = _find_targets_by_section(sid)
+        all_wiki_slugs.update(wiki_slugs)
+
+    if not all_wiki_slugs:
+        return 0
+
+    return mark_pages_stale(list(all_wiki_slugs), source_doc_id)
+
+
+def clear_section_stale(section_id: str) -> int:
+    """清除章节相关的 stale 标记（重编译后调用）
+
+    Args:
+        section_id: 章节 ID
+
+    Returns:
+        清除的 Wiki 页面数
+    """
+    wiki_slugs, _ = _find_targets_by_section(section_id)
+    count = 0
+    for slug in wiki_slugs:
+        if clear_stale(slug):
+            count += 1
+    return count

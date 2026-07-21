@@ -35,7 +35,7 @@ import yaml
 
 from app.config import get_settings
 from app.core.llm import ChatMessage, get_llm_client
-from app.extraction.rule_extractor import RuleBasedExtractor
+from app.extraction.compiled_extractor import CompiledKnowledgeExtractor
 from app.knowledge.wiki_compiler import make_slug
 from app.parsers import get_parser
 from app.search import get_search_engine
@@ -64,7 +64,7 @@ class RunbookGenerator:
     def __init__(self) -> None:
         self.search = get_search_engine()
         self.store = get_document_store()
-        self.extractor = RuleBasedExtractor()
+        self.extractor = CompiledKnowledgeExtractor()
         # P3-5: LLM 编译
         self.llm = get_llm_client()
         self.settings = get_settings()
@@ -137,7 +137,8 @@ class RunbookGenerator:
             try:
                 parser = get_parser(fmt)
                 parsed = parser.parse(doc_meta.get("stored_path", ""), doc_id)
-                entities, _ = self.extractor.extract(parsed)
+                result = self.extractor.extract_from_document(parsed)
+                entities = result.entities
             except Exception as e:
                 logger.warning("runbook_parse_failed", doc_id=doc_id, error=str(e))
                 entities = []

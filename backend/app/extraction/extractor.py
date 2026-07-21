@@ -15,7 +15,7 @@ import structlog
 
 from app.config import get_settings
 from app.core.llm import ChatMessage, get_llm_client
-from app.extraction.rule_extractor import RuleBasedExtractor
+from app.extraction.compiled_extractor import CompiledKnowledgeExtractor
 from app.extraction.types import (
     ExtractedEntity,
     ExtractedRelation,
@@ -110,7 +110,7 @@ class KnowledgeExtractor:
     def __init__(self) -> None:
         self.llm = get_llm_client()
         self.settings = get_settings()
-        self.rule_extractor = RuleBasedExtractor()
+        self.compiled_extractor = CompiledKnowledgeExtractor()
 
     async def classify_paragraphs(self, doc: ParsedDocument) -> list[dict]:
         """段落级 LLM 归类 — 为每段内容生成层级标签、摘要、结构化正文
@@ -212,10 +212,12 @@ class KnowledgeExtractor:
         entities = [self._parse_entity(e, doc.doc_id) for e in raw_entities]
         relations = [self._parse_relation(r, doc.doc_id) for r in raw_relations]
 
-        # LLM 抽取为空时启用规则化兜底
+        # LLM 抽取为空时启用编译抽取兜底
         if not entities and not relations:
-            logger.info("extraction_fallback_to_rules", doc_id=doc.doc_id)
-            entities, relations = self.rule_extractor.extract(doc)
+            logger.info("extraction_fallback_to_compiled", doc_id=doc.doc_id)
+            compiled_result = self.compiled_extractor.extract_from_document(doc)
+            entities = compiled_result.entities or []
+            relations = compiled_result.relations or []
 
         # 置信度门控
         self._apply_gating(entities, relations, result)
