@@ -110,18 +110,30 @@ class WikiCompiler:
         system: str | None = None,
         temperature: float = 0.3,
     ) -> str:
-        """统一 LLM 调用入口（S3: 带重试机制，最多 3 次）"""
+        """统一 LLM 调用入口（S3: 带重试机制，最多 3 次）
+
+        使用 LLMConcurrencyController 全局限流，防止本地部署过载。
+        """
         messages: list[ChatMessage] = []
         if system:
             messages.append(ChatMessage(role="system", content=system))
         messages.append(ChatMessage(role="user", content=prompt))
+
+        # P2-1: LLM 并发控制
+        from app.core.llm.concurrency import get_llm_concurrency_controller, TaskPriority
+
+        controller = get_llm_concurrency_controller()
         for attempt in range(1, _MAX_LLM_RETRIES + 1):
             try:
-                resp = await self.llm.chat(
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=self.settings.llm_max_tokens,
-                )
+                async with controller.acquire(
+                    stage="section_compile",
+                    priority=TaskPriority.MEDIUM,
+                ):
+                    resp = await self.llm.chat(
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=self.settings.llm_max_tokens,
+                    )
                 # ── 编译指标埋点：LLM 调用成功 ──
                 try:
                     record_business_metric("llm_calls_total", backend=self.settings.llm_backend, status="success")

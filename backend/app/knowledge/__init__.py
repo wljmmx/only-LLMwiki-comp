@@ -91,14 +91,22 @@ from app.knowledge.wiki_drift import (
     DriftReport,
     RecompileBatchResult,
     RecompileJob,
+    SectionDriftBatch,
+    SectionDriftReport,
     StalePage,
     auto_recompile_stale,
+    clear_section_stale,
     clear_stale,
     detect_drift,
+    detect_section_batch_drift,
+    detect_section_drift,
     get_compiled_checksum,
+    get_section_checksum,
     list_stale_pages,
     mark_pages_stale,
+    mark_sections_stale,
     record_compiled_checksum,
+    record_section_checksum,
 )
 from app.knowledge.wiki_index import (
     INDEX_SLUG,
@@ -163,6 +171,19 @@ from app.knowledge.wikilink import (
     update_backlinks,
     validate_links,
 )
+# ── P4 新增模块 ──
+from app.knowledge.index_generator import (
+    IndexGenerator,
+    IndexNode,
+    IndexTree,
+    get_index_generator,
+)
+from app.knowledge.experience_distiller import (
+    DistillationResult,
+    ExperienceDistiller,
+    ExperienceInsight,
+    get_experience_distiller,
+)
 
 __all__ = [
     "GraphStore",
@@ -221,6 +242,15 @@ __all__ = [
     "clear_stale",
     "list_stale_pages",
     "auto_recompile_stale",
+    # P5-2 章节级漂移
+    "SectionDriftReport",
+    "SectionDriftBatch",
+    "detect_section_drift",
+    "detect_section_batch_drift",
+    "record_section_checksum",
+    "get_section_checksum",
+    "mark_sections_stale",
+    "clear_section_stale",
     "WikiPageHit",
     "WikiQueryResult",
     "WikiQAEngine",
@@ -295,4 +325,12 @@ __all__ = [
     "get_log",
     "get_log_entries",
     "render_log_markdown",
+    # P4 新增模块
+    "IndexGenerator",
+    "IndexNode",
+    "IndexTree",
+    "get_index_generator",
+    "ExperienceDistiller",
+    "ExperienceInsight",
+    "DistillationResult",
 ]

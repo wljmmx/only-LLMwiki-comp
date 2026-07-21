@@ -363,3 +363,14 @@ JSON:
         for i in insights:
             counts[i.severity] = counts.get(i.severity, 0) + 1
         return counts
+
+
+_experience_distiller: ExperienceDistiller | None = None
+
+
+def get_experience_distiller(llm_call: Any | None = None) -> ExperienceDistiller:
+    """获取 ExperienceDistiller 单例"""
+    global _experience_distiller
+    if _experience_distiller is None:
+        _experience_distiller = ExperienceDistiller(llm_call=llm_call)
+    return _experience_distiller

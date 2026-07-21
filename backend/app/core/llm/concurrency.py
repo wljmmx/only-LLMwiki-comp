@@ -117,7 +117,38 @@ class LLMConcurrencyController:
         self._worker_running = False
         self._worker_task: asyncio.Task | None = None
         self._results: dict[str, LLMTaskResult] = {}
-        self._completion_events: dict[str, asyncio.Event] = {}
+
+    async def acquire(self, stage: str = "default", priority: TaskPriority = TaskPriority.MEDIUM) -> '_AcquireContext':
+        """获取 LLM 并发槽位（async context manager）
+
+        同时获取全局 + 阶段级 semaphore，确保不超过配置限制。
+
+        Usage:
+            async with controller.acquire(stage="section_compile"):
+                result = await llm.chat(...)
+
+        Args:
+            stage: 阶段名称（用于阶段级限流）
+            priority: 优先级（影响资源分配顺序）
+
+        Returns:
+            _AcquireContext 上下文管理器
+        """
+        return _AcquireContext(self, stage)
+
+    async def _acquire_slots(self, stage: str) -> None:
+        """获取全局和阶段级槽位"""
+        await self._global_semaphore.acquire()
+        stage_sem = self._stage_semaphores.get(stage, self._global_semaphore)
+        if stage_sem is not self._global_semaphore:
+            await stage_sem.acquire()
+
+    def _release_slots(self, stage: str) -> None:
+        """释放全局和阶段级槽位"""
+        stage_sem = self._stage_semaphores.get(stage, self._global_semaphore)
+        if stage_sem is not self._global_semaphore:
+            stage_sem.release()
+        self._global_semaphore.release()
 
     async def start(self) -> None:
         """启动后台 worker"""
@@ -319,6 +350,21 @@ class LLMConcurrencyController:
             if stage in self._stage_semaphores:
                 old = self._stage_semaphores[stage]
                 self._stage_semaphores[stage] = asyncio.Semaphore(limit)
+
+
+class _AcquireContext:
+    """LLM 并发槽位获取的 async context manager"""
+
+    def __init__(self, controller: LLMConcurrencyController, stage: str):
+        self._controller = controller
+        self._stage = stage
+
+    async def __aenter__(self):
+        await self._controller._acquire_slots(self._stage)
+        return self
+
+    async def __aexit__(self, *args):
+        self._controller._release_slots(self._stage)
 
 
 # 全局单例

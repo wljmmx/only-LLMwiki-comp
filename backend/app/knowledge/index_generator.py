@@ -287,3 +287,14 @@ JSON:
         if not nodes:
             return 0
         return 1 + max((IndexGenerator._max_depth(n.children) for n in nodes), default=0)
+
+
+_index_generator: IndexGenerator | None = None
+
+
+def get_index_generator(llm_call: Any | None = None) -> IndexGenerator:
+    """获取 IndexGenerator 单例"""
+    global _index_generator
+    if _index_generator is None:
+        _index_generator = IndexGenerator(llm_call=llm_call)
+    return _index_generator
