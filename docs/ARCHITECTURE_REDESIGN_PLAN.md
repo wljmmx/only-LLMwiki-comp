@@ -1,7 +1,7 @@
 # OpsKG 架构重构计划
 
 > 编译日期: 2026-07-20
-> 状态: 实施中
+> 状态: ✅ 全部完成
 >
 > 本文档为 OpsKG 知识库系统的完整重构计划，涵盖从原始文档上传到标准化输出文档的全链路。
 
@@ -28,29 +28,29 @@ L3: Search Index       FTS5 + 向量索引
 - [x] P1-4: `app/sections/splitter.py` — 章节拆分器
 - [x] P1-5: `app/sections/store.py` — 章节存储 + section_contributions 表
 
-### Phase 2: LLM 并发控制
+### Phase 2: LLM 并发控制 ✅
 
-- [ ] P2-1: `app/core/llm/concurrency.py` — 全局并发控制器
-- [ ] P2-2: 修改 `app/config.py` — 新增 llm_concurrency 配置
+- [x] P2-1: `app/core/llm/concurrency.py` — 全局并发控制器
+- [x] P2-2: 修改 `app/config.py` — 新增 llm_concurrency 配置
 
-### Phase 3: 章节编译 + Wiki 生成 + 图谱抽取
+### Phase 3: 章节编译 + Wiki 生成 + 图谱抽取 ✅
 
-- [ ] P3-1: `app/sections/compiler.py` — 章节 LLM 编译器
-- [ ] P3-2: 修改 `app/knowledge/wiki_compiler.py` — 基于 CompiledSection[] 合成 Wiki
-- [ ] P3-3: `app/extraction/compiled_extractor.py` — 从注释标签解析实体 + LLM 消歧
+- [x] P3-1: `app/sections/compiler.py` — LLM 章节编译
+- [x] P3-2: 修改 `app/knowledge/wiki_compiler.py` — 新增 `compile_from_sections()`
+- [x] P3-3: `app/extraction/compiled_extractor.py` — 从注释标签解析实体 + LLM 消歧
 
-### Phase 4: 目录树 + 经验蒸馏 + 文档生成
+### Phase 4: 目录树 + 经验蒸馏 + 文档生成 ✅
 
-- [ ] P4-1: `app/knowledge/index_generator.py` — LLM 生成 Wiki 目录树
-- [ ] P4-2: `app/knowledge/experience_distiller.py` — LLM 批量蒸馏经验
-- [ ] P4-3: `app/output/templates/` — 文档模板库（YAML）
-- [ ] P4-4: `app/output/generator.py` — 按模板生成标准化输出文档
+- [x] P4-1: `app/knowledge/index_generator.py` — LLM 生成 Wiki 目录树
+- [x] P4-2: `app/knowledge/experience_distiller.py` — LLM 批量蒸馏经验
+- [x] P4-3: `app/output/templates/` — 文档模板库（YAML）
+- [x] P4-4: `app/output/generator.py` — 按模板生成标准化输出文档
 
-### Phase 5: 旧代码清理 + 漂移更新
+### Phase 5: 旧代码清理 + 漂移更新 ✅
 
-- [ ] P5-1: 删除 `app/extraction/rule_extractor.py`
-- [ ] P5-2: 修改 `app/knowledge/wiki_drift.py` — 章节级漂移检测
-- [ ] P5-3: 修改前端路由 — 新增文档生成界面
+- [x] P5-1: 删除 `app/extraction/rule_extractor.py`
+- [x] P5-2: 修改 `app/knowledge/wiki_drift.py` — 章节级漂移检测
+- [x] P5-3: 修改前端路由 — 新增文档生成界面
 
 ---
 
