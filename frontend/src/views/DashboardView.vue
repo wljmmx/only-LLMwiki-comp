@@ -78,7 +78,7 @@ const { data: dashboardData, loading, error, execute: fetchData } = useAsyncData
       graphStats: graphStatsRes,
       reviewStats: reviewStatsRes,
       searchStats: searchStatsRes,
-      recentDocuments: docListRes.documents || [],
+      recentDocuments: docListRes.data.items || [],
       recentReviews: reviewQueueRes.items || [],
     }
   },

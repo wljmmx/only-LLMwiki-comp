@@ -182,6 +182,11 @@ function handleContentClick(slug: string) {
   loadPage(slug)
 }
 
+function handleBacklinkClick(slug: string) {
+  selectedKey.value = slug
+  loadPage(slug)
+}
+
 // P3: 删除 wiki 页面
 const deleteConfirmVisible = ref(false)
 
