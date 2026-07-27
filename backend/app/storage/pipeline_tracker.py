@@ -103,10 +103,22 @@ class PipelineTracker:
         except (TypeError, ValueError) as e:
             logger.error("pipeline_tracker_serialize_failed",
                          run_id=run_id, stage=stage, error=str(e))
-            payload_str = json.dumps({
-                "_serialize_error": str(e),
-                "_preview": str(payload)[:500],
-            })
+            # 兜底中再失败：用 repr() 也包裹 try 防止 __str__/__repr__ 抛错
+            try:
+                preview = str(payload)[:500]
+            except Exception:  # noqa: BLE001
+                preview = f"<unreprable {type(payload).__name__}>"
+            try:
+                payload_str = json.dumps({
+                    "_serialize_error": str(e),
+                    "_preview": preview,
+                })
+            except (TypeError, ValueError):
+                # 极端情况：连兜底 dict 都无法序列化
+                payload_str = json.dumps({
+                    "_serialize_error": str(e),
+                    "_preview": "<unserializable>",
+                })
 
         payload_size = len(payload_str)
         now = datetime.now(timezone.utc).isoformat()
