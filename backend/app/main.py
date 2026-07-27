@@ -34,6 +34,7 @@ from app.routers.oidc_router import router as oidc_router
 from app.routers.okf_router import router as okf_router
 from app.routers.output_router import router as output_router
 from app.routers.parsers_router import router as parsers_router
+from app.routers.pipeline_router import router as pipeline_router
 from app.routers.realtime_router import router as realtime_router
 from app.routers.review_router import router as review_router
 from app.routers.runbook_router import router as runbook_router
@@ -297,6 +298,7 @@ _BUSINESS_ROUTERS: list[tuple[str, object]] = [
     ("backup", backup_router),
     ("cost", cost_router),
     ("output", output_router),
+    ("pipeline", pipeline_router),
 ]
 
 for _name, _router in _BUSINESS_ROUTERS:

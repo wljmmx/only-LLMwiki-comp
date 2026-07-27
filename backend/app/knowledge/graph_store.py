@@ -539,6 +539,163 @@ class GraphStore:
         self._cache_invalidate()
         return {"nodes_removed": node_count, "relations_removed": rel_count}
 
+    # ── 维护查询 ──
+
+    def query_orphan_entities(self, limit: int = 200) -> list[dict]:
+        """查询无任何关系的孤立实体"""
+        cache_key = f"query_orphan_entities:{limit}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (n:Entity)
+                WHERE NOT (n)--()
+                RETURN n.name AS name, n.entity_type AS type,
+                       n.confidence AS confidence, n.source_doc_id AS source_doc_id
+                ORDER BY n.confidence ASC
+                LIMIT $limit
+                """,
+                limit=limit,
+            )
+            data = [_to_jsonable(dict(record)) for record in result]
+        self._cache_set(cache_key, data)
+        return data
+
+    def query_low_confidence_entities(
+        self, threshold: float = 0.5, limit: int = 200,
+    ) -> list[dict]:
+        """查询置信度低于阈值的实体"""
+        cache_key = f"query_low_confidence_entities:{threshold}:{limit}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (n:Entity)
+                WHERE n.confidence < $threshold OR n.confidence IS NULL
+                RETURN n.name AS name, n.entity_type AS type,
+                       n.confidence AS confidence, n.source_doc_id AS source_doc_id
+                ORDER BY n.confidence ASC
+                LIMIT $limit
+                """,
+                threshold=threshold,
+                limit=limit,
+            )
+            data = [_to_jsonable(dict(record)) for record in result]
+        self._cache_set(cache_key, data)
+        return data
+
+    def query_entities_by_source(self, source_doc_id: str, limit: int = 500) -> list[dict]:
+        """查询某源文档的所有实体"""
+        cache_key = f"query_entities_by_source:{source_doc_id}:{limit}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (n:Entity {source_doc_id: $doc_id})
+                RETURN n.name AS name, n.entity_type AS type,
+                       n.confidence AS confidence, n.source_doc_id AS source_doc_id
+                ORDER BY n.name
+                LIMIT $limit
+                """,
+                doc_id=source_doc_id,
+                limit=limit,
+            )
+            data = [_to_jsonable(dict(record)) for record in result]
+        self._cache_set(cache_key, data)
+        return data
+
+    def query_duplicate_entities(self, limit: int = 100) -> list[dict]:
+        """查询可能重复的实体（同名称不同 source_doc_id）"""
+        cache_key = f"query_duplicate_entities:{limit}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (n:Entity)
+                WITH n.name AS name, count(*) AS cnt, collect(n.source_doc_id) AS sources,
+                     collect(n.entity_type) AS types
+                WHERE cnt > 1
+                RETURN name, cnt, sources, types
+                ORDER BY cnt DESC
+                LIMIT $limit
+                """,
+                limit=limit,
+            )
+            data = [_to_jsonable(dict(record)) for record in result]
+        self._cache_set(cache_key, data)
+        return data
+
+    def batch_delete_entities(self, names: list[str]) -> dict:
+        """批量删除实体"""
+        deleted: list[str] = []
+        failed: list[dict] = []
+        for name in names:
+            try:
+                result = self.delete_entity(name)
+                if result.get("deleted"):
+                    deleted.append(name)
+                else:
+                    failed.append({"name": name, "reason": "not_found"})
+            except Exception as e:
+                failed.append({"name": name, "error": str(e)})
+        return {
+            "deleted_count": len(deleted),
+            "failed_count": len(failed),
+            "deleted": deleted,
+            "failed": failed,
+        }
+
+    def delete_relations_by_source(self, source_doc_id: str) -> dict:
+        """删除某源文档的所有关系"""
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH ()-[r {source_doc_id: $doc_id}]->()
+                DELETE r RETURN count(r) AS deleted
+                """,
+                doc_id=source_doc_id,
+            )
+            record = result.single()
+            deleted = record["deleted"] if record else 0
+        self._cache_invalidate()
+        return {"source_doc_id": source_doc_id, "relations_removed": deleted}
+
+    def delete_by_source(self, source_doc_id: str) -> dict:
+        """删除某源文档的所有实体和关系"""
+        rel_result = self.delete_relations_by_source(source_doc_id)
+        entities = self.query_entities_by_source(source_doc_id, limit=10000)
+        names = [e["name"] for e in entities if e.get("name")]
+        batch_result = self.batch_delete_entities(names)
+        return {
+            "source_doc_id": source_doc_id,
+            "relations_removed": rel_result["relations_removed"],
+            "entities_deleted": batch_result["deleted_count"],
+            "entities_failed": batch_result["failed_count"],
+            "failed": batch_result["failed"],
+        }
+
+    def cleanup_low_confidence(
+        self, threshold: float = 0.5, limit: int = 500,
+    ) -> dict:
+        """清理低置信度实体"""
+        entities = self.query_low_confidence_entities(threshold=threshold, limit=limit)
+        names = [e["name"] for e in entities if e.get("name")]
+        return self.batch_delete_entities(names)
+
+    def cleanup_orphan_entities(self, limit: int = 500) -> dict:
+        """清理孤立实体（无任何关系）"""
+        entities = self.query_orphan_entities(limit=limit)
+        names = [e["name"] for e in entities if e.get("name")]
+        return self.batch_delete_entities(names)
+
 
 # 全局单例
 _graph_store: GraphStore | None = None

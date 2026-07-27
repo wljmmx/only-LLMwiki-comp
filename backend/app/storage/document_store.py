@@ -76,6 +76,23 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_pipeline_doc ON pipeline_runs(doc_id);
         CREATE INDEX IF NOT EXISTS idx_pipeline_status ON pipeline_runs(status);
+
+        -- 流水线阶段产物持久化（pipeline_tracker 使用）
+        CREATE TABLE IF NOT EXISTS pipeline_artifacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            doc_id TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            payload_size INTEGER NOT NULL DEFAULT 0,
+            mime_type TEXT DEFAULT 'application/json',
+            created_at TEXT NOT NULL,
+            UNIQUE(run_id, stage, direction)
+        );
+        CREATE INDEX IF NOT EXISTS idx_artifact_run ON pipeline_artifacts(run_id);
+        CREATE INDEX IF NOT EXISTS idx_artifact_doc ON pipeline_artifacts(doc_id);
+        CREATE INDEX IF NOT EXISTS idx_artifact_stage ON pipeline_artifacts(stage);
     """)
 
 

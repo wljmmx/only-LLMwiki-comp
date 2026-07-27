@@ -779,15 +779,21 @@ async def llm_wiki_page_delete(slug: str) -> dict:
     - backlink 记录
     - 知识图谱实体
     """
+    deleted, versions_removed = _delete_wiki_page(slug)
+    if not deleted:
+        raise HTTPException(404, f"wiki 页面不存在: {slug}")
+    return {"deleted": True, "slug": slug, "versions_removed": versions_removed}
+
+
+def _delete_wiki_page(slug: str) -> tuple[bool, int]:
+    """删除 wiki 页面（不抛异常，返回 (是否删除, 删除版本数)）"""
     vc = get_version_control()
     doc_key = f"wiki:{slug}"
 
-    # 检查页面是否存在
     latest = vc.get_latest(doc_key)
     if not latest:
-        raise HTTPException(404, f"wiki 页面不存在: {slug}")
+        return (False, 0)
 
-    # 删除所有版本
     count = vc.delete_all(doc_key)
 
     # 清理搜索索引
@@ -804,7 +810,7 @@ async def llm_wiki_page_delete(slug: str) -> dict:
     except Exception:  # noqa: BLE001
         pass
 
-    return {"deleted": True, "slug": slug, "versions_removed": count}
+    return (True, count)
 
 
 @router.get("/llm-wiki/index")
@@ -1143,3 +1149,348 @@ async def llm_wiki_recompile_stale(push_review: bool = True) -> dict:
             for j in batch.jobs
         ],
     }
+
+
+# ────────── 维护工具：批量删除 / 清理孤岛 / 修复死链 ──────────
+
+
+class BulkDeleteRequest(BaseModel):
+    """POST /llm-wiki/maintenance/bulk-delete 请求体"""
+
+    slugs: list[str] = Field(..., description="要删除的页面 slug 列表")
+    skip_index_rebuild: bool = Field(
+        False, description="跳过重建 index.md（批量操作后由调用方统一重建）",
+    )
+
+
+class CleanupOrphansRequest(BaseModel):
+    """POST /llm-wiki/maintenance/cleanup-orphans 请求体"""
+
+    dry_run: bool = Field(False, description="只预览要删除的 slug，不实际删除")
+    skip_index_rebuild: bool = Field(False, description="跳过重建 index.md")
+
+
+class FixDeadlinksRequest(BaseModel):
+    """POST /llm-wiki/maintenance/fix-deadlinks 请求体"""
+
+    dry_run: bool = Field(False, description="只预览修改，不实际写入")
+    mode: str = Field(
+        "remove_link",
+        description="修复模式: remove_link（删除死链引用）| create_stub（创建占位页面）",
+    )
+
+
+@router.get("/llm-wiki/maintenance/overview", dependencies=[Depends(verify_token)])
+async def llm_wiki_maintenance_overview() -> dict:
+    """Wiki 维护总览 — 一站式查看所有需要维护的指标
+
+    返回：
+    - total_pages: 当前 wiki 页面总数（不含 index/log）
+    - stale_count: 漂移页面数
+    - orphan_count: 孤岛页面数（无入链）
+    - deadlink_count: 死链总数
+    - review_needed_count: 标记为 review_needed 的页面数
+    - by_type: 按类型分组的页面数
+    """
+    from app.storage.version_control import get_version_control
+    vc = get_version_control()
+
+    # 列出所有 wiki 页面
+    all_pages = vc.list_by_prefix("wiki:", limit=2000)
+    # 排除保留页面 index/log
+    content_pages = [
+        p for p in all_pages
+        if p["doc_key"] not in ("wiki:index", "wiki:log")
+    ]
+
+    all_slugs = {p["doc_key"].removeprefix("wiki:") for p in content_pages}
+
+    # 孤岛页面（无入链）
+    orphan_slugs = get_orphan_slugs(all_slugs - {"index"})
+
+    # 死链
+    deadlinks = get_all_deadlinks(all_slugs | {"index", "log"})
+
+    # stale 页面
+    stale_pages = list_stale_pages()
+
+    # 按类型分组
+    by_type: dict[str, int] = {}
+    review_needed_count = 0
+    for p in content_pages:
+        # 解析 frontmatter 中的 type 与 review_status
+        meta, _ = _split_frontmatter(p.get("title", "") or "")
+        # 注：vc.list_by_prefix 返回的 title 字段不含完整 frontmatter
+        # 这里简化处理，仅按 doc_key 计数
+        by_type["_unknown"] = by_type.get("_unknown", 0) + 1
+
+    return {
+        "total_pages": len(content_pages),
+        "stale_count": len(stale_pages),
+        "orphan_count": len(orphan_slugs),
+        "deadlink_count": len(deadlinks),
+        "review_needed_count": review_needed_count,
+        "by_type": by_type,
+        "orphans": list(orphan_slugs)[:50],
+        "stale_slugs": [p.slug for p in stale_pages[:50]],
+    }
+
+
+@router.post(
+    "/llm-wiki/maintenance/bulk-delete",
+    dependencies=[Depends(verify_token)],
+)
+async def llm_wiki_maintenance_bulk_delete(body: BulkDeleteRequest) -> dict:
+    """批量删除 wiki 页面
+
+    用于清理无效或低质量页面。会逐个执行单页面删除逻辑（含搜索索引、webhook）。
+    """
+    if not body.slugs:
+        raise HTTPException(400, "slugs 不能为空")
+
+    results: list[dict] = []
+    deleted_count = 0
+    failed_count = 0
+    for slug in body.slugs:
+        deleted, versions_removed = _delete_wiki_page(slug)
+        results.append({
+            "slug": slug,
+            "deleted": deleted,
+            "versions_removed": versions_removed,
+        })
+        if deleted:
+            deleted_count += 1
+        else:
+            failed_count += 1
+
+    # 批量删除后统一重建索引
+    index_rebuilt = False
+    if deleted_count > 0 and not body.skip_index_rebuild:
+        try:
+            rebuild_index()
+            index_rebuilt = True
+        except Exception as e:
+            return {
+                "deleted_count": deleted_count,
+                "failed_count": failed_count,
+                "results": results,
+                "index_rebuilt": False,
+                "index_error": str(e),
+            }
+
+    return {
+        "deleted_count": deleted_count,
+        "failed_count": failed_count,
+        "index_rebuilt": index_rebuilt,
+        "results": results,
+    }
+
+
+@router.post(
+    "/llm-wiki/maintenance/cleanup-orphans",
+    dependencies=[Depends(verify_token)],
+)
+async def llm_wiki_maintenance_cleanup_orphans(
+    body: CleanupOrphansRequest,
+) -> dict:
+    """清理孤岛页面（无入链的 wiki 页面）
+
+    谨慎使用：孤岛页面可能是新建未链接的页面，删除前请确认。
+    dry_run=True 仅返回将删除的 slug 列表。
+    """
+    all_slugs = get_all_slugs() - {"index", "log"}
+    orphan_slugs = get_orphan_slugs(all_slugs)
+
+    if body.dry_run:
+        return {
+            "dry_run": True,
+            "would_delete": list(orphan_slugs),
+            "count": len(orphan_slugs),
+        }
+
+    # 实际删除
+    deleted_count = 0
+    failed_count = 0
+    results: list[dict] = []
+    for slug in orphan_slugs:
+        deleted, versions_removed = _delete_wiki_page(slug)
+        results.append({
+            "slug": slug,
+            "deleted": deleted,
+            "versions_removed": versions_removed,
+        })
+        if deleted:
+            deleted_count += 1
+        else:
+            failed_count += 1
+
+    index_rebuilt = False
+    if deleted_count > 0 and not body.skip_index_rebuild:
+        try:
+            rebuild_index()
+            index_rebuilt = True
+        except Exception:
+            pass
+
+    return {
+        "dry_run": False,
+        "deleted_count": deleted_count,
+        "failed_count": failed_count,
+        "index_rebuilt": index_rebuilt,
+        "results": results,
+    }
+
+
+@router.post(
+    "/llm-wiki/maintenance/fix-deadlinks",
+    dependencies=[Depends(verify_token)],
+)
+async def llm_wiki_maintenance_fix_deadlinks(body: FixDeadlinksRequest) -> dict:
+    """修复死链（指向不存在 slug 的 [[wikilink]]）
+
+    两种模式：
+    - remove_link: 从源页面正文中移除死链 [[wikilink]] 引用
+    - create_stub: 为每个死链目标创建占位 stub 页面（review_status=review_needed）
+    """
+    if body.mode not in ("remove_link", "create_stub"):
+        raise HTTPException(
+            400, "mode 必须是 remove_link 或 create_stub",
+        )
+
+    all_slugs = get_all_slugs()
+    deadlinks = get_all_deadlinks(all_slugs)
+
+    if not deadlinks:
+        return {
+            "fixed_count": 0,
+            "mode": body.mode,
+            "message": "无死链需要修复",
+        }
+
+    if body.mode == "create_stub":
+        # 为每个不存在的目标 slug 创建占位 stub 页面
+        from app.storage.version_control import get_version_control
+        vc = get_version_control()
+        created: list[dict] = []
+        seen_targets: set[str] = set()
+        for d in deadlinks:
+            if d.slug in seen_targets or d.slug in all_slugs:
+                continue
+            seen_targets.add(d.slug)
+            if body.dry_run:
+                created.append({"slug": d.slug, "would_create": True})
+                continue
+            # 创建 stub 页面
+            stub_content = _assemble_stub_page(d.slug)
+            try:
+                vc.save_version(
+                    doc_key=f"wiki:{d.slug}",
+                    title=d.slug,
+                    content=stub_content,
+                    change_summary="自动生成：死链占位 stub（待人工补全）",
+                )
+                created.append({"slug": d.slug, "created": True})
+            except Exception as e:
+                created.append({"slug": d.slug, "created": False, "error": str(e)})
+
+        return {
+            "mode": "create_stub",
+            "dry_run": body.dry_run,
+            "fixed_count": len([c for c in created if c.get("created") or c.get("would_create")]),
+            "details": created,
+        }
+
+    # mode == "remove_link": 从源页面移除死链引用
+    from app.storage.version_control import get_version_control
+    vc = get_version_control()
+    # 按 source_slug 分组
+    by_source: dict[str, list[str]] = {}
+    for d in deadlinks:
+        by_source.setdefault(d.source_slug, []).append(d.slug)
+
+    modified: list[dict] = []
+    for source_slug, dead_targets in by_source.items():
+        latest = vc.get_latest(f"wiki:{source_slug}")
+        if not latest:
+            modified.append({
+                "source_slug": source_slug,
+                "modified": False,
+                "error": "源页面不存在",
+            })
+            continue
+
+        original = latest["content"]
+        new_content = original
+        for target in dead_targets:
+            # 移除形如 [[target]] 或 [[target|display]] 的引用
+            # 替换为 display 文本（如果有）或空字符串
+            import re
+            # 匹配 [[target]] 或 [[target|display]]
+            pattern = rf'\[\[{re.escape(target)}(\|([^\]]+))?\]\]'
+            match = re.search(pattern, new_content)
+            if match:
+                display = match.group(2) or target
+                new_content = re.sub(pattern, display, new_content)
+
+        if new_content == original:
+            modified.append({
+                "source_slug": source_slug,
+                "modified": False,
+                "reason": "未找到匹配的死链",
+            })
+            continue
+
+        if body.dry_run:
+            modified.append({
+                "source_slug": source_slug,
+                "would_modify": True,
+                "dead_targets": dead_targets,
+            })
+            continue
+
+        try:
+            vc.save_version(
+                doc_key=f"wiki:{source_slug}",
+                title=latest["title"],
+                content=new_content,
+                change_summary=f"自动修复：移除死链 {[t for t in dead_targets]}",
+            )
+            modified.append({
+                "source_slug": source_slug,
+                "modified": True,
+                "dead_targets_removed": dead_targets,
+            })
+        except Exception as e:
+            modified.append({
+                "source_slug": source_slug,
+                "modified": False,
+                "error": str(e),
+            })
+
+    fixed_count = len([m for m in modified if m.get("modified") or m.get("would_modify")])
+    return {
+        "mode": "remove_link",
+        "dry_run": body.dry_run,
+        "fixed_count": fixed_count,
+        "details": modified,
+    }
+
+
+def _assemble_stub_page(slug: str) -> str:
+    """生成占位 stub 页面的 Markdown 内容"""
+    meta = {
+        "slug": slug,
+        "title": slug.replace("-", " ").title(),
+        "type": "concept",
+        "tags": ["stub", "auto-generated"],
+        "sources": [],
+        "review_status": "review_needed",
+    }
+    body = (
+        f"# {meta['title']}\n\n"
+        "## 概述\n\n"
+        "> 此页面由死链修复工具自动生成，内容待人工补全。\n\n"
+        "## 来源\n\n"
+        "- 自动生成（待补全）\n"
+    )
+    return _assemble_md(meta, body)

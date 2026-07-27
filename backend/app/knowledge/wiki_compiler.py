@@ -35,6 +35,13 @@ from app.config import get_settings
 from app.core.llm import ChatMessage, get_llm_client
 from app.extraction import KnowledgeExtractor
 from app.extraction.types import ExtractedEntity, ExtractionResult
+from app.knowledge.pipeline_helpers import (
+    deserialize_extraction_result,
+    deserialize_parsed_doc,
+    serialize_compile_result_summary,
+    serialize_extraction_result,
+    serialize_parsed_doc,
+)
 from app.knowledge.wiki_compiler_types import (
     _MAX_LLM_RETRIES,
     _QUALITY_REVIEW_THRESHOLD,
@@ -68,6 +75,7 @@ from app.observability import record_business_histogram, record_business_metric,
 from app.parsers import get_parser
 from app.parsers.base import ParsedDocument
 from app.storage import get_document_store
+from app.storage.pipeline_tracker import get_pipeline_tracker
 from app.storage.version_control import get_version_control
 
 logger = structlog.get_logger()
@@ -328,6 +336,9 @@ class WikiCompiler:
         is_cancelled: Callable[[], bool] | None = None,
         # L1: 任务状态
         task_state: dict | None = None,
+        # 流水线追踪
+        pipeline_run_id: str | None = None,
+        start_from_stage: str | None = None,
     ) -> WikiCompileResult:
         """把一份 raw 文档编译为 wiki 页面
 
@@ -347,8 +358,56 @@ class WikiCompiler:
             on_progress: M3 SSE 进度回调
             is_cancelled: L1 中断检查回调
             task_state: L1 任务状态字典（用于断点恢复）
+            pipeline_run_id: 指定已存在的 pipeline run ID；
+                            None 时自动创建新 run。
+            start_from_stage: 从指定阶段开始重处理（parse|extract|compile|index），
+                              None 时从 parse 开始。
+                              指定 extract/compile/index 时，会从该 run 的
+                              上一阶段产物加载输入数据。
         """
         result = WikiCompileResult(doc_id=doc_id)
+
+        # ── 流水线追踪初始化 ──
+        tracker = get_pipeline_tracker()
+        if pipeline_run_id is None:
+            pipeline_run_id = self.store.create_pipeline_run(doc_id)
+        try:
+            self.store.start_pipeline_run(pipeline_run_id, start_from_stage or "parse")
+        except Exception:  # noqa: BLE001
+            pass  # pipeline_runs 表可能尚未创建，容错
+
+        def _track(stage: str, direction: str, payload: Any) -> None:
+            try:
+                tracker.save_artifact(pipeline_run_id, doc_id, stage, direction, payload)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "pipeline_tracker_save_failed",
+                    run_id=pipeline_run_id, stage=stage, direction=direction,
+                )
+
+        def _update_step(stage: str, status: str, error: str | None = None) -> None:
+            try:
+                self.store.update_pipeline_step(
+                    pipeline_run_id, stage, status, error=error,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        def _finish_run(status: str = "done") -> None:
+            try:
+                self.store.finish_pipeline_run(pipeline_run_id, status)
+            except Exception:  # noqa: BLE001
+                pass
+
+        # 阶段跳过判断
+        start_index = 0  # 默认从 parse 开始
+        if start_from_stage:
+            valid_stages = ["parse", "extract", "compile", "index"]
+            if start_from_stage not in valid_stages:
+                result.errors.append(f"无效的 start_from_stage: {start_from_stage}")
+                _finish_run("error")
+                return result
+            start_index = valid_stages.index(start_from_stage)
 
         # ── 编译指标埋点：记录编译开始 ──
         try:
@@ -391,6 +450,7 @@ class WikiCompiler:
             meta = self.store.get(doc_id)
             if not meta:
                 result.errors.append(f"文档不存在: {doc_id}")
+                _finish_run("error")
                 return result
 
             # 设置 format 属性（span 对象可能为 None，需容错）
@@ -403,38 +463,93 @@ class WikiCompiler:
             raw_bytes = self.store.read_content(doc_id)
             if not raw_bytes:
                 result.errors.append(f"原始文件读取失败: {doc_id}")
+                _finish_run("error")
                 return result
 
-            # 2. 解析 + 抽取
-            _emit(ProgressEventType.STEP_START, {"step": "parse", "message": "开始解析文档..."})
-            try:
-                parser = get_parser(meta["format"])
-                with span(
-                    "document.parse",
-                    doc_id=doc_id,
-                    format=meta.get("format", ""),
-                ):
-                    doc = parser.parse(meta["stored_path"], doc_id)
-            except Exception as e:
-                result.errors.append(f"解析失败: {e}")
-                _emit(ProgressEventType.STEP_DONE, {"step": "parse", "error": str(e)})
-                return result
-            _emit(ProgressEventType.STEP_DONE, {"step": "parse", "elements": len(doc.elements), "heading_tree_count": len(doc.heading_tree)})
-            if _check_cancel():
-                _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": "编译已取消"})
-                return result
+            # ── 阶段 1: parse ──
+            doc: ParsedDocument | None = None
+            if start_index <= 0:
+                # 真正执行 parse
+                _emit(ProgressEventType.STEP_START, {"step": "parse", "message": "开始解析文档..."})
+                _update_step("parse", "running")
+                _track("parse", "input", {
+                    "doc_id": doc_id,
+                    "filename": meta.get("filename", ""),
+                    "format": meta.get("format", ""),
+                    "checksum": meta.get("checksum", ""),
+                    "stored_path": meta.get("stored_path", ""),
+                    "size_bytes": meta.get("size_bytes", 0),
+                })
+                try:
+                    parser = get_parser(meta["format"])
+                    with span(
+                        "document.parse",
+                        doc_id=doc_id,
+                        format=meta.get("format", ""),
+                    ):
+                        doc = parser.parse(meta["stored_path"], doc_id)
+                except Exception as e:
+                    result.errors.append(f"解析失败: {e}")
+                    _emit(ProgressEventType.STEP_DONE, {"step": "parse", "error": str(e)})
+                    _update_step("parse", "error", error=str(e))
+                    _finish_run("error")
+                    return result
+                _emit(ProgressEventType.STEP_DONE, {"step": "parse", "elements": len(doc.elements), "heading_tree_count": len(doc.heading_tree)})
+                _update_step("parse", "done")
+                _track("parse", "output", serialize_parsed_doc(doc))
+                if _check_cancel():
+                    _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": "编译已取消"})
+                    _finish_run("cancelled")
+                    return result
+            else:
+                # 从 extract/compile/index 重处理 → 加载 parse 阶段输出
+                parse_output = tracker.get_artifact(pipeline_run_id, "parse", "output")
+                if not parse_output:
+                    result.errors.append(
+                        f"无法从 {start_from_stage} 阶段重处理：找不到 parse 阶段的输出产物"
+                    )
+                    _finish_run("error")
+                    return result
+                doc = deserialize_parsed_doc(parse_output)
+                _emit(ProgressEventType.STEP_DONE, {
+                    "step": "parse", "skipped": True,
+                    "message": f"从 run {pipeline_run_id} 加载 parse 产物（{len(doc.elements)} 元素）",
+                })
 
-            _emit(ProgressEventType.STEP_START, {"step": "extract", "message": "开始知识抽取..."})
-            try:
-                extraction = await self.extractor.extract(doc)
-            except Exception as e:
-                result.errors.append(f"抽取失败: {e}")
-                _emit(ProgressEventType.STEP_DONE, {"step": "extract", "error": str(e)})
-                return result
-            _emit(ProgressEventType.STEP_DONE, {"step": "extract", "entities": len(extraction.auto_accepted_entities) + len(extraction.review_entities)})
-            if _check_cancel():
-                _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": "编译已取消"})
-                return result
+            # ── 阶段 2: extract ──
+            extraction: ExtractionResult | None = None
+            if start_index <= 1:
+                _emit(ProgressEventType.STEP_START, {"step": "extract", "message": "开始知识抽取..."})
+                _update_step("extract", "running")
+                _track("extract", "input", serialize_parsed_doc(doc))
+                try:
+                    extraction = await self.extractor.extract(doc)
+                except Exception as e:
+                    result.errors.append(f"抽取失败: {e}")
+                    _emit(ProgressEventType.STEP_DONE, {"step": "extract", "error": str(e)})
+                    _update_step("extract", "error", error=str(e))
+                    _finish_run("error")
+                    return result
+                _emit(ProgressEventType.STEP_DONE, {"step": "extract", "entities": len(extraction.auto_accepted_entities) + len(extraction.review_entities)})
+                _update_step("extract", "done")
+                _track("extract", "output", serialize_extraction_result(extraction))
+                if _check_cancel():
+                    _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": "编译已取消"})
+                    _finish_run("cancelled")
+                    return result
+            else:
+                extract_output = tracker.get_artifact(pipeline_run_id, "extract", "output")
+                if not extract_output:
+                    result.errors.append(
+                        f"无法从 {start_from_stage} 阶段重处理：找不到 extract 阶段的输出产物"
+                    )
+                    _finish_run("error")
+                    return result
+                extraction = deserialize_extraction_result(extract_output)
+                _emit(ProgressEventType.STEP_DONE, {
+                    "step": "extract", "skipped": True,
+                    "message": f"从 run {pipeline_run_id} 加载 extract 产物（{len(extraction.entities)} 实体）",
+                })
 
             # S1: 段落级 LLM 归类
             _emit(ProgressEventType.STEP_START, {"step": "classify", "message": "段落分类中..."})
@@ -476,6 +591,14 @@ class WikiCompiler:
                 logger.info("wiki_compiler_no_entities", doc_id=doc_id)
                 # 无实体也更新状态
                 self.store.update_status(doc_id, "compiled")
+                # 无实体时 compile/index 阶段标记为空跑
+                if start_index <= 2:
+                    _track("compile", "output", serialize_compile_result_summary(result))
+                    _update_step("compile", "done")
+                if start_index <= 3:
+                    _track("index", "output", {"index_rebuilt": False, "slugs": []})
+                    _update_step("index", "done")
+                _finish_run("done")
                 return result
 
             # P3-4: 统一编译 — 复用已有 extraction 写入知识图谱（避免重复 parse+extract）
@@ -499,161 +622,190 @@ class WikiCompiler:
                 "checksum": meta.get("checksum", ""),
             }
 
-            _emit(ProgressEventType.STEP_START, {"step": "compile", "total": len(entities)})
-            total_entities = len(entities)
+            # ── 阶段 3: compile ──
+            if start_index <= 2:
+                _emit(ProgressEventType.STEP_START, {"step": "compile", "total": len(entities)})
+                _update_step("compile", "running")
+                _track("compile", "input", {
+                    "parsed_doc": serialize_parsed_doc(doc),
+                    "extraction_result": serialize_extraction_result(extraction),
+                    "paragraph_labels": doc_labels,
+                    "source_entry": source_entry,
+                })
+                total_entities = len(entities)
 
-            # P1 (K4): 预取所有实体的图谱关系，避免逐实体查询
-            entity_names = [e.name for e in entities]
-            relations_map = self._fetch_graph_relations_batch(entity_names)
+                # P1 (K4): 预取所有实体的图谱关系，避免逐实体查询
+                entity_names = [e.name for e in entities]
+                relations_map = self._fetch_graph_relations_batch(entity_names)
 
-            # P0-1: 实体编译并行化 — Phase 1: 并行执行 LLM 调用（信号量限制并发数）
-            max_concurrency = max(getattr(self.settings, 'compile_concurrency', 3), 1)
-            sem = asyncio.Semaphore(max_concurrency)
+                # P0-1: 实体编译并行化 — Phase 1: 并行执行 LLM 调用（信号量限制并发数）
+                max_concurrency = max(getattr(self.settings, 'compile_concurrency', 3), 1)
+                sem = asyncio.Semaphore(max_concurrency)
 
-            async def _compile_page_parallel(
-                idx: int, entity: ExtractedEntity,
-            ) -> tuple[int, ExtractedEntity, WikiPage | None, Exception | None]:
-                async with sem:
-                    if _check_cancel():
-                        return (idx, entity, None, None)
-                    # L1: 断点恢复 — 跳过已处理的实体
-                    if task_state is not None and idx <= task_state.get("last_entity_idx", -1):
-                        return (idx, entity, None, None)
-                    try:
-                        _emit(ProgressEventType.PAGE_START, {
-                            "entity": entity.name,
-                            "index": idx + 1,
-                            "total": total_entities,
-                        })
-                        _emit(ProgressEventType.PROGRESS, {
-                            "percent": round((idx + 1) / max(total_entities, 1) * 100),
-                            "current": idx + 1,
-                            "total": total_entities,
-                        })
-                        page = await self._compile_entity_page(
-                            entity, source_entry, para_labels=doc_labels,
-                            relations_map=relations_map,
-                        )
-                        return (idx, entity, page, None)
-                    except Exception as e:
-                        return (idx, entity, None, e)
-
-            tasks = [_compile_page_parallel(i, entity) for i, entity in enumerate(entities)]
-            results_list = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # P0-1: Phase 2 — 串行保存和后续处理（SQLite 写入安全）
-            for item in results_list:
-                if item is None:
-                    continue
-                if isinstance(item, Exception):
-                    result.errors.append(f"gather_failed: {item}")
-                    continue
-
-                idx, entity, page, error = item
-                if error:
-                    logger.exception("wiki_compiler_page_failed", slug=entity.name)
-                    result.errors.append(f"{entity.name}: {error}")
-                    continue
-                if page is None:
-                    continue
-
-                if _check_cancel():
-                    if task_state is not None:
-                        task_state["last_entity_idx"] = idx
-                        task_state["steps_completed"].append("compile_partial")
-                    _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": f"编译已取消（已完成 {idx}/{total_entities}）"})
-                    return result
-
-                try:
-                    outcome = self._save_page(page, force=force)
-                    # GS-6: 双向同步 — 页面保存后同步更新图谱
-                    self._sync_page_to_graph(page)
-                    result.slugs.append(page.slug)
-                    if outcome == "created":
-                        result.pages_created += 1
-                    elif outcome == "updated":
-                        result.pages_updated += 1
-                        if page.stale_items:
-                            result.stale_marked.append(page.slug)
-                    else:
-                        result.pages_unchanged += 1
-                    # S2 + L3: 质量校验 — 根据阈值决定状态
-                    if page.review_status != "review_needed":
-                        quality = self._validate_page_quality(page.body_md, page.type)
-                        if not quality["valid"]:
-                            page.review_status = "review_needed"
-                            logger.info(
-                                "wiki_page_quality_fail",
-                                slug=page.slug,
-                                issues=quality["issues"],
-                                score=quality["score"],
-                            )
-                        # L3: 质量阈值控制
-                        if quality["score"] < _QUALITY_REVIEW_THRESHOLD:
-                            page.review_status = "review_needed"
-                            logger.warning(
-                                "wiki_page_quality_rejected",
-                                slug=page.slug,
-                                score=quality["score"],
-                                threshold=_QUALITY_REVIEW_THRESHOLD,
-                            )
-                    if page.review_status == "review_needed":
-                        result.review_needed.append(page.slug)
-                    _emit(ProgressEventType.PAGE_DONE, {
-                        "entity": entity.name,
-                        "slug": page.slug,
-                        "outcome": outcome,
-                        "review_status": page.review_status,
-                    })
-                    # M2: 冲突检测 — 合并后检测语义冲突
-                    if outcome == "updated":
+                async def _compile_page_parallel(
+                    idx: int, entity: ExtractedEntity,
+                ) -> tuple[int, ExtractedEntity, WikiPage | None, Exception | None]:
+                    async with sem:
+                        if _check_cancel():
+                            return (idx, entity, None, None)
+                        # L1: 断点恢复 — 跳过已处理的实体
+                        if task_state is not None and idx <= task_state.get("last_entity_idx", -1):
+                            return (idx, entity, None, None)
                         try:
-                            # 获取旧版本内容用于冲突检测
-                            doc_key = _key_from_slug(page.slug)
-                            old_version = self.vc.get_latest(doc_key)
-                            if old_version:
-                                conflicts = await self._detect_conflicts_with_llm(
-                                    old_version["content"], page.body_md
-                                )
-                                if conflicts:
-                                    page.stale_items.extend(conflicts)
-                                    if page.slug not in result.stale_marked:
-                                        result.stale_marked.append(page.slug)
-                                    logger.info(
-                                        "wiki_conflict_detected",
-                                        slug=page.slug,
-                                        conflict_count=len(conflicts),
-                                    )
-                        except Exception as e:
-                            logger.warning(
-                                "wiki_conflict_detection_failed",
-                                slug=page.slug,
-                                error=str(e),
+                            _emit(ProgressEventType.PAGE_START, {
+                                "entity": entity.name,
+                                "index": idx + 1,
+                                "total": total_entities,
+                            })
+                            _emit(ProgressEventType.PROGRESS, {
+                                "percent": round((idx + 1) / max(total_entities, 1) * 100),
+                                "current": idx + 1,
+                                "total": total_entities,
+                            })
+                            page = await self._compile_entity_page(
+                                entity, source_entry, para_labels=doc_labels,
+                                relations_map=relations_map,
                             )
-                except Exception as e:
-                    logger.exception("wiki_compiler_page_failed", slug=entity.name)
-                    result.errors.append(f"{entity.name}: {e}")
+                            return (idx, entity, page, None)
+                        except Exception as e:
+                            return (idx, entity, None, e)
 
-            # 4. 结构编译（基于标题层级树）
-            if doc.heading_tree:
-                _emit(ProgressEventType.STEP_START, {"step": "struct_compile", "message": f"开始结构编译，共 {len(doc.heading_tree)} 个章节..."})
-                try:
-                    struct_result = await self._compile_heading_tree_to_wiki(
-                        doc, source_entry, force=force, on_progress=_emit
-                    )
-                    result.pages_created += struct_result.pages_created
-                    result.pages_updated += struct_result.pages_updated
-                    result.pages_unchanged += struct_result.pages_unchanged
-                    result.slugs.extend(struct_result.slugs)
-                    result.review_needed.extend(struct_result.review_needed)
-                    result.stale_marked.extend(struct_result.stale_marked)
-                    result.errors.extend(struct_result.errors)
-                    result.pipeline_trace = struct_result.pipeline_trace
-                    _emit(ProgressEventType.STEP_DONE, {"step": "struct_compile", "sections": len(doc.heading_tree), "pages_created": struct_result.pages_created, "pages_updated": struct_result.pages_updated})
-                except Exception as e:
-                    logger.exception("wiki_compiler_struct_failed", doc_id=doc_id)
-                    result.errors.append(f"结构编译失败: {e}")
-                    _emit(ProgressEventType.STEP_DONE, {"step": "struct_compile", "error": str(e)})
+                tasks = [_compile_page_parallel(i, entity) for i, entity in enumerate(entities)]
+                results_list = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # P0-1: Phase 2 — 串行保存和后续处理（SQLite 写入安全）
+                for item in results_list:
+                    if item is None:
+                        continue
+                    if isinstance(item, Exception):
+                        result.errors.append(f"gather_failed: {item}")
+                        continue
+
+                    idx, entity, page, error = item
+                    if error:
+                        logger.exception("wiki_compiler_page_failed", slug=entity.name)
+                        result.errors.append(f"{entity.name}: {error}")
+                        continue
+                    if page is None:
+                        continue
+
+                    if _check_cancel():
+                        if task_state is not None:
+                            task_state["last_entity_idx"] = idx
+                            task_state["steps_completed"].append("compile_partial")
+                        _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": f"编译已取消（已完成 {idx}/{total_entities}）"})
+                        _finish_run("cancelled")
+                        return result
+
+                    try:
+                        outcome = self._save_page(page, force=force)
+                        # GS-6: 双向同步 — 页面保存后同步更新图谱
+                        self._sync_page_to_graph(page)
+                        result.slugs.append(page.slug)
+                        if outcome == "created":
+                            result.pages_created += 1
+                        elif outcome == "updated":
+                            result.pages_updated += 1
+                            if page.stale_items:
+                                result.stale_marked.append(page.slug)
+                        else:
+                            result.pages_unchanged += 1
+                        # S2 + L3: 质量校验 — 根据阈值决定状态
+                        if page.review_status != "review_needed":
+                            quality = self._validate_page_quality(page.body_md, page.type)
+                            if not quality["valid"]:
+                                page.review_status = "review_needed"
+                                logger.info(
+                                    "wiki_page_quality_fail",
+                                    slug=page.slug,
+                                    issues=quality["issues"],
+                                    score=quality["score"],
+                                )
+                            # L3: 质量阈值控制
+                            if quality["score"] < _QUALITY_REVIEW_THRESHOLD:
+                                page.review_status = "review_needed"
+                                logger.warning(
+                                    "wiki_page_quality_rejected",
+                                    slug=page.slug,
+                                    score=quality["score"],
+                                    threshold=_QUALITY_REVIEW_THRESHOLD,
+                                )
+                        if page.review_status == "review_needed":
+                            result.review_needed.append(page.slug)
+                        _emit(ProgressEventType.PAGE_DONE, {
+                            "entity": entity.name,
+                            "slug": page.slug,
+                            "outcome": outcome,
+                            "review_status": page.review_status,
+                        })
+                        # M2: 冲突检测 — 合并后检测语义冲突
+                        if outcome == "updated":
+                            try:
+                                # 获取旧版本内容用于冲突检测
+                                doc_key = _key_from_slug(page.slug)
+                                old_version = self.vc.get_latest(doc_key)
+                                if old_version:
+                                    conflicts = await self._detect_conflicts_with_llm(
+                                        old_version["content"], page.body_md
+                                    )
+                                    if conflicts:
+                                        page.stale_items.extend(conflicts)
+                                        if page.slug not in result.stale_marked:
+                                            result.stale_marked.append(page.slug)
+                                        logger.info(
+                                            "wiki_conflict_detected",
+                                            slug=page.slug,
+                                            conflict_count=len(conflicts),
+                                        )
+                            except Exception as e:
+                                logger.warning(
+                                    "wiki_conflict_detection_failed",
+                                    slug=page.slug,
+                                    error=str(e),
+                                )
+                    except Exception as e:
+                        logger.exception("wiki_compiler_page_failed", slug=entity.name)
+                        result.errors.append(f"{entity.name}: {e}")
+
+                # 4. 结构编译（基于标题层级树）
+                if doc.heading_tree:
+                    _emit(ProgressEventType.STEP_START, {"step": "struct_compile", "message": f"开始结构编译，共 {len(doc.heading_tree)} 个章节..."})
+                    try:
+                        struct_result = await self._compile_heading_tree_to_wiki(
+                            doc, source_entry, force=force, on_progress=_emit
+                        )
+                        result.pages_created += struct_result.pages_created
+                        result.pages_updated += struct_result.pages_updated
+                        result.pages_unchanged += struct_result.pages_unchanged
+                        result.slugs.extend(struct_result.slugs)
+                        result.review_needed.extend(struct_result.review_needed)
+                        result.stale_marked.extend(struct_result.stale_marked)
+                        result.errors.extend(struct_result.errors)
+                        result.pipeline_trace = struct_result.pipeline_trace
+                        _emit(ProgressEventType.STEP_DONE, {"step": "struct_compile", "sections": len(doc.heading_tree), "pages_created": struct_result.pages_created, "pages_updated": struct_result.pages_updated})
+                    except Exception as e:
+                        logger.exception("wiki_compiler_struct_failed", doc_id=doc_id)
+                        result.errors.append(f"结构编译失败: {e}")
+                        _emit(ProgressEventType.STEP_DONE, {"step": "struct_compile", "error": str(e)})
+
+                # compile 阶段输出已就绪，记录产物
+                _track("compile", "output", serialize_compile_result_summary(result))
+                _update_step("compile", "done")
+            else:
+                # start_from_stage == "index" — 加载 compile 输出以获取 slugs
+                compile_output = tracker.get_artifact(pipeline_run_id, "compile", "output")
+                if compile_output:
+                    result.slugs = list(compile_output.get("slugs", []))
+                    result.pages_created = compile_output.get("pages_created", 0)
+                    result.pages_updated = compile_output.get("pages_updated", 0)
+                    result.pages_unchanged = compile_output.get("pages_unchanged", 0)
+                    result.review_needed = list(compile_output.get("review_needed", []))
+                    result.stale_marked = list(compile_output.get("stale_marked", []))
+                    result.errors = list(compile_output.get("errors", []))
+                _emit(ProgressEventType.STEP_DONE, {
+                    "step": "compile", "skipped": True,
+                    "message": f"从 run {pipeline_run_id} 加载 compile 产物（{len(result.slugs)} 个页面）",
+                })
 
             # 4. 状态推进
             self.store.update_status(doc_id, "compiled")
@@ -665,6 +817,20 @@ class WikiCompiler:
                     clear_stale(slug)
             except Exception as e:
                 result.errors.append(f"checksum/stale 同步失败: {e}")
+
+            # compile 阶段输出已就绪，记录产物（在 index 之前）
+            if start_index <= 2:
+                _track("compile", "output", serialize_compile_result_summary(result))
+                _update_step("compile", "done")
+
+            # ── 阶段 4: index ──
+            if start_index <= 3:
+                _update_step("index", "running")
+                _track("index", "input", {
+                    "pages_created": result.pages_created,
+                    "pages_updated": result.pages_updated,
+                    "slugs": list(result.slugs),
+                })
 
             # 6. 重建 index
             if rebuild_index_after and result.pages_created + result.pages_updated > 0:
@@ -683,6 +849,14 @@ class WikiCompiler:
                     logger.info("search_index_rebuilt", pages=result.pages_created + result.pages_updated)
                 except Exception as e:
                     logger.warning("search_index_rebuild_failed", error=str(e))
+
+            # index 阶段输出
+            if start_index <= 3:
+                _track("index", "output", {
+                    "index_rebuilt": result.index_rebuilt,
+                    "slugs": list(result.slugs),
+                })
+                _update_step("index", "done")
 
             # 设置 page_count 属性（编译完成后）
             try:
@@ -718,6 +892,8 @@ class WikiCompiler:
                 "review_needed": len(result.review_needed),
                 "errors": len(result.errors),
             })
+            # 流水线追踪完成
+            _finish_run("done")
 
             # ── 编译指标埋点：记录编译耗时与统计 ──
             try:

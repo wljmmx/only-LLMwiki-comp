@@ -7,11 +7,23 @@
 - GET  /graph/search
 - GET  /graph/by-type/{entity_type}
 - GET  /graph/visualize
+- DELETE /graph/entity/{name}
+- DELETE /graph/clear
+- GET  /graph/maintenance/overview
+- GET  /graph/maintenance/orphan-entities
+- GET  /graph/maintenance/low-confidence
+- GET  /graph/maintenance/by-source/{doc_id}
+- GET  /graph/maintenance/duplicates
+- POST /graph/maintenance/bulk-delete
+- POST /graph/maintenance/cleanup-low-confidence
+- POST /graph/maintenance/cleanup-orphans
+- DELETE /graph/by-source/{doc_id}
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
 
 from app.auth import verify_token
 from app.extraction import KnowledgeExtractor
@@ -296,3 +308,238 @@ async def graph_clear() -> dict:
         return store.clear_all()
     except Exception as e:
         raise HTTPException(500, f"清空图谱失败: {e}")
+
+
+# ────────── 维护工具：查询与清理无效数据 ──────────
+
+
+class BulkDeleteEntitiesRequest(BaseModel):
+    """POST /graph/maintenance/bulk-delete 请求体"""
+
+    names: list[str] = Field(..., description="要删除的实体名称列表")
+
+
+class CleanupLowConfidenceRequest(BaseModel):
+    """POST /graph/maintenance/cleanup-low-confidence 请求体"""
+
+    threshold: float = Field(0.5, description="置信度阈值（小于此值将被删除）", ge=0.0, le=1.0)
+    limit: int = Field(500, description="最多删除数量", ge=1, le=10000)
+    dry_run: bool = Field(False, description="只预览要删除的实体，不实际删除")
+
+
+class CleanupOrphanEntitiesRequest(BaseModel):
+    """POST /graph/maintenance/cleanup-orphans 请求体"""
+
+    limit: int = Field(500, description="最多删除数量", ge=1, le=10000)
+    dry_run: bool = Field(False, description="只预览要删除的实体，不实际删除")
+
+
+@router.get("/graph/maintenance/overview", dependencies=[Depends(verify_token)])
+async def graph_maintenance_overview(
+    low_confidence_threshold: float = Query(0.5, ge=0.0, le=1.0),
+) -> dict:
+    """图谱维护总览 — 一站式查看所有需要维护的指标
+
+    返回：
+    - stats: 图谱基本统计
+    - orphan_count: 孤立实体数（无关系）
+    - low_confidence_count: 低置信度实体数
+    - duplicate_count: 重复实体组数（同名不同源）
+    - sample_orphans: 孤立实体样本（前 20）
+    - sample_low_confidence: 低置信度实体样本（前 20）
+    """
+    try:
+        store = get_graph_store()
+        stats = store.get_stats()
+        orphans = store.query_orphan_entities(limit=20)
+        low_confidence = store.query_low_confidence_entities(
+            threshold=low_confidence_threshold, limit=20,
+        )
+        duplicates = store.query_duplicate_entities(limit=20)
+
+        return {
+            "stats": stats,
+            "orphan_count": len(orphans),
+            "low_confidence_count": len(low_confidence),
+            "duplicate_count": len(duplicates),
+            "low_confidence_threshold": low_confidence_threshold,
+            "sample_orphans": orphans,
+            "sample_low_confidence": low_confidence,
+            "sample_duplicates": duplicates,
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "hint": "Neo4j 未连接或不可用",
+            "stats": {},
+            "orphan_count": 0,
+            "low_confidence_count": 0,
+            "duplicate_count": 0,
+        }
+
+
+@router.get(
+    "/graph/maintenance/orphan-entities",
+    dependencies=[Depends(verify_token)],
+)
+async def graph_maintenance_orphan_entities(
+    limit: int = Query(200, ge=1, le=10000),
+) -> dict:
+    """查询孤立实体（无任何关系的实体节点）"""
+    try:
+        store = get_graph_store()
+        entities = store.query_orphan_entities(limit=limit)
+        return {
+            "count": len(entities),
+            "entities": entities,
+        }
+    except Exception as e:
+        return {"error": str(e), "hint": "Neo4j 未连接或不可用", "count": 0, "entities": []}
+
+
+@router.get(
+    "/graph/maintenance/low-confidence",
+    dependencies=[Depends(verify_token)],
+)
+async def graph_maintenance_low_confidence(
+    threshold: float = Query(0.5, ge=0.0, le=1.0),
+    limit: int = Query(200, ge=1, le=10000),
+) -> dict:
+    """查询低置信度实体（confidence < threshold）"""
+    try:
+        store = get_graph_store()
+        entities = store.query_low_confidence_entities(
+            threshold=threshold, limit=limit,
+        )
+        return {
+            "threshold": threshold,
+            "count": len(entities),
+            "entities": entities,
+        }
+    except Exception as e:
+        return {"error": str(e), "hint": "Neo4j 未连接或不可用", "count": 0, "entities": []}
+
+
+@router.get(
+    "/graph/maintenance/by-source/{doc_id}",
+    dependencies=[Depends(verify_token)],
+)
+async def graph_maintenance_by_source(doc_id: str) -> dict:
+    """查询某源文档的所有实体（用于审计与清理）"""
+    try:
+        store = get_graph_store()
+        entities = store.query_entities_by_source(doc_id, limit=10000)
+        return {
+            "doc_id": doc_id,
+            "count": len(entities),
+            "entities": entities,
+        }
+    except Exception as e:
+        return {"error": str(e), "hint": "Neo4j 未连接或不可用", "count": 0, "entities": []}
+
+
+@router.get(
+    "/graph/maintenance/duplicates",
+    dependencies=[Depends(verify_token)],
+)
+async def graph_maintenance_duplicates(
+    limit: int = Query(100, ge=1, le=1000),
+) -> dict:
+    """查询重复实体（同名称不同 source_doc_id）"""
+    try:
+        store = get_graph_store()
+        duplicates = store.query_duplicate_entities(limit=limit)
+        return {
+            "count": len(duplicates),
+            "duplicates": duplicates,
+        }
+    except Exception as e:
+        return {"error": str(e), "hint": "Neo4j 未连接或不可用", "count": 0, "duplicates": []}
+
+
+@router.post(
+    "/graph/maintenance/bulk-delete",
+    dependencies=[Depends(verify_token)],
+)
+async def graph_maintenance_bulk_delete(body: BulkDeleteEntitiesRequest) -> dict:
+    """批量删除实体（按名称列表）"""
+    if not body.names:
+        raise HTTPException(400, "names 不能为空")
+    try:
+        store = get_graph_store()
+        return store.batch_delete_entities(body.names)
+    except Exception as e:
+        raise HTTPException(500, f"批量删除失败: {e}")
+
+
+@router.post(
+    "/graph/maintenance/cleanup-low-confidence",
+    dependencies=[Depends(verify_token)],
+)
+async def graph_maintenance_cleanup_low_confidence(
+    body: CleanupLowConfidenceRequest,
+) -> dict:
+    """清理低置信度实体
+
+    dry_run=True 仅返回将删除的实体列表，不实际删除。
+    """
+    try:
+        store = get_graph_store()
+        if body.dry_run:
+            entities = store.query_low_confidence_entities(
+                threshold=body.threshold, limit=body.limit,
+            )
+            return {
+                "dry_run": True,
+                "threshold": body.threshold,
+                "would_delete": [e["name"] for e in entities if e.get("name")],
+                "count": len(entities),
+            }
+        result = store.cleanup_low_confidence(
+            threshold=body.threshold, limit=body.limit,
+        )
+        result["threshold"] = body.threshold
+        return result
+    except Exception as e:
+        raise HTTPException(500, f"清理低置信度实体失败: {e}")
+
+
+@router.post(
+    "/graph/maintenance/cleanup-orphans",
+    dependencies=[Depends(verify_token)],
+)
+async def graph_maintenance_cleanup_orphans(
+    body: CleanupOrphanEntitiesRequest,
+) -> dict:
+    """清理孤立实体（无任何关系）
+
+    dry_run=True 仅返回将删除的实体列表，不实际删除。
+    """
+    try:
+        store = get_graph_store()
+        if body.dry_run:
+            entities = store.query_orphan_entities(limit=body.limit)
+            return {
+                "dry_run": True,
+                "would_delete": [e["name"] for e in entities if e.get("name")],
+                "count": len(entities),
+            }
+        return store.cleanup_orphan_entities(limit=body.limit)
+    except Exception as e:
+        raise HTTPException(500, f"清理孤立实体失败: {e}")
+
+
+@router.delete(
+    "/graph/by-source/{doc_id}",
+    dependencies=[Depends(verify_token)],
+)
+async def graph_delete_by_source(doc_id: str) -> dict:
+    """删除某源文档对应的所有实体和关系
+
+    用于：删除文档后清理残留图谱数据。
+    """
+    try:
+        store = get_graph_store()
+        return store.delete_by_source(doc_id)
+    except Exception as e:
+        raise HTTPException(500, f"按源文档删除失败: {e}")

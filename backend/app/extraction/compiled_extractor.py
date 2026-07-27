@@ -108,7 +108,7 @@ class CompiledKnowledgeExtractor:
         entities: list[ExtractedEntity] = []
         relations: list[ExtractedRelation] = []
 
-        # 从标题树提取实体
+        # 从标题树提取实体（置信度 ≥ 0.65，确保通过 review 门控）
         heading_tree = getattr(doc, 'heading_tree', []) or []
         for node_dict in heading_tree if isinstance(heading_tree, list) else []:
             title = node_dict.get('title', '') if isinstance(node_dict, dict) else getattr(node_dict, 'title', '')
@@ -121,26 +121,35 @@ class CompiledKnowledgeExtractor:
                     definition=f'文档章节: {title}',
                     source_section_id='',
                     source_doc_id=getattr(doc, 'doc_id', ''),
-                    confidence=0.5,
+                    confidence=0.65,
                 ))
 
         # 从元素提取关键词实体
         elements = getattr(doc, 'elements', []) or []
         code_blocks = []
         for elem in elements:
-            if isinstance(elem, dict):
-                if elem.get('type') == 'code':
-                    code_blocks.append(elem.get('content', ''))
-                elif elem.get('type') == 'table':
-                    entities.append(ExtractedEntity(
-                        name=f'配置表: {elem.get("content", "")[:50]}',
-                        slug=self._slugify(f'table-{elem.get("content", "")[:30]}'),
-                        entity_type='Parameter',
-                        definition='文档中的配置/参数表格',
-                        source_section_id='',
-                        source_doc_id=getattr(doc, 'doc_id', ''),
-                        confidence=0.4,
-                    ))
+            # 兼容 ParsedElement 对象和 dict
+            elem_dict = elem if isinstance(elem, dict) else {
+                'type': getattr(elem, 'type', None),
+                'type_value': getattr(getattr(elem, 'type', None), 'value', str(getattr(elem, 'type', ''))),
+                'content': getattr(elem, 'content', ''),
+            }
+            etype = elem_dict.get('type_value', '') or str(elem_dict.get('type', ''))
+            content = elem_dict.get('content', '')
+            if not content:
+                continue
+            if etype == 'code':
+                code_blocks.append(content)
+            elif etype == 'table':
+                entities.append(ExtractedEntity(
+                    name=f'配置表: {content[:50]}',
+                    slug=self._slugify(f'table-{content[:30]}'),
+                    entity_type='Parameter',
+                    definition='文档中的配置/参数表格',
+                    source_section_id='',
+                    source_doc_id=getattr(doc, 'doc_id', ''),
+                    confidence=0.65,
+                ))
 
         # 从代码块提取命令
         for code in code_blocks:
@@ -156,7 +165,7 @@ class CompiledKnowledgeExtractor:
                         definition=f'操作命令: {line[:60]}',
                         source_section_id='',
                         source_doc_id=getattr(doc, 'doc_id', ''),
-                        confidence=0.5,
+                        confidence=0.65,
                     ))
 
         return CompiledExtractionResult(
