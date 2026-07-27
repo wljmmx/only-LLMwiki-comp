@@ -769,6 +769,44 @@ async def llm_wiki_page_put(
     }
 
 
+@router.delete("/llm-wiki/page/{slug}", dependencies=[Depends(verify_token)])
+async def llm_wiki_page_delete(slug: str) -> dict:
+    """删除 LLM 编译的 wiki 页面
+
+    清理范围：
+    - 版本控制中的所有版本
+    - 搜索索引
+    - backlink 记录
+    - 知识图谱实体
+    """
+    vc = get_version_control()
+    doc_key = f"wiki:{slug}"
+
+    # 检查页面是否存在
+    latest = vc.get_latest(doc_key)
+    if not latest:
+        raise HTTPException(404, f"wiki 页面不存在: {slug}")
+
+    # 删除所有版本
+    count = vc.delete_all(doc_key)
+
+    # 清理搜索索引
+    try:
+        from app.search import get_search_engine
+        get_search_engine().remove_index(doc_key)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 触发 webhook
+    try:
+        from app.webhooks import dispatch_event
+        dispatch_event("wiki.page.deleted", {"slug": slug, "versions_removed": count})
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {"deleted": True, "slug": slug, "versions_removed": count}
+
+
 @router.get("/llm-wiki/index")
 async def llm_wiki_index() -> dict:
     """获取 index.md（导航中枢）"""

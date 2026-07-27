@@ -12,10 +12,14 @@ export interface DocumentMeta {
 }
 
 export interface DocumentListResponse {
-  documents: DocumentMeta[]
+  data: {
+    items: DocumentMeta[]
+    total: number
+    page: number
+    page_size: number
+  }
+  message: string
   stats: DocumentStats
-  limit: number
-  offset: number
 }
 
 export interface DocumentStats {

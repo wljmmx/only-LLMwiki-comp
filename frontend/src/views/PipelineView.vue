@@ -140,7 +140,7 @@ async function loadExistingDocs() {
   existingDocsLoading.value = true
   try {
     const res = await listDocuments({ limit: 200 })
-    existingDocs.value = res.documents
+    existingDocs.value = res.data.items || []
   } catch {
     message.error('加载文档列表失败')
   } finally {

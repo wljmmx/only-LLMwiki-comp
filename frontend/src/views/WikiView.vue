@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { NSplit, NButton, NIcon, NResult, NBreadcrumb, NBreadcrumbItem, NDrawer, NDrawerContent } from 'naive-ui'
+import { NSplit, NButton, NIcon, NResult, NBreadcrumb, NBreadcrumbItem, NDrawer, NDrawerContent, NModal, useMessage } from 'naive-ui'
 import { MenuOutline, HomeOutline, ChevronForwardOutline } from '@vicons/ionicons5'
-import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
+import { listWikiPages, getWikiPage, getWikiBacklinks, deleteWikiPage } from '@/api/wiki'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
 import { parseFrontmatter } from '@/utils/frontmatter'
 import { getTypeLabel } from '@/utils/format'
@@ -14,6 +14,7 @@ import WikiVersionHistory from '@/components/wiki/WikiVersionHistory.vue'
 import { useRecentPages } from '@/composables/useRecentPages'
 
 const { trackPage } = useRecentPages()
+const message = useMessage()
 
 const treeLoading = ref(true)
 const contentLoading = ref(false)
@@ -176,14 +177,34 @@ function handleSelect(key: string) {
   loadPage(key)
 }
 
-function handleBacklinkClick(slug: string) {
+function handleContentClick(slug: string) {
   selectedKey.value = slug
   loadPage(slug)
 }
 
-function handleContentClick(slug: string) {
-  selectedKey.value = slug
-  loadPage(slug)
+// P3: 删除 wiki 页面
+const deleteConfirmVisible = ref(false)
+
+function handleDeletePage() {
+  deleteConfirmVisible.value = true
+}
+
+async function confirmDeletePage() {
+  if (!selectedKey.value) return
+  try {
+    await deleteWikiPage(selectedKey.value)
+    message.success('页面已删除')
+    deleteConfirmVisible.value = false
+    currentPage.value = null
+    selectedKey.value = null
+    await loadPages()
+  } catch (err: any) {
+    message.error(err?.response?.data?.detail || '删除失败')
+  }
+}
+
+function cancelDeletePage() {
+  deleteConfirmVisible.value = false
 }
 
 // P0: 切换侧边栏
@@ -290,6 +311,7 @@ onMounted(() => {
         @content-click="handleContentClick"
         @toggle-version-history="showVersionHistory = true"
         @lock-change="handleLockChange"
+        @delete-page="handleDeletePage"
       />
     </div>
 
@@ -313,6 +335,11 @@ onMounted(() => {
       :slug="selectedKey || ''"
       @rollback="handleVersionRollback"
     />
+
+    <!-- 删除确认弹窗 -->
+    <NModal v-model:show="deleteConfirmVisible" preset="dialog" title="确认删除" positive-text="确认删除" negative-text="取消" @positive-click="confirmDeletePage" @negative-click="cancelDeletePage">
+      <div>确定要删除页面 <strong>{{ selectedKey }}</strong> 吗？此操作不可撤销。</div>
+    </NModal>
   </div>
 </template>
 

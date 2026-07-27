@@ -136,8 +136,8 @@ async function fetchDocuments() {
     if (statusFilter.value) params.status = statusFilter.value
 
     const res = await listDocuments(params)
-    documents.value = res.documents
-    total.value = res.stats.total
+    documents.value = res.data.items
+    total.value = res.data.total
   } catch (err) {
     message.error('获取文档列表失败')
     console.error(err)

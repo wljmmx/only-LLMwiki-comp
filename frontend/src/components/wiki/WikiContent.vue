@@ -43,6 +43,7 @@ const emit = defineEmits<{
   'content-click': [slug: string]
   'toggle-version-history': []
   'lock-change': [payload: { hasLock: boolean; lockHolder: string | null }]
+  'delete-page': []
 }>()
 
 const typeLabelMap: Record<string, string> = {
@@ -162,6 +163,15 @@ function handleContentClick(e: MouseEvent) {
           @click="emit('toggle-version-history')"
         >
           历史记录
+        </NButton>
+        <NButton
+          size="small"
+          quaternary
+          type="error"
+          style="margin-left: auto"
+          @click="emit('delete-page')"
+        >
+          删除
         </NButton>
       </div>
       <WikiEditor

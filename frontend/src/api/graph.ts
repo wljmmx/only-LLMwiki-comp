@@ -99,3 +99,21 @@ export function getGraphByType(entityType: string, limit = 50) {
     { params: { limit } },
   )
 }
+
+/**
+ * 删除图谱实体
+ * DELETE /graph/entity/{name}
+ */
+export function deleteGraphEntity(name: string) {
+  return api.delete<unknown, { deleted: boolean; name: string; nodes_removed: number }>(
+    `/graph/entity/${encodeURIComponent(name)}`,
+  )
+}
+
+/**
+ * 清空所有图谱数据
+ * DELETE /graph/clear
+ */
+export function clearGraph() {
+  return api.delete<unknown, { nodes_removed: number; relations_removed: number }>('/graph/clear')
+}

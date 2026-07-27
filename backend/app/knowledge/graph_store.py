@@ -511,6 +511,34 @@ class GraphStore:
                 "by_type": [_to_jsonable(dict(record)) for record in by_type],
             }
 
+    def delete_entity(self, name: str) -> dict:
+        """删除实体及其所有关联关系"""
+        with self.driver.session() as session:
+            # 删除所有关联关系
+            session.run(
+                "MATCH (n:Entity {name: $name})-[r]-() DELETE r",
+                name=name,
+            )
+            # 删除实体节点
+            result = session.run(
+                "MATCH (n:Entity {name: $name}) DELETE n RETURN count(n) AS deleted",
+                name=name,
+            )
+            record = result.single()
+            deleted = record["deleted"] if record else 0
+        self._cache_invalidate()
+        return {"deleted": deleted > 0, "name": name, "nodes_removed": deleted}
+
+    def clear_all(self) -> dict:
+        """清空所有图谱数据（实体和关系）"""
+        with self.driver.session() as session:
+            rel_result = session.run("MATCH ()-[r]->() DELETE r RETURN count(r) AS deleted")
+            rel_count = rel_result.single()["deleted"] if rel_result.peek() else 0
+            node_result = session.run("MATCH (n:Entity) DELETE n RETURN count(n) AS deleted")
+            node_count = node_result.single()["deleted"] if node_result.peek() else 0
+        self._cache_invalidate()
+        return {"nodes_removed": node_count, "relations_removed": rel_count}
+
 
 # 全局单例
 _graph_store: GraphStore | None = None

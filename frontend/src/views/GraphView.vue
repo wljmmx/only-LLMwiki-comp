@@ -31,6 +31,8 @@ import {
   getGraphStats,
   searchGraph,
   getGraphEntity,
+  deleteGraphEntity,
+  clearGraph,
   type GraphNode,
   type GraphLink,
   type GraphStats,
@@ -327,6 +329,31 @@ async function openEntityDetail(name: string) {
   }
 }
 
+async function handleDeleteEntity(name: string) {
+  try {
+    await deleteGraphEntity(name)
+    message.success(`已删除实体: ${name}`)
+    detailVisible.value = false
+    loadGraph()
+    loadStats()
+  } catch (err: any) {
+    message.error(err?.response?.data?.detail || '删除失败')
+  }
+}
+
+async function handleClearGraph() {
+  try {
+    await clearGraph()
+    message.success('图谱已清空')
+    graphData.value = { nodes: [], links: [] }
+    vfNodes.value = []
+    vfEdges.value = []
+    loadStats()
+  } catch (err: any) {
+    message.error(err?.response?.data?.detail || '清空失败')
+  }
+}
+
 watch(entityTypeFilter, () => loadGraph())
 
 // P0-2: 深色模式切换时重建边，使标签文字/底色响应式生效
@@ -384,6 +411,7 @@ onMounted(() => {
           />
           <n-button quaternary size="small" :loading="loading" @click="loadGraph">刷新</n-button>
           <n-button size="small" @click="() => fitView({ padding: 0.2 })">适配视图</n-button>
+          <n-button size="small" type="error" quaternary @click="handleClearGraph">清空图谱</n-button>
         </n-space>
       </template>
 
@@ -458,6 +486,7 @@ onMounted(() => {
     <!-- 实体详情抽屉 -->
     <n-drawer v-model:show="detailVisible" :width="720" placement="right">
       <n-drawer-content :title="`实体详情: ${selectedNodeName}`" closable>
+        <n-space vertical :size="16">
         <LoadingState v-if="detailLoading" />
         <template v-else-if="selectedEntity">
           <n-descriptions :column="1" bordered label-placement="left" size="small">
@@ -531,7 +560,16 @@ onMounted(() => {
               </n-space>
             </n-card>
           </n-space>
+          <n-button
+            type="error"
+            size="small"
+            style="margin-top: 16px"
+            @click="handleDeleteEntity(selectedNodeName)"
+          >
+            删除此实体
+          </n-button>
         </template>
+        </n-space>
       </n-drawer-content>
     </n-drawer>
   </div>

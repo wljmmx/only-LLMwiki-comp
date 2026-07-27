@@ -276,3 +276,23 @@ def _entity_group(entity_type: str) -> int:
         "Document": 11,
     }
     return groups.get(entity_type, 0)
+
+
+@router.delete("/graph/entity/{name}", dependencies=[Depends(verify_token)])
+async def graph_delete_entity(name: str) -> dict:
+    """删除图谱实体及其所有关联关系"""
+    try:
+        store = get_graph_store()
+        return store.delete_entity(name)
+    except Exception as e:
+        raise HTTPException(500, f"删除实体失败: {e}")
+
+
+@router.delete("/graph/clear", dependencies=[Depends(verify_token)])
+async def graph_clear() -> dict:
+    """清空所有图谱数据"""
+    try:
+        store = get_graph_store()
+        return store.clear_all()
+    except Exception as e:
+        raise HTTPException(500, f"清空图谱失败: {e}")

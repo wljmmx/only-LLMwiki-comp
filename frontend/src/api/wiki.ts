@@ -30,6 +30,10 @@ export function getWikiBacklinks(slug: string) {
   return api.get<unknown, BacklinkItem[]>(`/llm-wiki/backlinks/${slug}`)
 }
 
+export function deleteWikiPage(slug: string) {
+  return api.delete<unknown, { deleted: boolean; slug: string }>(`/llm-wiki/page/${slug}`)
+}
+
 export function getWikiOrphans() {
   return api.get<unknown, { pages: WikiPage[] }>('/llm-wiki/orphans')
 }
