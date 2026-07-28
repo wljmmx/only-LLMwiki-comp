@@ -779,6 +779,17 @@ class WikiCompiler:
                         logger.exception("wiki_compiler_page_failed", slug=entity.name)
                         result.errors.append(f"{entity.name}: {e}")
 
+                # 实体编译阶段完成，先发送 compile step_done
+                _emit(ProgressEventType.STEP_DONE, {
+                    "step": "compile",
+                    "pages": len(entities),
+                    "entity_names": entity_names,
+                    "slugs": list(result.slugs),
+                    "pages_created": result.pages_created,
+                    "pages_updated": result.pages_updated,
+                    "pages_unchanged": result.pages_unchanged,
+                })
+
                 # 4. 结构编译（基于标题层级树）
                 if doc.heading_tree:
                     _emit(ProgressEventType.STEP_START, {"step": "struct_compile", "message": f"开始结构编译，共 {len(doc.heading_tree)} 个章节..."})
@@ -902,7 +913,7 @@ class WikiCompiler:
                 task_state["steps_completed"].append("done")
             # M3: 编译完成事件
             _emit(ProgressEventType.STEP_DONE, {
-                "step": "compile",
+                "step": "compile_summary",
                 "pages_created": result.pages_created,
                 "pages_updated": result.pages_updated,
                 "pages_unchanged": result.pages_unchanged,

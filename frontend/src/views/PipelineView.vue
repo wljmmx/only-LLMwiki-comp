@@ -335,6 +335,18 @@ function startCompile() {
               index_rebuilt: indexRebuilt,
               slugs_count: slugsCount,
             }
+          } else if (step === 'compile_summary') {
+            // 最终编译汇总，更新 compile 步骤的 slugs（struct_compile 可能追加了页面）
+            const slugs = evt.data.slugs ?? []
+            const compileIdx = stepIndex['compile']
+            if (compileIdx !== undefined) {
+              const compileStep = compileSteps.value[compileIdx]
+              if (compileStep.output) {
+                compileStep.output.slugs = slugs
+                compileStep.output.pages = slugs.length
+              }
+              compileStep.details = `编译完成：${slugs.length} 个页面`
+            }
           }
         }
       } else if (evt.type === 'page_start') {
