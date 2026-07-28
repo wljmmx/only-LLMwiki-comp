@@ -152,11 +152,31 @@ async function loadExistingDocs() {
 interface PipelineStep {
   name: string
   label: string
-  status: 'pending' | 'running' | 'done' | 'error'
+  status: 'pending' | 'running' | 'done' | 'error' | 'skipped'
   duration_ms?: number | null
   error?: string | null
   subProgress?: { current: number; total: number; currentEntity: string } | null
   details?: string | null
+  // 每个环节的产出数据
+  output?: {
+    // parse
+    elements?: number
+    heading_tree_count?: number
+    heading_tree_titles?: Array<{ title: string; level: number }>
+    // extract
+    entities?: number
+    entity_names?: string[]
+    // compile
+    pages?: number
+    slugs?: string[]
+    // struct_compile
+    sections?: number
+    pages_created?: number
+    pages_updated?: number
+    // index
+    index_rebuilt?: boolean
+    slugs_count?: number
+  } | null
 }
 
 // 章节节点（独立管道节点）
@@ -178,6 +198,7 @@ interface SectionNode {
 
 const compiling = ref(false)
 const compileProgress = ref(0)
+const startFromStage = ref<string | null>(null)  // P3: 从指定阶段重跑
 const compileSteps = ref<PipelineStep[]>([
   { name: 'parse', label: '解析文档', status: 'pending' },
   { name: 'extract', label: '知识抽取', status: 'pending' },
@@ -213,6 +234,12 @@ function resetSteps() {
   sectionNodes.value = []
 }
 
+// P3: 从指定阶段重跑
+function restartFromStage(stageName: string) {
+  startFromStage.value = stageName
+  startCompile()
+}
+
 function startCompile() {
   const docId = selectedDocId.value
   if (!docId) {
@@ -224,7 +251,25 @@ function startCompile() {
   phase.value = 'compiling'
   resetSteps()
 
-  subscribe(`/llm-wiki/recompile/${docId}/stream?force=true`, {
+  // 构建 SSE URL，支持 start_from_stage 参数
+  let url = `/llm-wiki/recompile/${docId}/stream?force=true`
+  const stage = startFromStage.value
+  if (stage) {
+    url += `&start_from_stage=${stage}`
+    // 重跑时，前面阶段标记为 skipped
+    const stageOrder = ['parse', 'extract', 'compile', 'struct_compile', 'index']
+    const startIdx = stageOrder.indexOf(stage)
+    if (startIdx > 0) {
+      for (let i = 0; i < startIdx; i++) {
+        compileSteps.value[i].status = 'skipped'
+        compileSteps.value[i].details = '跳过（从缓存加载）'
+        compileProgress.value = (i / 5) * 100
+      }
+    }
+  }
+  startFromStage.value = null  // 重置
+
+  subscribe(url, {
     onEvent: (evt: SseEvent) => {
       if (evt.type === 'step_start') {
         const step = evt.data.step as string
@@ -244,13 +289,29 @@ function startCompile() {
           if (step === 'parse') {
             const elements = evt.data.elements ?? 0
             const headingTreeCount = evt.data.heading_tree_count ?? 0
+            const headingTreeTitles = evt.data.heading_tree_titles ?? []
             compileSteps.value[idx].details = `解析完成：${elements} 个元素，${headingTreeCount} 个章节`
+            compileSteps.value[idx].output = {
+              elements,
+              heading_tree_count: headingTreeCount,
+              heading_tree_titles: headingTreeTitles,
+            }
           } else if (step === 'extract') {
             const entities = evt.data.entities ?? 0
+            const entityNames = evt.data.entity_names ?? []
             compileSteps.value[idx].details = `抽取完成：${entities} 个实体`
+            compileSteps.value[idx].output = {
+              entities,
+              entity_names: entityNames,
+            }
           } else if (step === 'compile') {
             const pages = evt.data.pages ?? 0
+            const slugs = evt.data.slugs ?? []
             compileSteps.value[idx].details = `编译完成：${pages} 个页面`
+            compileSteps.value[idx].output = {
+              pages,
+              slugs,
+            }
           } else if (step === 'struct_compile') {
             const sections = evt.data.sections ?? 0
             const pagesCreated = evt.data.pages_created ?? 0
@@ -260,6 +321,19 @@ function startCompile() {
               compileSteps.value[idx].details = `结构编译失败：${error}`
             } else {
               compileSteps.value[idx].details = `章节处理完成：${sections} 个章节，${pagesCreated} 创建，${pagesUpdated} 更新`
+            }
+            compileSteps.value[idx].output = {
+              sections,
+              pages_created: pagesCreated,
+              pages_updated: pagesUpdated,
+            }
+          } else if (step === 'index') {
+            const indexRebuilt = evt.data.index_rebuilt ?? false
+            const slugsCount = evt.data.slugs_count ?? 0
+            compileSteps.value[idx].details = `索引重建${indexRebuilt ? '完成' : '跳过'}（${slugsCount} 个页面）`
+            compileSteps.value[idx].output = {
+              index_rebuilt: indexRebuilt,
+              slugs_count: slugsCount,
             }
           }
         }
@@ -700,36 +774,98 @@ watch(sourceTab, (val) => {
         :status="compileSteps.some(s => s.status === 'error') ? 'error' : 'process'"
         vertical
         style="margin-bottom: 20px"
-      >
-        <NStep
+      ><NStep
           v-for="step in compileSteps"
           :key="step.name"
           :title="step.label"
           :status="
             step.status === 'error' ? 'error' :
             step.status === 'running' ? 'process' :
-            step.status === 'done' ? 'finish' : 'wait'
+            step.status === 'done' || step.status === 'skipped' ? 'finish' : 'wait'
           "
         >
-          <template v-if="step.status === 'done' && step.details" #default>
-            <span style="color: #18a058">{{ step.details }}</span>
-          </template>
-          <template v-if="step.status === 'running' && step.details" #default>
-            <span style="color: #2080f0">{{ step.details }}</span>
-          </template>
-          <template v-if="step.status === 'error' && step.error" #default>
-            <span style="color: #d03050">{{ step.error }}</span>
-          </template>
-          <template
-            v-if="step.status === 'running' && step.subProgress && step.subProgress.total > 0"
-            #default
-          >
-            <span style="color: #2080f0">
-              {{ step.name === 'struct_compile' ? '章节' : '编译' }}中 {{ step.subProgress.current }}/{{ step.subProgress.total }}
-              <span v-if="step.subProgress.currentEntity">
-                — {{ step.subProgress.currentEntity }}
-              </span>
-            </span>
+          <template #default>
+            <div style="display: flex; flex-direction: column; gap: 4px">
+              <template v-if="step.status === 'done' && step.details">
+                <span style="color: #18a058">{{ step.details }}</span>
+              </template>
+              <template v-if="step.status === 'running' && step.details">
+                <span style="color: #2080f0">{{ step.details }}</span>
+              </template>
+              <template v-if="step.status === 'skipped' && step.details">
+                <span style="color: #999">{{ step.details }}</span>
+              </template>
+              <template v-if="step.status === 'error' && step.error">
+                <span style="color: #d03050">{{ step.error }}</span>
+              </template>
+              <template
+                v-if="step.status === 'running' && step.subProgress && step.subProgress.total > 0"
+              >
+                <span style="color: #2080f0">
+                  {{ step.name === 'struct_compile' ? '章节' : '编译' }}中 {{ step.subProgress.current }}/{{ step.subProgress.total }}
+                  <span v-if="step.subProgress.currentEntity">
+                    — {{ step.subProgress.currentEntity }}
+                  </span>
+                </span>
+              </template>
+
+              <!-- P3: 环节产出详情 -->
+              <template v-if="step.output && (step.status === 'done' || step.status === 'skipped')">
+                <NCollapse style="margin-top: 4px">
+                  <NCollapseItem :title="'查看详情'" name="detail">
+                    <div v-if="step.name === 'parse' && step.output.heading_tree_titles" style="max-height: 200px; overflow-y: auto">
+                      <div style="font-size: 12px; color: #666; margin-bottom: 4px">文档章节结构：</div>
+                      <div v-for="(h, i) in step.output.heading_tree_titles" :key="i" :style="{ paddingLeft: (h.level - 1) * 16 + 'px', fontSize: '12px', lineHeight: '20px' }">
+                        <NTag size="tiny" :bordered="false" :type="getLevelType(h.level)" style="margin-right: 4px">H{{ h.level }}</NTag>
+                        {{ h.title || '(无标题)' }}
+                      </div>
+                      <NEmpty v-if="!step.output.heading_tree_titles.length" description="无章节结构" size="small" />
+                    </div>
+                    <div v-else-if="step.name === 'extract' && step.output.entity_names" style="max-height: 200px; overflow-y: auto">
+                      <div style="font-size: 12px; color: #666; margin-bottom: 4px">抽取实体列表：</div>
+                      <NSpace :size="4" wrap>
+                        <NTag v-for="name in step.output.entity_names" :key="name" size="tiny" :bordered="false" type="info">
+                          {{ name }}
+                        </NTag>
+                      </NSpace>
+                      <NEmpty v-if="!step.output.entity_names.length" description="无实体" size="small" />
+                    </div>
+                    <div v-else-if="step.name === 'compile' && step.output.slugs" style="max-height: 200px; overflow-y: auto">
+                      <div style="font-size: 12px; color: #666; margin-bottom: 4px">生成 Wiki 页面：</div>
+                      <NSpace :size="4" wrap>
+                        <NTag v-for="slug in step.output.slugs" :key="slug" size="tiny" :bordered="false" type="success" style="cursor: pointer" @click="viewWikiPage(slug)">
+                          {{ slug }}
+                        </NTag>
+                      </NSpace>
+                      <NEmpty v-if="!step.output.slugs.length" description="无页面" size="small" />
+                    </div>
+                    <div v-else-if="step.name === 'struct_compile'">
+                      <div style="font-size: 12px; color: #666">
+                        处理章节数：{{ step.output.sections ?? 0 }}，创建：{{ step.output.pages_created ?? 0 }}，更新：{{ step.output.pages_updated ?? 0 }}
+                      </div>
+                    </div>
+                    <div v-else-if="step.name === 'index'">
+                      <div style="font-size: 12px; color: #666">
+                        索引重建：{{ step.output.index_rebuilt ? '已完成' : '已跳过' }}，页面数：{{ step.output.slugs_count ?? 0 }}
+                      </div>
+                    </div>
+                  </NCollapseItem>
+                </NCollapse>
+              </template>
+
+              <!-- P3: 从该阶段重跑按钮 -->
+              <template v-if="step.status === 'done' || step.status === 'error'">
+                <NButton
+                  size="tiny"
+                  quaternary
+                  type="warning"
+                  style="margin-top: 4px"
+                  @click="restartFromStage(step.name)"
+                >
+                  从「{{ step.label }}」重跑
+                </NButton>
+              </template>
+            </div>
           </template>
         </NStep>
       </NSteps>

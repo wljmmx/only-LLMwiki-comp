@@ -494,7 +494,15 @@ class WikiCompiler:
                     _update_step("parse", "error", error=str(e))
                     _finish_run("error")
                     return result
-                _emit(ProgressEventType.STEP_DONE, {"step": "parse", "elements": len(doc.elements), "heading_tree_count": len(doc.heading_tree)})
+                _emit(ProgressEventType.STEP_DONE, {
+                    "step": "parse",
+                    "elements": len(doc.elements),
+                    "heading_tree_count": len(doc.heading_tree),
+                    "heading_tree_titles": [
+                        {"title": h.get("title", ""), "level": h.get("level", 1)}
+                        for h in doc.get_heading_tree_dict()
+                    ][:50],
+                })
                 _update_step("parse", "done")
                 _track("parse", "output", serialize_parsed_doc(doc))
                 if _check_cancel():
@@ -530,7 +538,11 @@ class WikiCompiler:
                     _update_step("extract", "error", error=str(e))
                     _finish_run("error")
                     return result
-                _emit(ProgressEventType.STEP_DONE, {"step": "extract", "entities": len(extraction.auto_accepted_entities) + len(extraction.review_entities)})
+                _emit(ProgressEventType.STEP_DONE, {
+                    "step": "extract",
+                    "entities": len(extraction.auto_accepted_entities) + len(extraction.review_entities),
+                    "entity_names": [e.name for e in list(extraction.auto_accepted_entities) + list(extraction.review_entities)],
+                })
                 _update_step("extract", "done")
                 _track("extract", "output", serialize_extraction_result(extraction))
                 if _check_cancel():
@@ -857,6 +869,11 @@ class WikiCompiler:
                     "slugs": list(result.slugs),
                 })
                 _update_step("index", "done")
+                _emit(ProgressEventType.STEP_DONE, {
+                    "step": "index",
+                    "index_rebuilt": result.index_rebuilt,
+                    "slugs_count": len(result.slugs),
+                })
 
             # 设置 page_count 属性（编译完成后）
             try:
@@ -891,6 +908,7 @@ class WikiCompiler:
                 "pages_unchanged": result.pages_unchanged,
                 "review_needed": len(result.review_needed),
                 "errors": len(result.errors),
+                "slugs": list(result.slugs),
             })
             # 流水线追踪完成
             _finish_run("done")

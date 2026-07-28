@@ -275,25 +275,37 @@ async def llm_wiki_compile_trace(doc_id: str, force: bool = False) -> dict:
 # ────────── P1-5: SSE 流式重编译 ──────────
 
 @router.post("/llm-wiki/recompile/{doc_id}/stream", dependencies=[Depends(verify_token)])
-async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool = True):
+async def llm_wiki_recompile_stream(
+    request: Request,
+    doc_id: str,
+    force: bool = True,
+    start_from_stage: str | None = None,
+):
     """SSE 流式重编译 — 实时推送每一步的进度
 
     P2-5.5: 透传 wiki_compiler 内部的进度事件（parse/extract/classify/compile
     + 逐实体 PAGE_START/PAGE_DONE + 百分比 PROGRESS）到 SSE 流。
 
+    P3: 支持 start_from_stage 参数，允许从指定阶段重跑（parse|extract|compile|index）。
+
     SSE 事件序列（来自 wiki_compiler.ProgressEventType）：
         event: step_start  — {"step":"parse", "message":"开始解析文档..."}
-        event: step_done   — {"step":"parse", "elements":156}
+        event: step_done   — {"step":"parse", "elements":156, "heading_tree_count":12}
         event: step_start  — {"step":"extract", "message":"开始知识抽取..."}
-        event: step_done   — {"step":"extract", "entities":12}
+        event: step_done   — {"step":"extract", "entities":12, "entity_names":["Nginx","Upstream"]}
         event: step_start  — {"step":"compile", "total":5}
         event: page_start  — {"entity":"Nginx", "index":0, "total":5}
         event: progress    — {"percent":20, "current":1, "total":5}
         event: page_done   — {"entity":"Nginx", "slug":"nginx", "outcome":"created"}
         ...
-        event: step_done   — {"step":"compile", "pages":3}
+        event: step_done   — {"step":"compile", "pages":3, "slugs":["nginx","upstream","load-balancer"]}
+        event: step_start  — {"step":"struct_compile", "message":"开始结构编译，共 12 个章节..."}
+        event: section_start — {"slug":"intro","title":"概述","level":2,"index":1,"total":12}
+        event: section_done  — {"slug":"intro","title":"概述","outcome":"created","raw_chars":500,"compiled_chars":350}
+        event: step_done   — {"step":"struct_compile","sections":12,"pages_created":3,"pages_updated":2}
+        event: step_done   — {"step":"index","index_rebuilt":true}
         event: done        — {"total_ms":15300, "pages_created":2, ...}
-        event: error       — {"step":"compile", "message":"...", "retryable":true}
+        event: error       — {"step":"compile","message":"...","retryable":true}
 
     P2-4: 客户端断连时取消编译（通过 request.is_disconnected()）。
     P0-4: 修复 — 使用 threading.Event 将异步断连检测转换为同步检查。
@@ -345,6 +357,7 @@ async def llm_wiki_recompile_stream(request: Request, doc_id: str, force: bool =
                     force=force,
                     is_cancelled=disconnected.is_set,  # P0-4: 同步断连检查
                     on_progress=on_progress,  # P2-5.5: 进度回调
+                    start_from_stage=start_from_stage,  # P3: 支持从指定阶段重跑
                 )
                 await ev_queue.put(("__result__", result))
             except asyncio.CancelledError:
