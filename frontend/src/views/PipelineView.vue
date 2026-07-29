@@ -424,22 +424,42 @@ function startCompile() {
         }
       } else if (evt.type === 'page_start') {
         const data = evt.data
-        compileSteps.value[2].subProgress = {
-          current: data.index ?? 0,
-          total: data.total ?? 0,
-          currentEntity: data.entity ?? '',
+        // 确定当前运行中的步骤索引
+        const runningIdx = compileSteps.value.findIndex(s => s.status === 'running')
+        if (runningIdx >= 0) {
+          compileSteps.value[runningIdx].subProgress = {
+            current: data.index ?? 0,
+            total: data.total ?? 0,
+            currentEntity: data.entity ?? '',
+          }
         }
       } else if (evt.type === 'page_done') {
         const data = evt.data
-        const sp = compileSteps.value[2].subProgress
-        if (sp) {
-          sp.current = (data.index ?? sp.current) + 1
-          sp.currentEntity = ''
+        const runningIdx = compileSteps.value.findIndex(s => s.status === 'running')
+        if (runningIdx >= 0) {
+          const sp = compileSteps.value[runningIdx].subProgress
+          if (sp) {
+            sp.current = (data.index ?? sp.current) + 1
+            sp.currentEntity = ''
+          }
         }
       } else if (evt.type === 'progress') {
-        const percent = evt.data.percent as number | undefined
-        if (typeof percent === 'number' && percent > 0) {
-          compileProgress.value = 33 + (percent / 100) * 17
+        const data = evt.data
+        const percent = data.percent as number | undefined
+        const current = data.current as number | undefined
+        const total = data.total as number | undefined
+        // 更新当前运行步骤的 subProgress
+        const runningIdx = compileSteps.value.findIndex(s => s.status === 'running')
+        if (runningIdx >= 0 && typeof current === 'number') {
+          compileSteps.value[runningIdx].subProgress = {
+            current: current,
+            total: total ?? 0,
+            currentEntity: data.message as string ?? '',
+          }
+        }
+        if (typeof percent === 'number' && percent > 0 && runningIdx >= 0) {
+          // 进度公式：步骤起始百分比 + 步骤内进度
+          compileProgress.value = ((runningIdx * 100 + percent) / 6)
         }
       } else if (evt.type === 'section_start') {
         // 添加新章节节点
@@ -457,7 +477,7 @@ function startCompile() {
           total: data.total as number ?? 0,
           currentEntity: `处理章节: ${data.title}`,
         }
-        compileProgress.value = 50 + ((data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 17)
+        compileProgress.value = ((3 * 100) + (data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 100) / 6
       } else if (evt.type === 'section_done') {
         // 更新章节节点状态
         const data = evt.data
@@ -474,8 +494,9 @@ function startCompile() {
         if (compileSteps.value[3].subProgress) {
           compileSteps.value[3].subProgress.current = data.index as number ?? 0
           compileSteps.value[3].subProgress.currentEntity = `完成章节: ${data.title}`
-          compileProgress.value = 50 + ((data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 17)
         }
+        // struct_compile 进度：第4步，占 3/6 = 50% 到 4/6 = 66.7%
+        compileProgress.value = ((3 * 100) + (data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 100) / 6
       } else if (evt.type === 'section_progress') {
         // 兼容旧版 section_progress 事件
         const data = evt.data
@@ -484,7 +505,7 @@ function startCompile() {
           total: data.total as number ?? 0,
           currentEntity: data.status === 'processing' ? `处理章节: ${data.title}` : `完成章节: ${data.title}`,
         }
-        compileProgress.value = 60 + ((data.percent as number ?? 0) / 100) * 20
+        compileProgress.value = ((3 * 100) + (data.percent as number ?? 0)) / 6
       } else if (evt.type === 'done') {
         compileProgress.value = 100
         compiling.value = false
@@ -544,8 +565,8 @@ function startCompile() {
       } else if (evt.type === 'error') {
         // 如果编译已成功完成，忽略后续 error 事件（防止页面跳转）
         if (phase.value === 'done') return
+        // 编译过程中出错，保持当前页面状态，不跳回 input
         compiling.value = false
-        phase.value = 'input'
         message.error('编译失败：' + (evt.data.message || '未知错误'))
         const step = evt.data.step as string
         const idx = stepIndex[step]
@@ -553,12 +574,20 @@ function startCompile() {
           compileSteps.value[idx].status = 'error'
           compileSteps.value[idx].error = evt.data.message
         }
+        // 关键：不将 phase 重置为 'input'，保持当前页面展示已完成的步骤
       }
     },
     onError: (err: string) => {
-      // 如果编译已成功完成（phase === 'done'），不重置页面
-      if (phase.value !== 'done') {
-        compiling.value = false
+      // 编译完成后不重置页面
+      if (phase.value === 'done') {
+        return
+      }
+      // 编译过程中连接丢失，保持当前状态，不跳回 input
+      // 用户可以看到当前已完成的步骤和进度
+      if (compiling.value) {
+        // 保持编译状态，仅标记连接断开
+        message.warning('编译连接断开，已完成的步骤结果保留')
+      } else {
         phase.value = 'input'
         message.error('编译连接失败：' + err)
       }

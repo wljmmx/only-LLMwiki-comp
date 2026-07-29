@@ -530,6 +530,23 @@ class WikiCompiler:
                         format=meta.get("format", ""),
                     ):
                         doc = parser.parse(meta["stored_path"], doc_id)
+                    # 发送解析进度事件（逐元素进度）
+                    total_elements = len(doc.elements)
+                    total_headings = len(doc.heading_tree)
+                    _emit(ProgressEventType.PROGRESS, {
+                        "percent": 100,
+                        "current": total_elements,
+                        "total": total_elements,
+                        "message": f"解析完成：{total_elements} 个元素，{total_headings} 个章节",
+                    })
+                    # 逐元素发送进度（为前端提供增量展示）
+                    if total_elements > 0:
+                        _emit(ProgressEventType.PAGE_START, {
+                            "entity": "document_elements",
+                            "index": total_elements,
+                            "total": total_elements,
+                            "message": f"已解析 {total_elements} 个元素",
+                        })
                 except Exception as e:
                     result.errors.append(f"解析失败: {e}")
                     _emit(ProgressEventType.STEP_DONE, {"step": "parse", "error": str(e)})
@@ -575,6 +592,24 @@ class WikiCompiler:
                 _track("extract", "input", serialize_parsed_doc(doc))
                 try:
                     extraction = await self.extractor.extract(doc)
+                    total_entities = len(extraction.auto_accepted_entities) + len(extraction.review_entities)
+                    # 发送抽取进度事件
+                    _emit(ProgressEventType.PROGRESS, {
+                        "percent": 100,
+                        "current": total_entities,
+                        "total": total_entities,
+                        "message": f"抽取完成：{total_entities} 个实体",
+                    })
+                    # 为每个实体发送独立事件，供前端增量展示
+                    all_entities = list(extraction.auto_accepted_entities) + list(extraction.review_entities)
+                    for i, ent in enumerate(all_entities):
+                        _emit(ProgressEventType.PAGE_START, {
+                            "entity": ent.name,
+                            "index": i + 1,
+                            "total": total_entities,
+                            "confidence": ent.confidence,
+                            "entity_type": ent.entity_type,
+                        })
                 except Exception as e:
                     result.errors.append(f"抽取失败: {e}")
                     _emit(ProgressEventType.STEP_DONE, {"step": "extract", "error": str(e)})
@@ -613,6 +648,11 @@ class WikiCompiler:
             try:
                 paragraph_classifications = await self.extractor.classify_paragraphs(doc)
                 result.paragraph_count = len(paragraph_classifications)
+                _emit(ProgressEventType.STEP_DONE, {
+                    "step": "classify",
+                    "paragraphs": len(paragraph_classifications),
+                    "message": f"段落分类完成：{len(paragraph_classifications)} 个段落",
+                })
                 logger.info(
                     "paragraph_classification_integrated",
                     doc_id=doc_id,
@@ -624,6 +664,12 @@ class WikiCompiler:
                     doc_id=doc_id,
                     error=str(e),
                 )
+                _emit(ProgressEventType.STEP_DONE, {
+                    "step": "classify",
+                    "paragraphs": 0,
+                    "error": str(e),
+                    "message": f"段落分类失败：{e}",
+                })
                 # 非致命错误，继续编译流程
 
             # 构建段落标签映射：段落索引 → 层级标签列表
