@@ -159,30 +159,40 @@ class WikiCompiler:
         *,
         system: str | None = None,
         temperature: float = 0.3,
+        timeout: float | None = None,
     ) -> str:
         """统一 LLM 调用入口（S3: 带重试机制，最多 3 次）
 
         使用 LLMConcurrencyController 全局限流，防止本地部署过载。
+        添加 asyncio.wait_for 超时保护，防止 LLM 调用无限挂起。
         """
         messages: list[ChatMessage] = []
         if system:
             messages.append(ChatMessage(role="system", content=system))
         messages.append(ChatMessage(role="user", content=prompt))
 
+        # 超时配置：优先使用参数，其次用 settings，默认 180s
+        call_timeout = timeout or getattr(self.settings, 'llm_call_timeout', 180)
+
         # P2-1: LLM 并发控制
         from app.core.llm.concurrency import TaskPriority, get_llm_concurrency_controller
 
         controller = get_llm_concurrency_controller()
+        last_error = ""
         for attempt in range(1, _MAX_LLM_RETRIES + 1):
             try:
                 async with controller.acquire(
                     stage="section_compile",
                     priority=TaskPriority.MEDIUM,
                 ):
-                    resp = await self.llm.chat(
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=self.settings.llm_max_tokens,
+                    # 使用 asyncio.wait_for 包裹 LLM 调用，防止无限挂起
+                    resp = await asyncio.wait_for(
+                        self.llm.chat(
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=self.settings.llm_max_tokens,
+                        ),
+                        timeout=call_timeout,
                     )
                 # ── 编译指标埋点：LLM 调用成功 ──
                 try:
@@ -190,8 +200,15 @@ class WikiCompiler:
                 except Exception:  # noqa: BLE001
                     pass
                 return resp.text or ""
+            except asyncio.TimeoutError:
+                last_error = f"LLM 调用超时（{call_timeout}s，第 {attempt}/{_MAX_LLM_RETRIES} 次）"
+                logger.warning(
+                    "wiki_compiler_llm_timeout",
+                    attempt=attempt,
+                    timeout=call_timeout,
+                )
             except Exception as e:
-                _ = str(e)  # 记录最后一次错误
+                last_error = str(e)
                 if attempt < _MAX_LLM_RETRIES:
                     delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
                     logger.warning(
@@ -213,7 +230,8 @@ class WikiCompiler:
             record_business_metric("llm_calls_total", backend=self.settings.llm_backend, status="error")
         except Exception:  # noqa: BLE001
             pass
-        return ""
+        # 抛出带详细信息的异常，让调用方能捕获并上报
+        raise RuntimeError(f"LLM 调用失败（重试 {_MAX_LLM_RETRIES} 次）：{last_error}")
 
     # ── S2: 页面质量校验 ──
 
@@ -789,8 +807,23 @@ class WikiCompiler:
                     if error:
                         logger.exception("wiki_compiler_page_failed", slug=entity.name)
                         result.errors.append(f"{entity.name}: {error}")
+                        # 发射 PAGE_DONE 错误事件，供前端展示
+                        _emit(ProgressEventType.PAGE_DONE, {
+                            "entity": entity.name,
+                            "index": idx + 1,
+                            "total": total_entities,
+                            "status": "error",
+                            "error": str(error),
+                        })
                         continue
                     if page is None:
+                        # page 为 None 通常是因为取消或断点恢复，发射跳过事件
+                        _emit(ProgressEventType.PAGE_DONE, {
+                            "entity": entity.name,
+                            "index": idx + 1,
+                            "total": total_entities,
+                            "status": "skipped",
+                        })
                         continue
 
                     if _check_cancel():
@@ -837,12 +870,16 @@ class WikiCompiler:
                                 )
                         if page.review_status == "review_needed":
                             result.review_needed.append(page.slug)
-                        _emit(ProgressEventType.PAGE_DONE, {
+                        # 发射 PAGE_DONE 事件，包含 LLM 错误信息供前端展示
+                        page_done_data = {
                             "entity": entity.name,
                             "slug": page.slug,
                             "outcome": outcome,
                             "review_status": page.review_status,
-                        })
+                        }
+                        if page.llm_error:
+                            page_done_data["llm_error"] = page.llm_error
+                        _emit(ProgressEventType.PAGE_DONE, page_done_data)
                         # M2: 冲突检测 — 合并后检测语义冲突
                         if outcome == "updated":
                             try:
@@ -872,7 +909,18 @@ class WikiCompiler:
                         logger.exception("wiki_compiler_page_failed", slug=entity.name)
                         result.errors.append(f"{entity.name}: {e}")
 
-                # 实体编译阶段完成，先发送 compile step_done
+                # 实体编译阶段完成，发送 compile step_done，包含错误摘要
+                llm_error_entities = []
+                for item in results_list:
+                    if isinstance(item, Exception):
+                        continue
+                    if isinstance(item, tuple) and len(item) == 4:
+                        idx, entity, page, error = item
+                        if error:
+                            llm_error_entities.append({"entity": entity.name, "error": str(error)})
+                        elif page and page.llm_error:
+                            llm_error_entities.append({"entity": entity.name, "error": page.llm_error})
+
                 _emit(ProgressEventType.STEP_DONE, {
                     "step": "compile",
                     "pages": len(entities),
@@ -881,6 +929,9 @@ class WikiCompiler:
                     "pages_created": result.pages_created,
                     "pages_updated": result.pages_updated,
                     "pages_unchanged": result.pages_unchanged,
+                    "llm_error_count": len(llm_error_entities),
+                    "llm_errors": llm_error_entities[:20],  # 最多 20 条
+                    "message": f"实体编译完成：{len(result.slugs)} 个页面（{len(llm_error_entities)} 个 LLM 错误）",
                 })
 
                 # 4. 结构编译（基于标题层级树）
@@ -1374,11 +1425,13 @@ H{level}
         else:
             tags = tags[:5]
 
-        # 调 LLM 写正文
-        # P0: 增强 fallback — LLM 不可用时从源文档提取内容生成结构化 Wiki
+        # 调 LLM 写正文 —— 捕获错误详情供前端展示
+        llm_error = None
         try:
             body_md = await self._llm_write_body(entity, page_type, relations_map=relations_map)
-        except Exception:
+        except Exception as e:
+            llm_error = str(e)
+            logger.warning("wiki_compiler_llm_write_failed", entity=entity.name, error=str(e))
             body_md = ""
         if not body_md:
             body_md = self._build_template_fallback(

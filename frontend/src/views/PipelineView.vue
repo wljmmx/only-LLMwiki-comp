@@ -176,6 +176,8 @@ interface PipelineStep {
     // compile
     pages?: number
     slugs?: string[]
+    llm_error_count?: number
+    llm_errors?: Array<{ entity: string; error: string }>
     // struct_compile
     sections?: number
     pages_created?: number
@@ -184,6 +186,8 @@ interface PipelineStep {
     index_rebuilt?: boolean
     slugs_count?: number
   } | null
+  // 步骤级错误列表（每个实体的错误详情）
+  errors?: Array<{ entity: string; error: string; status: string }>
 }
 
 // 章节节点（独立管道节点）
@@ -366,10 +370,25 @@ function startCompile() {
           } else if (step === 'compile') {
             const pages = evt.data.pages ?? 0
             const slugs = evt.data.slugs ?? []
-            compileSteps.value[idx].details = `编译完成：${pages} 个页面`
+            const llmErrorCount = evt.data.llm_error_count ?? 0
+            const llmErrors = evt.data.llm_errors ?? []
+            const message = evt.data.message ?? ''
+            compileSteps.value[idx].details = message || `编译完成：${pages} 个页面`
             compileSteps.value[idx].output = {
               pages,
               slugs,
+              llm_error_count: llmErrorCount,
+              llm_errors: llmErrors,
+            }
+            // 如果有 LLM 错误，标记步骤需要审查
+            if (llmErrorCount > 0) {
+              compileSteps.value[idx].status = 'error'
+              compileSteps.value[idx].details += ` ⚠️ ${llmErrorCount} 个 LLM 错误`
+              compileSteps.value[idx].errors = llmErrors.map((e: any) => ({
+                entity: e.entity,
+                error: e.error,
+                status: 'llm_error',
+              }))
             }
           } else if (step === 'struct_compile') {
             const sections = evt.data.sections ?? 0
@@ -439,8 +458,27 @@ function startCompile() {
         if (runningIdx >= 0) {
           const sp = compileSteps.value[runningIdx].subProgress
           if (sp) {
-            sp.current = (data.index ?? sp.current) + 1
-            sp.currentEntity = ''
+            sp.current = data.index ?? sp.current
+            // 显示状态信息
+            if (data.status === 'error') {
+              sp.currentEntity = `❌ ${data.entity} 失败：${data.error?.substring(0, 100) || '未知错误'}`
+            } else if (data.status === 'skipped') {
+              sp.currentEntity = `⏭ ${data.entity} 跳过`
+            } else if (data.llm_error) {
+              sp.currentEntity = `⚠️ ${data.entity} 完成（LLM 警告：${data.llm_error.substring(0, 80)}）`
+            } else {
+              sp.currentEntity = `✅ ${data.entity} 完成`
+            }
+          }
+          // 收集错误到步骤级别
+          if (data.status === 'error' || data.llm_error) {
+            const step = compileSteps.value[runningIdx]
+            if (!step.errors) step.errors = []
+            step.errors.push({
+              entity: data.entity,
+              error: data.error || data.llm_error,
+              status: data.status || 'llm_warning',
+            })
           }
         }
       } else if (evt.type === 'progress') {
@@ -953,6 +991,21 @@ watch(sourceTab, (val) => {
               <template v-if="step.status === 'error' && step.error">
                 <span style="color: #d03050">{{ step.error }}</span>
               </template>
+
+              <!-- 步骤级错误详情（LLM 调用错误、实体处理失败等） -->
+              <template v-if="step.errors && step.errors.length > 0">
+                <div style="margin-top: 4px; padding: 4px 8px; background: #fff2f0; border: 1px solid #ffccc7; border-radius: 4px">
+                  <div style="font-size: 12px; color: #d03050; margin-bottom: 2px">
+                    ⚠️ {{ step.errors.length }} 个错误：
+                  </div>
+                  <div v-for="(err, i) in step.errors.slice(0, 5)" :key="i" style="font-size: 11px; color: #666; line-height: 18px">
+                    {{ err.entity }}: {{ err.error?.substring(0, 120) || '未知错误' }}
+                  </div>
+                  <div v-if="step.errors.length > 5" style="font-size: 11px; color: #999">
+                    ...还有 {{ step.errors.length - 5 }} 个错误
+                  </div>
+                </div>
+              </template>
               <template
                 v-if="step.status === 'running' && step.subProgress && step.subProgress.total > 0"
               >
@@ -964,8 +1017,8 @@ watch(sourceTab, (val) => {
                 </span>
               </template>
 
-              <!-- P3: 环节产出详情 -->
-              <template v-if="step.output && (step.status === 'done' || step.status === 'skipped')">
+              <!-- 环节产出详情 -->
+              <template v-if="(step.output && (step.status === 'done' || step.status === 'skipped')) || (step.status === 'error' && step.output)">
                 <NCollapse style="margin-top: 4px">
                   <NCollapseItem :title="'查看详情'" name="detail">
                     <div v-if="step.name === 'parse' && step.output.heading_tree_titles" style="max-height: 200px; overflow-y: auto">
@@ -993,6 +1046,17 @@ watch(sourceTab, (val) => {
                         </NTag>
                       </NSpace>
                       <NEmpty v-if="!step.output.slugs.length" description="无页面" size="small" />
+                      <!-- LLM 错误详情 -->
+                      <template v-if="step.output.llm_errors && step.output.llm_errors.length > 0">
+                        <div style="margin-top: 8px; padding: 6px; background: #fff2f0; border-radius: 4px">
+                          <div style="font-size: 12px; color: #d03050; margin-bottom: 4px">
+                            ⚠️ LLM 编译错误（{{ step.output.llm_error_count }} 个）：
+                          </div>
+                          <div v-for="(err, i) in step.output.llm_errors" :key="i" style="font-size: 11px; color: #666; line-height: 18px">
+                            <b>{{ err.entity }}</b>: {{ err.error?.substring(0, 150) }}
+                          </div>
+                        </div>
+                      </template>
                     </div>
                     <div v-else-if="step.name === 'struct_compile'">
                       <div style="font-size: 12px; color: #666">

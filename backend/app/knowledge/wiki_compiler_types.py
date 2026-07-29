@@ -95,6 +95,8 @@ class WikiPage:
     stale_items: list[str] = field(default_factory=list)  # 与已有版本冲突的事实
     # S1: 段落分类标签（层级标签），用于页面标签和内容组织
     paragraph_labels: list[str] = field(default_factory=list)
+    # LLM 调用错误信息（用于前端展示和排查）
+    llm_error: str | None = None
 
 
 @dataclass
