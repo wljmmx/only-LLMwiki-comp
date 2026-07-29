@@ -313,8 +313,13 @@ async def llm_wiki_recompile_stream(
     import threading
 
     from app.knowledge.wiki_compiler import ProgressEventType
+    from app.storage import get_document_store
 
     compiler = get_wiki_compiler()
+    store = get_document_store()
+
+    # 预生成 pipeline_run_id，用于暂停/继续控制
+    pipeline_run_id = store.create_pipeline_run(doc_id)
 
     # P0-4: 将异步 request.is_disconnected() 转换为同步可检查的 Event
     disconnected = threading.Event()
@@ -358,6 +363,7 @@ async def llm_wiki_recompile_stream(
                     is_cancelled=disconnected.is_set,  # P0-4: 同步断连检查
                     on_progress=on_progress,  # P2-5.5: 进度回调
                     start_from_stage=start_from_stage,  # P3: 支持从指定阶段重跑
+                    pipeline_run_id=pipeline_run_id,  # 传入预生成的 run_id
                 )
                 await ev_queue.put(("__result__", result))
             except asyncio.CancelledError:
@@ -366,6 +372,9 @@ async def llm_wiki_recompile_stream(
                 await ev_queue.put(("__error__", str(e)))
 
         task = asyncio.create_task(run_compile())
+
+        # 发送 run_id 作为第一个事件，供前端暂停/继续使用
+        yield _sse_event("run_id", {"run_id": pipeline_run_id})
 
         try:
             while True:
@@ -1127,6 +1136,31 @@ async def llm_wiki_lint_ignored() -> dict:
     """列出所有已忽略的 lint issue"""
     items = list_ignored_issues()
     return {"count": len(items), "items": items}
+
+
+# ────────── 编译流水线控制：暂停/继续 ──────────
+
+
+@router.post("/llm-wiki/pause/{run_id}", dependencies=[Depends(verify_token)])
+async def llm_wiki_pause_compile(run_id: str) -> dict:
+    """暂停指定编译运行
+
+    暂停后，编译流水线会在当前章节处理完成后挂起，
+    直到调用 /llm-wiki/resume/{run_id} 继续。
+    """
+    from app.knowledge.wiki_compiler import pause_compile
+
+    pause_compile(run_id)
+    return {"paused": True, "run_id": run_id}
+
+
+@router.post("/llm-wiki/resume/{run_id}", dependencies=[Depends(verify_token)])
+async def llm_wiki_resume_compile(run_id: str) -> dict:
+    """继续指定编译运行"""
+    from app.knowledge.wiki_compiler import resume_compile
+
+    resume_compile(run_id)
+    return {"resumed": True, "run_id": run_id}
 
 
 # ────────── P1-4 漂移自动重编译 ──────────

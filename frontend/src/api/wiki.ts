@@ -238,6 +238,15 @@ export function getCompileTrace(docId: string, force = false) {
   })
 }
 
+// 编译流水线控制：暂停/继续
+export function pauseCompile(runId: string) {
+  return api.post(`/llm-wiki/pause/${runId}`)
+}
+
+export function resumeCompile(runId: string) {
+  return api.post(`/llm-wiki/resume/${runId}`)
+}
+
 // 单章节重编译：调整 LLM 参数重新生成指定章节
 export function recompileSection(params: {
   doc_id: string

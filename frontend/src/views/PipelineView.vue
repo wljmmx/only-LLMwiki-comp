@@ -33,7 +33,7 @@ import {
 } from 'naive-ui'
 import type { UploadCustomRequestOptions, DataTableColumns } from 'naive-ui'
 import { listDocuments, parseDocument } from '@/api/documents'
-import { getCompileTrace, recompileSection, updateWikiPage } from '@/api/wiki'
+import { getCompileTrace, recompileSection, updateWikiPage, pauseCompile, resumeCompile } from '@/api/wiki'
 import { useSse } from '@/composables/useSse'
 import type { SseEvent } from '@/composables/useSse'
 import { formatFileSize } from '@/utils/format'
@@ -43,7 +43,14 @@ import PageHeader from '@/components/common/PageHeader.vue'
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
-const { subscribe } = useSse()
+const { subscribe, unsubscribe } = useSse()
+
+// 保存当前 SSE 取消函数
+let cancelSse: (() => void) | null = null
+
+// 编译流水线控制
+const pipelineRunId = ref<string | null>(null)
+const isPaused = ref(false)
 
 // ========== 阶段状态机 ==========
 type Phase = 'input' | 'compiling' | 'done'
@@ -204,6 +211,7 @@ const compileSteps = ref<PipelineStep[]>([
   { name: 'extract', label: '知识抽取', status: 'pending' },
   { name: 'compile', label: 'LLM 编译 Wiki', status: 'pending' },
   { name: 'struct_compile', label: '结构编译（章节处理）', status: 'pending' },
+  { name: 'extract_compiled', label: '编译后实体抽取', status: 'pending' },
   { name: 'index', label: '重建索引', status: 'pending' },
 ])
 
@@ -219,7 +227,7 @@ const compileResult = ref<{
   paragraph_count?: number
 } | null>(null)
 
-const stepIndex: Record<string, number> = { parse: 0, extract: 1, compile: 2, struct_compile: 3, index: 4 }
+const stepIndex: Record<string, number> = { parse: 0, extract: 1, compile: 2, struct_compile: 3, extract_compiled: 4, index: 5 }
 
 function resetSteps() {
   compileSteps.value = [
@@ -227,17 +235,60 @@ function resetSteps() {
     { name: 'extract', label: '知识抽取', status: 'pending' },
     { name: 'compile', label: 'LLM 编译 Wiki', status: 'pending' },
     { name: 'struct_compile', label: '结构编译（章节处理）', status: 'pending' },
+    { name: 'extract_compiled', label: '编译后实体抽取', status: 'pending' },
     { name: 'index', label: '重建索引', status: 'pending' },
   ]
   compileProgress.value = 0
   compileResult.value = null
   sectionNodes.value = []
+  pipelineRunId.value = null
+  isPaused.value = false
 }
 
 // P3: 从指定阶段重跑
 function restartFromStage(stageName: string) {
   startFromStage.value = stageName
   startCompile()
+}
+
+// P3: 取消编译
+function cancelCompile() {
+  if (cancelSse) {
+    cancelSse()
+    cancelSse = null
+  }
+  compiling.value = false
+  isPaused.value = false
+  // 当前运行中的步骤标记为 error
+  for (const step of compileSteps.value) {
+    if (step.status === 'running') {
+      step.status = 'error'
+      step.error = '用户取消'
+    }
+  }
+  message.info('编译已取消')
+}
+
+async function doPause() {
+  if (!pipelineRunId.value) return
+  try {
+    await pauseCompile(pipelineRunId.value)
+    isPaused.value = true
+    message.info('编译已暂停')
+  } catch (e: any) {
+    message.error('暂停失败：' + (e?.response?.data?.detail || e?.message || '未知错误'))
+  }
+}
+
+async function doResume() {
+  if (!pipelineRunId.value) return
+  try {
+    await resumeCompile(pipelineRunId.value)
+    isPaused.value = false
+    message.success('编译已继续')
+  } catch (e: any) {
+    message.error('继续失败：' + (e?.response?.data?.detail || e?.message || '未知错误'))
+  }
 }
 
 function startCompile() {
@@ -257,26 +308,34 @@ function startCompile() {
   if (stage) {
     url += `&start_from_stage=${stage}`
     // 重跑时，前面阶段标记为 skipped
-    const stageOrder = ['parse', 'extract', 'compile', 'struct_compile', 'index']
+    const stageOrder = ['parse', 'extract', 'compile', 'struct_compile', 'extract_compiled', 'index']
     const startIdx = stageOrder.indexOf(stage)
     if (startIdx > 0) {
       for (let i = 0; i < startIdx; i++) {
         compileSteps.value[i].status = 'skipped'
         compileSteps.value[i].details = '跳过（从缓存加载）'
-        compileProgress.value = (i / 5) * 100
+        compileProgress.value = (i / 6) * 100
       }
     }
   }
   startFromStage.value = null  // 重置
 
-  subscribe(url, {
+  // 取消之前的 SSE 连接（如果有）
+  if (cancelSse) {
+    cancelSse()
+    cancelSse = null
+  }
+
+  cancelSse = subscribe(url, {
     onEvent: (evt: SseEvent) => {
-      if (evt.type === 'step_start') {
+      if (evt.type === 'run_id') {
+        pipelineRunId.value = evt.data.run_id as string
+      } else if (evt.type === 'step_start') {
         const step = evt.data.step as string
         const idx = stepIndex[step] ?? 0
         if (step in stepIndex) {
           compileSteps.value[idx].status = 'running'
-          compileProgress.value = (idx / 5) * 100
+          compileProgress.value = (idx / 6) * 100
         }
       } else if (evt.type === 'step_done') {
         const step = evt.data.step as string
@@ -285,7 +344,7 @@ function startCompile() {
         if (idx !== undefined) {
           compileSteps.value[idx].status = 'done'
           compileSteps.value[idx].duration_ms = evt.data.duration_ms ?? null
-          compileProgress.value = ((idx + 1) / 5) * 100
+          compileProgress.value = ((idx + 1) / 6) * 100
           if (step === 'parse') {
             const elements = evt.data.elements ?? 0
             const headingTreeCount = evt.data.heading_tree_count ?? 0
@@ -327,6 +386,20 @@ function startCompile() {
               pages_created: pagesCreated,
               pages_updated: pagesUpdated,
             }
+          } else if (step === 'extract_compiled') {
+            const entities = evt.data.entities ?? 0
+            const newEntities = evt.data.new_entities ?? 0
+            const entityNames = evt.data.entity_names ?? []
+            const error = evt.data.error
+            if (error) {
+              compileSteps.value[idx].details = `编译后抽取失败：${error}`
+            } else {
+              compileSteps.value[idx].details = `编译后抽取完成：${entities} 个实体（${newEntities} 个新增）`
+            }
+            compileSteps.value[idx].output = {
+              entities,
+              entity_names: entityNames,
+            }
           } else if (step === 'index') {
             const indexRebuilt = evt.data.index_rebuilt ?? false
             const slugsCount = evt.data.slugs_count ?? 0
@@ -366,7 +439,7 @@ function startCompile() {
       } else if (evt.type === 'progress') {
         const percent = evt.data.percent as number | undefined
         if (typeof percent === 'number' && percent > 0) {
-          compileProgress.value = 40 + (percent / 100) * 20
+          compileProgress.value = 33 + (percent / 100) * 17
         }
       } else if (evt.type === 'section_start') {
         // 添加新章节节点
@@ -384,7 +457,7 @@ function startCompile() {
           total: data.total as number ?? 0,
           currentEntity: `处理章节: ${data.title}`,
         }
-        compileProgress.value = 60 + ((data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 20)
+        compileProgress.value = 50 + ((data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 17)
       } else if (evt.type === 'section_done') {
         // 更新章节节点状态
         const data = evt.data
@@ -401,7 +474,7 @@ function startCompile() {
         if (compileSteps.value[3].subProgress) {
           compileSteps.value[3].subProgress.current = data.index as number ?? 0
           compileSteps.value[3].subProgress.currentEntity = `完成章节: ${data.title}`
-          compileProgress.value = 60 + ((data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 20)
+          compileProgress.value = 50 + ((data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 17)
         }
       } else if (evt.type === 'section_progress') {
         // 兼容旧版 section_progress 事件
@@ -415,10 +488,14 @@ function startCompile() {
       } else if (evt.type === 'done') {
         compileProgress.value = 100
         compiling.value = false
+        isPaused.value = false
         compileSteps.value[2].subProgress = null
         compileSteps.value[3].subProgress = null
-        compileSteps.value[4].status = 'done'
-        compileSteps.value[4].details = '索引重建完成'
+        const indexIdx = stepIndex['index']
+        if (indexIdx !== undefined) {
+          compileSteps.value[indexIdx].status = 'done'
+          compileSteps.value[indexIdx].details = '索引重建完成'
+        }
         phase.value = 'done'
         compileResult.value = evt.data
         const created = evt.data.pages_created ?? 0
@@ -465,6 +542,8 @@ function startCompile() {
           loadTraceData(docId)
         }
       } else if (evt.type === 'error') {
+        // 如果编译已成功完成，忽略后续 error 事件（防止页面跳转）
+        if (phase.value === 'done') return
         compiling.value = false
         phase.value = 'input'
         message.error('编译失败：' + (evt.data.message || '未知错误'))
@@ -477,9 +556,12 @@ function startCompile() {
       }
     },
     onError: (err: string) => {
-      compiling.value = false
-      phase.value = 'input'
-      message.error('编译连接失败：' + err)
+      // 如果编译已成功完成（phase === 'done'），不重置页面
+      if (phase.value !== 'done') {
+        compiling.value = false
+        phase.value = 'input'
+        message.error('编译连接失败：' + err)
+      }
     },
   })
 }
@@ -779,6 +861,38 @@ watch(sourceTab, (val) => {
         :status="phase === 'done' ? 'success' : 'default'"
         style="margin-bottom: 20px"
       />
+
+      <!-- 控制按钮 -->
+      <div v-if="phase === 'compiling'" style="margin-bottom: 16px; text-align: right">
+        <NSpace justify="end">
+          <NButton
+            v-if="!isPaused"
+            type="warning"
+            size="small"
+            @click="doPause"
+            :disabled="!pipelineRunId"
+          >
+            暂停编译
+          </NButton>
+          <NButton
+            v-if="isPaused"
+            type="success"
+            size="small"
+            @click="doResume"
+            :disabled="!pipelineRunId"
+          >
+            继续编译
+          </NButton>
+          <NButton type="error" size="small" @click="cancelCompile" :disabled="!compiling">
+            停止编译
+          </NButton>
+        </NSpace>
+        <div v-if="isPaused" style="margin-top: 8px">
+          <NAlert type="warning" size="small">
+            编译已暂停，点击「继续编译」恢复处理
+          </NAlert>
+        </div>
+      </div>
 
       <!-- 高层级 5 步骤 -->
       <NSteps

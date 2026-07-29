@@ -80,6 +80,48 @@ from app.storage.version_control import get_version_control
 
 logger = structlog.get_logger()
 
+# ────────── 暂停/继续机制 ──────────
+
+# 全局暂停状态：{run_id: asyncio.Event}，Event.set() 表示继续，Event.clear() 表示暂停
+_paused_events: dict[str, asyncio.Event] = {}
+
+
+def pause_compile(run_id: str) -> None:
+    """暂停指定编译运行"""
+    if run_id not in _paused_events:
+        _paused_events[run_id] = asyncio.Event()
+    _paused_events[run_id].clear()
+    logger.info("compile_paused", run_id=run_id)
+
+
+def resume_compile(run_id: str) -> None:
+    """继续指定编译运行"""
+    if run_id in _paused_events:
+        _paused_events[run_id].set()
+        logger.info("compile_resumed", run_id=run_id)
+
+
+def cancel_pause(run_id: str) -> None:
+    """清理暂停状态（编译完成/取消时调用）"""
+    evt = _paused_events.pop(run_id, None)
+    if evt is not None:
+        evt.set()  # 确保不阻塞
+        logger.info("compile_pause_cleaned", run_id=run_id)
+
+
+async def _check_paused(run_id: str | None) -> bool:
+    """检查是否暂停，若暂停则等待直到继续。返回 True 表示已暂停等待过"""
+    if not run_id or run_id not in _paused_events:
+        return False
+    evt = _paused_events[run_id]
+    if evt.is_set():
+        return False
+    logger.info("compile_waiting_paused", run_id=run_id)
+    await evt.wait()
+    logger.info("compile_resumed_after_pause", run_id=run_id)
+    return True
+
+
 # ────────── 编译器主体 ──────────
 
 
@@ -507,6 +549,7 @@ class WikiCompiler:
                 _track("parse", "output", serialize_parsed_doc(doc))
                 if _check_cancel():
                     _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": "编译已取消"})
+                    cancel_pause(pipeline_run_id)
                     _finish_run("cancelled")
                     return result
             else:
@@ -547,6 +590,7 @@ class WikiCompiler:
                 _track("extract", "output", serialize_extraction_result(extraction))
                 if _check_cancel():
                     _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": "编译已取消"})
+                    cancel_pause(pipeline_run_id)
                     _finish_run("cancelled")
                     return result
             else:
@@ -658,6 +702,8 @@ class WikiCompiler:
                     idx: int, entity: ExtractedEntity,
                 ) -> tuple[int, ExtractedEntity, WikiPage | None, Exception | None]:
                     async with sem:
+                        # 暂停检查
+                        await _check_paused(pipeline_run_id)
                         if _check_cancel():
                             return (idx, entity, None, None)
                         # L1: 断点恢复 — 跳过已处理的实体
@@ -706,6 +752,7 @@ class WikiCompiler:
                             task_state["last_entity_idx"] = idx
                             task_state["steps_completed"].append("compile_partial")
                         _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": f"编译已取消（已完成 {idx}/{total_entities}）"})
+                        cancel_pause(pipeline_run_id)
                         _finish_run("cancelled")
                         return result
 
@@ -795,7 +842,8 @@ class WikiCompiler:
                     _emit(ProgressEventType.STEP_START, {"step": "struct_compile", "message": f"开始结构编译，共 {len(doc.heading_tree)} 个章节..."})
                     try:
                         struct_result = await self._compile_heading_tree_to_wiki(
-                            doc, source_entry, force=force, on_progress=_emit
+                            doc, source_entry, force=force, on_progress=_emit,
+                            pipeline_run_id=pipeline_run_id,
                         )
                         result.pages_created += struct_result.pages_created
                         result.pages_updated += struct_result.pages_updated
@@ -806,6 +854,33 @@ class WikiCompiler:
                         result.errors.extend(struct_result.errors)
                         result.pipeline_trace = struct_result.pipeline_trace
                         _emit(ProgressEventType.STEP_DONE, {"step": "struct_compile", "sections": len(doc.heading_tree), "pages_created": struct_result.pages_created, "pages_updated": struct_result.pages_updated})
+
+                        # 4.5 从编译后内容重新抽取实体（比原始文本抽取更准确）
+                        _emit(ProgressEventType.STEP_START, {"step": "extract_compiled", "message": "从编译后 wiki 页面重新抽取实体..."})
+                        try:
+                            compiled_entities = await self._extract_from_compiled_pages(
+                                result.slugs, doc.doc_id, source_entry, _emit,
+                            )
+                            if compiled_entities:
+                                # 合并编译后抽取的实体（优先保留编译后抽取的结果）
+                                existing_entity_names = {e.name for e in result.entities}
+                                new_count = 0
+                                for ce in compiled_entities:
+                                    if ce.name not in existing_entity_names:
+                                        result.entities.append(ce)
+                                        new_count += 1
+                                _emit(ProgressEventType.STEP_DONE, {
+                                    "step": "extract_compiled",
+                                    "entities": len(compiled_entities),
+                                    "new_entities": new_count,
+                                    "entity_names": [e.name for e in compiled_entities],
+                                    "message": f"编译后抽取：{len(compiled_entities)} 个实体（{new_count} 个新增）",
+                                })
+                            else:
+                                _emit(ProgressEventType.STEP_DONE, {"step": "extract_compiled", "entities": 0})
+                        except Exception as e:
+                            logger.exception("wiki_compiler_extract_compiled_failed", doc_id=doc_id)
+                            _emit(ProgressEventType.STEP_DONE, {"step": "extract_compiled", "error": str(e)})
                     except Exception as e:
                         logger.exception("wiki_compiler_struct_failed", doc_id=doc_id)
                         result.errors.append(f"结构编译失败: {e}")
@@ -923,6 +998,8 @@ class WikiCompiler:
             })
             # 流水线追踪完成
             _finish_run("done")
+            # 清理暂停状态
+            cancel_pause(pipeline_run_id)
 
             # ── 编译指标埋点：记录编译耗时与统计 ──
             try:
@@ -1284,6 +1361,110 @@ H{level}
             paragraph_labels=para_labels or [],
         )
 
+    async def _extract_from_compiled_pages(
+        self,
+        slugs: list[str],
+        doc_id: str,
+        source_entry: dict,
+        on_progress: ProgressCallback | None = None,
+    ) -> list[ExtractedEntity]:
+        """从编译后的 wiki 页面中抽取实体
+
+        在 struct_compile 完成后调用，从 LLM 编译后的结构化 Markdown 中
+        抽取实体，比从原始文本抽取更准确（编译后内容更干净、结构化）。
+
+        使用 compiled_extractor 从已保存的 wiki 页面中提取实体。
+        """
+        if not slugs:
+            return []
+
+        from app.extraction.compiled_extractor import CompiledKnowledgeExtractor
+
+        compiled_extractor = CompiledKnowledgeExtractor()
+        vc = get_version_control()
+        entities: list[ExtractedEntity] = []
+        seen_names: set[str] = set()
+
+        def _emit(etype: ProgressEventType, data: dict[str, Any]) -> None:
+            if on_progress:
+                try:
+                    on_progress(etype, data)
+                except Exception:
+                    pass
+
+        for i, slug in enumerate(slugs):
+            try:
+                latest = vc.get_latest(f"wiki:{slug}")
+                if not latest:
+                    continue
+
+                content = latest.get("content", "")
+                title = latest.get("title", slug)
+
+                # 从编译后的 wiki 页面内容中提取实体
+                # 使用标题作为实体名，类型从 frontmatter 解析
+                meta, body = self._split_frontmatter(content) if hasattr(self, '_split_frontmatter') else ({}, content)
+                page_type = meta.get("type", "concept")
+
+                # 基于标题树层级提取实体
+                entity = ExtractedEntity(
+                    entity_type=page_type.capitalize() if page_type != "concept" else "Concept",
+                    name=title,
+                    properties={
+                        "slug": slug,
+                        "tags": meta.get("tags", []),
+                        "source_doc_id": doc_id,
+                    },
+                    confidence=0.85,
+                    evidence_span=body[:200] if body else "",
+                    source_doc_id=doc_id,
+                )
+                if title not in seen_names:
+                    seen_names.add(title)
+                    entities.append(entity)
+
+                # 从 wiki 页面正文中提取 [[wikilink]] 引用的实体
+                wikilink_entities = self._extract_wikilink_entities(body, doc_id)
+                for we in wikilink_entities:
+                    if we.name not in seen_names:
+                        seen_names.add(we.name)
+                        entities.append(we)
+
+                _emit(ProgressEventType.PROGRESS, {
+                    "percent": round((i + 1) / len(slugs) * 100),
+                    "current": i + 1,
+                    "total": len(slugs),
+                    "message": f"抽取实体: {slug}",
+                })
+            except Exception as e:
+                logger.warning("extract_compiled_page_failed", slug=slug, error=str(e))
+
+        logger.info(
+            "extract_compiled_done",
+            doc_id=doc_id,
+            total_pages=len(slugs),
+            entities=len(entities),
+        )
+        return entities
+
+    def _extract_wikilink_entities(self, body_md: str, doc_id: str) -> list[ExtractedEntity]:
+        """从 wiki 页面正文中提取 [[wikilink]] 引用为实体"""
+        entities: list[ExtractedEntity] = []
+        matches = WIKILINK_RE.findall(body_md)
+        for match in matches:
+            slug = match[0] if isinstance(match, tuple) else match
+            if slug and not slug.startswith("#"):
+                name = slug.replace("-", " ").title()
+                entities.append(ExtractedEntity(
+                    entity_type="Concept",
+                    name=name,
+                    properties={"slug": slug, "source_doc_id": doc_id},
+                    confidence=0.7,
+                    evidence_span=f"引用: [[{slug}]]",
+                    source_doc_id=doc_id,
+                ))
+        return entities
+
     async def _compile_heading_tree_to_wiki(
         self,
         doc: ParsedDocument,
@@ -1291,6 +1472,7 @@ H{level}
         *,
         force: bool = False,
         on_progress: ProgressCallback | None = None,
+        pipeline_run_id: str | None = None,
     ) -> WikiCompileResult:
         """基于标题层级树生成结构化 wiki 页面
 
@@ -1350,6 +1532,7 @@ H{level}
             on_section_progress=_emit_section_progress,
             on_progress=on_progress,
             total_sections=total_sections,
+            pipeline_run_id=pipeline_run_id,
         )
         duration_ms = (time.monotonic() - t_start) * 1000
 
@@ -1392,6 +1575,7 @@ H{level}
         on_progress: ProgressCallback | None = None,
         total_sections: int = 0,
         _section_index: list[int] | None = None,
+        pipeline_run_id: str | None = None,
     ) -> int:
         """递归编译标题树节点为 wiki 页面（使用 LLM 生成内容）
 
@@ -1424,6 +1608,22 @@ H{level}
                 node_section_indices[slug] = _section_index[0]
                 compile_nodes.append(node)
 
+        # 在并行 LLM 编译前，先发射所有 section_start 事件
+        # 这样前端能立即看到所有章节节点，而不是等 LLM 全部完成后才批量出现
+        for node in compile_nodes:
+            slug = node.get("slug")
+            title = node.get("title", "")
+            level = node.get("level", 1)
+            section_idx = node_section_indices.get(slug, _section_index[0])
+            _emit(ProgressEventType.SECTION_START, {
+                "slug": slug,
+                "title": title,
+                "level": level,
+                "index": section_idx,
+                "total": total_sections,
+                "children_count": len(node.get("children", [])),
+            })
+
         # 并行编译所有同级节点（LLM 调用是主要瓶颈）
         compiled_results: dict[str, tuple[str, bool, float]] = {}  # slug -> (body_md, llm_success, processing_time_ms)
         if compile_nodes:
@@ -1451,27 +1651,23 @@ H{level}
 
             if not slug or level > 3:
                 if node.get("children"):
+                    # 暂停检查（递归子节点前）
+                    await _check_paused(pipeline_run_id)
                     child_count = await self._compile_tree_node_with_llm(
                         node["children"], doc, source_entry, result, force=force, parent_slug=slug, trace_buffer=trace_buffer,
                         on_section_progress=on_section_progress,
                         on_progress=on_progress,
                         total_sections=total_sections,
                         _section_index=_section_index,
+                        pipeline_run_id=pipeline_run_id,
                     )
                     count += child_count
                 continue
 
-            section_idx = node_section_indices.get(slug, _section_index[0])
+            # 暂停检查（处理每个章节节点前）
+            await _check_paused(pipeline_run_id)
 
-            # 发射 section_start 事件
-            _emit(ProgressEventType.SECTION_START, {
-                "slug": slug,
-                "title": title,
-                "level": level,
-                "index": section_idx,
-                "total": total_sections,
-                "children_count": len(node.get("children", [])),
-            })
+            section_idx = node_section_indices.get(slug, _section_index[0])
 
             if on_section_progress:
                 on_section_progress(title, level, "processing")
@@ -1568,8 +1764,11 @@ H{level}
                 })
 
             if node.get("children"):
+                # 暂停检查（递归子节点前）
+                await _check_paused(pipeline_run_id)
                 count += await self._compile_tree_node_with_llm(
-                    node["children"], doc, source_entry, result, force=force, parent_slug=slug, trace_buffer=trace_buffer
+                    node["children"], doc, source_entry, result, force=force, parent_slug=slug, trace_buffer=trace_buffer,
+                    pipeline_run_id=pipeline_run_id,
                 )
 
         return count
