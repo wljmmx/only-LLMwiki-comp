@@ -171,8 +171,8 @@ class WikiCompiler:
             messages.append(ChatMessage(role="system", content=system))
         messages.append(ChatMessage(role="user", content=prompt))
 
-        # 超时配置：优先使用参数，其次用 settings，默认 180s
-        call_timeout = timeout or getattr(self.settings, 'llm_call_timeout', 180)
+        # 超时配置：优先使用参数，其次用 settings，默认 600s（10分钟）
+        call_timeout = timeout or getattr(self.settings, 'llm_call_timeout', 600)
 
         # P2-1: LLM 并发控制
         from app.core.llm.concurrency import TaskPriority, get_llm_concurrency_controller
@@ -609,7 +609,16 @@ class WikiCompiler:
                 _update_step("extract", "running")
                 _track("extract", "input", serialize_parsed_doc(doc))
                 try:
-                    extraction = await self.extractor.extract(doc)
+                    # 传递进度回调到 extract()，实现抽取过程中的实时进度
+                    def _extract_progress(etype: str, data: dict) -> None:
+                        try:
+                            # extract 内部的 progress 事件直接透传
+                            if etype == "progress":
+                                _emit(ProgressEventType.PROGRESS, data)
+                        except Exception:
+                            pass
+
+                    extraction = await self.extractor.extract(doc, on_progress=_extract_progress)
                     total_entities = len(extraction.auto_accepted_entities) + len(extraction.review_entities)
                     # 发送抽取进度事件
                     _emit(ProgressEventType.PROGRESS, {

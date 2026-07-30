@@ -19,7 +19,7 @@ def _get_client() -> httpx.AsyncClient:
     global _httpx_client
     if _httpx_client is None:
         _httpx_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(120.0, connect=10.0),
+            timeout=httpx.Timeout(600.0, connect=10.0),
             limits=httpx.Limits(max_keepalive_connections=10, max_connections=50),
         )
     return _httpx_client
@@ -65,9 +65,13 @@ class OllamaClient:
                 "num_predict": max_tokens or self._default_max_tokens,
             },
         }
-        # P1: 使用模块级连接池单例
+        # P1: 使用模块级连接池单例，超时时间使用 settings.llm_timeout
         client = _get_client()
-        resp = await client.post(f"{self._base_url}/api/chat", json=payload)
+        resp = await client.post(
+            f"{self._base_url}/api/chat",
+            json=payload,
+            timeout=httpx.Timeout(self._timeout, connect=10.0),
+        )
         resp.raise_for_status()
         data = resp.json()
         return LLMResponse(

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # LLM
     llm_backend: Literal["ollama", "vllm", "openai_compat"] = "openai_compat"
     llm_model: str = "deepseek-chat"
-    llm_timeout: int = 120
+    llm_timeout: int = 600  # HTTP 请求超时（秒），与 asyncio.wait_for 超时配合
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.1
     # P2-1: LLM 调用弹性

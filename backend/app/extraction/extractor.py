@@ -10,6 +10,7 @@ LLM Few-shot 抽取实体/关系 → 置信度门控分流（自动入图 / 建�
 from __future__ import annotations
 
 import json
+import asyncio
 
 import structlog
 
@@ -169,17 +170,33 @@ class KnowledgeExtractor:
 # 要求
 按照预设的分类体系对每个段落生成：层级标签、段落摘要、结构化正文。"""
 
+        call_timeout = getattr(self.settings, 'llm_call_timeout', 600)
         try:
-            resp = await self.llm.chat(
-                messages=[
-                    ChatMessage(role="system", content=PARAGRAPH_CLASSIFY_PROMPT),
-                    ChatMessage(role="user", content=user_prompt),
-                ],
-                temperature=0.2,
-                max_tokens=self.settings.llm_max_tokens,
+            resp = await asyncio.wait_for(
+                self.llm.chat(
+                    messages=[
+                        ChatMessage(role="system", content=PARAGRAPH_CLASSIFY_PROMPT),
+                        ChatMessage(role="user", content=user_prompt),
+                    ],
+                    temperature=0.2,
+                    max_tokens=self.settings.llm_max_tokens,
+                ),
+                timeout=call_timeout,
             )
             data = self._parse_json(resp.text)
             return data
+        except asyncio.TimeoutError:
+            logger.error("paragraph_classification_timeout", timeout=call_timeout)
+            fallback_results = []
+            for p in paragraphs:
+                fallback_results.append({
+                    "index": p["index"],
+                    "label": "未分类>未分类>未分类",
+                    "summary": p["content"][:50],
+                    "structured_content": p["content"][:300],
+                    "confidence": 0.5,
+                })
+            return fallback_results
         except Exception as e:
             logger.error("paragraph_classification_failed", error=str(e))
             fallback_results = []
@@ -193,20 +210,41 @@ class KnowledgeExtractor:
                 })
             return fallback_results
 
-    async def extract(self, doc: ParsedDocument) -> ExtractionResult:
+    async def extract(self, doc: ParsedDocument, on_progress=None) -> ExtractionResult:
         """从 ParsedDocument 抽取知识"""
         result = ExtractionResult(doc_id=doc.doc_id)
 
         if not doc.elements:
             return result
 
+        if on_progress:
+            try:
+                on_progress("progress", {"percent": 10, "message": "构建抽取上下文..."})
+            except Exception:
+                pass
+
         # 组装上下文（取前 20 个元素，限制 token）
         context = self._build_context(doc)
         if not context.strip():
             return result
 
+        if on_progress:
+            try:
+                on_progress("progress", {"percent": 30, "message": f"调用 LLM 抽取（上下文 {len(context)} 字符）..."})
+            except Exception:
+                pass
+
         # 调用 LLM 抽取
-        raw_entities, raw_relations = await self._call_llm(context)
+        raw_entities, raw_relations, llm_error = await self._call_llm(context)
+
+        if on_progress:
+            try:
+                on_progress("progress", {
+                    "percent": 70,
+                    "message": f"LLM 返回 {len(raw_entities)} 实体、{len(raw_relations)} 关系",
+                })
+            except Exception:
+                pass
 
         # 转换为内部类型
         entities = [self._parse_entity(e, doc.doc_id) for e in raw_entities]
@@ -215,12 +253,26 @@ class KnowledgeExtractor:
         # LLM 抽取为空时启用编译抽取兜底
         if not entities and not relations:
             logger.info("extraction_fallback_to_compiled", doc_id=doc.doc_id)
+            if on_progress:
+                try:
+                    on_progress("progress", {"percent": 80, "message": "LLM 抽取为空，启用规则兜底抽取..."})
+                except Exception:
+                    pass
             compiled_result = self.compiled_extractor.extract_from_document(doc)
             entities = compiled_result.entities or []
             relations = compiled_result.relations or []
 
         # 置信度门控
         self._apply_gating(entities, relations, result)
+
+        if on_progress:
+            try:
+                on_progress("progress", {
+                    "percent": 100,
+                    "message": f"抽取完成：{len(result.auto_accepted_entities)} 自动 + {len(result.review_entities)} 审查",
+                })
+            except Exception:
+                pass
 
         logger.info(
             "extraction_done",
@@ -263,25 +315,37 @@ class KnowledgeExtractor:
             lines.append("")
         return "\n".join(lines)
 
-    async def _call_llm(self, context: str) -> tuple[list[dict], list[dict]]:
-        """调用 LLM 抽取，返回 (entities, relations)"""
+    async def _call_llm(self, context: str) -> tuple[list[dict], list[dict], str | None]:
+        """调用 LLM 抽取，返回 (entities, relations, error_message)
+
+        添加 asyncio.wait_for 超时保护，默认 600s。
+        """
+        call_timeout = getattr(self.settings, 'llm_call_timeout', 600)
         try:
-            resp = await self.llm.chat(
-                messages=[
-                    ChatMessage(role="system", content=EXTRACTION_SYSTEM_PROMPT),
-                    ChatMessage(role="user", content=context),
-                ],
-                temperature=0.1,
-                max_tokens=self.settings.llm_max_tokens,
+            resp = await asyncio.wait_for(
+                self.llm.chat(
+                    messages=[
+                        ChatMessage(role="system", content=EXTRACTION_SYSTEM_PROMPT),
+                        ChatMessage(role="user", content=context),
+                    ],
+                    temperature=0.1,
+                    max_tokens=self.settings.llm_max_tokens,
+                ),
+                timeout=call_timeout,
             )
             # 解析 JSON
             data = self._parse_json(resp.text)
             entities = [d for d in data if "entity_type" in d]
             relations = [d for d in data if "relation_type" in d]
-            return entities, relations
+            return entities, relations, None
+        except asyncio.TimeoutError:
+            error_msg = f"LLM 抽取超时（{call_timeout}s）"
+            logger.error("extraction_llm_timeout", timeout=call_timeout)
+            return [], [], error_msg
         except Exception as e:
+            error_msg = f"LLM 抽取失败: {e}"
             logger.error("extraction_llm_failed", error=str(e))
-            return [], []
+            return [], [], error_msg
 
     def _parse_json(self, text: str) -> list[dict]:
         """从 LLM 输出中提取 JSON 数组"""
