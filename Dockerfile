@@ -65,12 +65,14 @@ WORKDIR /app
 #   - nginx：前端静态资源 + 反向代理
 #   - supervisor：进程管理（nginx + uvicorn）
 #   - curl：健康检查 + 调试
+#   - gosu：entrypoint 以 root 初始化后降权到 opskg（标准非 root 部署模式）
 #   - libxml2 / libxmlsec1：python3-saml 依赖（SAML SSO）
 # 注：--no-install-recommends 避免安装推荐包，保持镜像精简
 RUN apt-get update && apt-get install -y --no-install-recommends \
         nginx \
         supervisor \
         curl \
+        gosu \
         libxml2 \
         libxmlsec1 \
         libxmlsec1-openssl \
@@ -121,8 +123,10 @@ ENV ENV=production \
     OPSKG_UVICORN_WORKERS=2 \
     OPSKG_VERSION=${OPSKG_VERSION}
 
-# P1-2: 全程以非 root 用户运行
-USER opskg
+# P1-2: 容器以 root 启动（entrypoint 需修复挂载卷权限 + 修改 supervisord.conf），
+# entrypoint.sh 完成初始化后用 gosu 降权到 opskg 运行 supervisord。
+# 这是 Docker 非 root 部署的标准模式（参考 nginx 官方镜像）。
+# 实际服务进程（nginx/uvicorn）仍以 opskg 非 root 运行。
 
-# 入口：动态调整 worker 数 + 启动 supervisord
+# 入口：root 初始化（目录/权限/workers）→ gosu 降权 → supervisord
 ENTRYPOINT ["entrypoint.sh"]

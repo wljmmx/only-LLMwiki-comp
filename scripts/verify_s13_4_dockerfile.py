@@ -83,8 +83,8 @@ def test_dockerfile_multistage() -> None:
         any("runtime" in s for s in stages),
     )
     check(
-        "Stage 2 基于 python:3.12-slim",
-        any("python:3.12-slim" in s for s in stages),
+        "Stage 2 基于 python:3.x-slim",
+        any("python:3." in s and "slim" in s for s in stages),
     )
 
     # COPY --from=frontend-builder

@@ -1456,7 +1456,7 @@ H{level}
             tags = tags[:5]
 
         # 调 LLM 写正文 —— 捕获错误详情供前端展示
-        llm_error = None
+        llm_error: str | None = None
         try:
             body_md = await self._llm_write_body(entity, page_type, relations_map=relations_map)
         except Exception as e:
@@ -1486,6 +1486,7 @@ H{level}
             sources=[source_entry],
             body_md=body_md,
             review_status=review_status,
+            llm_error=llm_error,
             source_doc_id=source_entry.get("doc_id", ""),
             paragraph_labels=para_labels or [],
         )
@@ -1507,9 +1508,8 @@ H{level}
         if not slugs:
             return []
 
-        from app.extraction.compiled_extractor import CompiledKnowledgeExtractor
+        from app.extraction.compiled_extractor import CompiledKnowledgeExtractor  # noqa: F401
 
-        compiled_extractor = CompiledKnowledgeExtractor()
         vc = get_version_control()
         entities: list[ExtractedEntity] = []
         seen_names: set[str] = set()

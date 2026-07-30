@@ -59,12 +59,16 @@ class _FakeCompiler:
         on_progress=None,
         is_cancelled=None,
         task_state=None,
+        start_from_stage: str | None = None,
+        pipeline_run_id: str | None = None,
     ) -> WikiCompileResult:
         self.last_call_kwargs = {
             "doc_id": doc_id,
             "force": force,
             "on_progress": on_progress,
             "is_cancelled": is_cancelled,
+            "start_from_stage": start_from_stage,
+            "pipeline_run_id": pipeline_run_id,
         }
         # 模拟编译过程中的进度推送
         for etype, data in self.events:
@@ -238,7 +242,8 @@ class TestProgressPassthrough:
             events = _parse_sse_stream(resp)
 
         event_types = [e[0] for e in events]
-        assert event_types == ["done"], f"无进度时只应有 done: {event_types}"
+        # router 总是先发 run_id 事件（供前端暂停/继续），无进度时序列为 [run_id, done]
+        assert event_types == ["run_id", "done"], f"无进度时应为 [run_id, done]: {event_types}"
 
     def test_compile_error_emits_error_event(self, dev_client, monkeypatch):
         """编译异常 → SSE error 事件"""

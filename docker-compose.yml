@@ -4,7 +4,7 @@
 #   1. curl -sSL https://raw.githubusercontent.com/wljmmx/only-LLMwiki-comp/main/.env.example -o .env
 #   2. 编辑 .env（至少配置 OPENAI_COMPAT_API_KEY；也可留空，启动后由 UI Setup Wizard 引导）
 #   3. docker compose up -d
-#   4. 访问 http://localhost:8080（首次自动跳转 Setup Wizard）
+#   4. 访问 http://localhost:${OPSKG_PORT:-8080}（首次自动跳转 Setup Wizard）
 #
 # 镜像说明:
 #   ghcr.io/wljmmx/only-llmwiki-comp:0.0.1 单镜像内含:

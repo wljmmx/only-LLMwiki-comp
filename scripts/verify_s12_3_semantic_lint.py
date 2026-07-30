@@ -51,11 +51,18 @@ from app.knowledge.wiki_lint import (  # noqa: E402
     TYPE_CONTRADICTION_SEMANTIC,
     _check_contradictions_semantic,
     _collect_semantic_candidate_pairs,
-    _llm_detect_conflicts,
     _parse_json_array,
     lint_all,
     lint_all_async,
 )
+# _llm_detect_conflicts 已重构合并到 _check_contradictions_semantic（批量调用）
+# 保留兼容导入：缺失时跳过相关测试
+try:
+    from app.knowledge.wiki_lint import _llm_detect_conflicts  # noqa: F401
+    _HAS_LLM_DETECT = True
+except ImportError:
+    _llm_detect_conflicts = None
+    _HAS_LLM_DETECT = False
 from app.knowledge.wikilink import update_backlinks  # noqa: E402
 from app.storage.version_control import get_version_control  # noqa: E402
 
@@ -78,7 +85,9 @@ class _FakeLLMClient:
             pass
 
         r = _Resp()
+        # 兼容新旧调用方：旧用 .text，新批量语义检测用 .content
         r.text = text
+        r.content = text
         return r
 
 
@@ -237,6 +246,9 @@ def test_collect_pairs_skip_self():
 def test_llm_detect_conflicts_with_conflicts():
     """测试 10: _llm_detect_conflicts LLM 返回冲突"""
     print("\n[10/20] 测试 LLM 返回冲突...")
+    if not _HAS_LLM_DETECT:
+        print("  ⏭  跳过（_llm_detect_conflicts 已合并到 _check_contradictions_semantic）")
+        return
     llm = _FakeLLMClient(
         ['[{"summary": "端口冲突", "evidence_a": "80", "evidence_b": "8080"}]']
     )
@@ -255,6 +267,9 @@ def test_llm_detect_conflicts_with_conflicts():
 def test_llm_detect_conflicts_no_conflicts():
     """测试 11: _llm_detect_conflicts LLM 返回空"""
     print("\n[11/20] 测试 LLM 返回空...")
+    if not _HAS_LLM_DETECT:
+        print("  ⏭  跳过")
+        return
     llm = _FakeLLMClient(["[]"])
     conflicts = asyncio.run(
         _llm_detect_conflicts(
@@ -270,6 +285,9 @@ def test_llm_detect_conflicts_no_conflicts():
 def test_llm_detect_conflicts_exception():
     """测试 12: _llm_detect_conflicts LLM 异常容错"""
     print("\n[12/20] 测试 LLM 异常容错...")
+    if not _HAS_LLM_DETECT:
+        print("  ⏭  跳过")
+        return
     conflicts = asyncio.run(
         _llm_detect_conflicts(
             _ExplodingLLM(), _FakeSettings(),
@@ -284,6 +302,9 @@ def test_llm_detect_conflicts_exception():
 def test_llm_detect_conflicts_truncates():
     """测试 13: _llm_detect_conflicts 截断过长内容"""
     print("\n[13/20] 测试截断过长内容...")
+    if not _HAS_LLM_DETECT:
+        print("  ⏭  跳过")
+        return
     captured_prompt = []
 
     class _CaptureLLM:
@@ -325,7 +346,9 @@ def test_check_semantic_overall():
         orig_llm = llm_core.get_llm_client
         orig_settings = cfg.get_settings
         llm_core.get_llm_client = lambda: _FakeLLMClient(
-            ['[{"summary": "端口冲突", "evidence_a": "80", "evidence_b": "8080"}]']
+            # 新批量 API 期望格式：[{pair_index, slug_a, slug_b, conflicts:[{summary,...}]}]
+            ['[{"pair_index": 1, "slug_a": "s-a", "slug_b": "s-b", '
+             '"conflicts": [{"summary": "端口冲突", "evidence_a": "80", "evidence_b": "8080"}]}]']
         )
         cfg.get_settings = lambda: _FakeSettings()
 
@@ -381,8 +404,9 @@ def test_check_semantic_max_pairs():
         asyncio.run(
             _check_contradictions_semantic(page_contents, page_metas, max_pairs=3)
         )
-        assert fake_llm.calls == 3, f"应调用 3 次 LLM，实际 {fake_llm.calls}"
-        print(f"  ✓ max_pairs=3 时调用 {fake_llm.calls} 次 LLM")
+        # P0-6 批量优化：所有候选对合并为 1 次 LLM 调用（旧版逐对调用 3 次）
+        assert fake_llm.calls == 1, f"批量 API 应调用 1 次 LLM，实际 {fake_llm.calls}"
+        print(f"  ✓ max_pairs=3 时批量调用 {fake_llm.calls} 次 LLM")
     finally:
         llm_core.get_llm_client = orig_llm
         cfg.get_settings = orig_settings
@@ -448,7 +472,9 @@ def test_lint_all_async_with_semantic():
     orig_llm = llm_core.get_llm_client
     orig_settings = cfg.get_settings
     llm_core.get_llm_client = lambda: _FakeLLMClient(
-        ['[{"summary": "端口冲突", "evidence_a": "80", "evidence_b": "8080"}]']
+        # 新批量 API 期望格式：[{pair_index, slug_a, slug_b, conflicts:[...]}]
+        ['[{"pair_index": 1, "slug_a": "sem-a", "slug_b": "sem-b", '
+         '"conflicts": [{"summary": "端口冲突", "evidence_a": "80", "evidence_b": "8080"}]}]']
     )
     cfg.get_settings = lambda: _FakeSettings()
 
