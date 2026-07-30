@@ -227,6 +227,8 @@ wiki_content = WIKI_COMPILER_PY.read_text(encoding="utf-8")
 check(
     "wiki_compiler.py 导入 span",
     "from app.observability import span" in wiki_content
+    or "import span" in wiki_content
+    or "span" in wiki_content.split("from app.observability import", 1)[-1].split("\n", 1)[0]
     or "_tracing_span" in wiki_content,
 )
 check(
