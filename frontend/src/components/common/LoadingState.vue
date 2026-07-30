@@ -5,8 +5,9 @@
  *
  * @example <LoadingState v-if="loading" />
  * @example <LoadingState text="生成 Runbook 中..." />
+ * @example <LoadingState :skeleton="true" />
  */
-import { NSpin } from 'naive-ui'
+import { NSpin, NSkeleton } from 'naive-ui'
 
 withDefaults(
   defineProps<{
@@ -16,19 +17,28 @@ withDefaults(
     minHeight?: number | string
     /** spin 尺寸 */
     size?: 'small' | 'medium' | 'large'
+    /** P1-7: 使用骨架屏（NSkeleton）替代 NSpin */
+    skeleton?: boolean
   }>(),
   {
     text: '',
     minHeight: 200,
     size: 'large',
+    skeleton: false,
   },
 )
 </script>
 
 <template>
   <div class="loading-state" :style="{ minHeight: typeof minHeight === 'number' ? `${minHeight}px` : minHeight }">
-    <NSpin :size="size" />
-    <div v-if="text" class="loading-text">{{ text }}</div>
+    <template v-if="skeleton">
+      <NSkeleton text :width="220" :height="28" />
+      <NSkeleton text :repeat="4" style="margin-top: 12px" />
+    </template>
+    <template v-else>
+      <NSpin :size="size" />
+      <div v-if="text" class="loading-text">{{ text }}</div>
+    </template>
   </div>
 </template>
 

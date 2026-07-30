@@ -25,6 +25,19 @@
   --opskg-node-concept: #607d8b;
   --opskg-node-document: #9c27b0;
 
+  /* ── 关系类型色（图谱边颜色）── */
+  --opskg-relation-runs-on: #2080f0;
+  --opskg-relation-uses: #18a058;
+  --opskg-relation-depends-on: #f0a020;
+  --opskg-relation-has-parameter: #7c4dff;
+  --opskg-relation-configured-by: #00bcd4;
+  --opskg-relation-described-in: #9c27b0;
+  --opskg-relation-involves: #d03050;
+  --opskg-relation-manifests-as: #e91e63;
+  --opskg-relation-resolved-by: #ff5722;
+  --opskg-relation-derived-from: #ff9800;
+  --opskg-relation-related-to: #607d8b;
+
   /* ── 文本（对比度达 WCAG AA 4.5:1+）── */
   --opskg-text-1: #1f2937;   /* 主文本 */
   --opskg-text-2: #6b7280;   /* 次文本（4.6:1） */

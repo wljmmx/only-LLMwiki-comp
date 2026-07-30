@@ -208,6 +208,8 @@ onMounted(() => {
               role="button"
               tabindex="0"
               aria-label="用户菜单"
+              @keydown.space.prevent="($event.target as HTMLElement).click()"
+              @keydown.enter.prevent="($event.target as HTMLElement).click()"
             >
               <AppIcon :name="authStore.user ? 'user' : 'users'" :size="20" />
               <span v-if="authStore.user" class="user-name">{{ authStore.displayName }}</span>

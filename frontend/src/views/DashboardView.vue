@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, h } from 'vue'
 import { useRouter } from 'vue-router'
-import { NGrid, NGi, NCard, NStatistic, NDataTable, NSkeleton, NTag, NAlert, NButton, NSpace } from 'naive-ui'
+import { NGrid, NGi, NCard, NStatistic, NDataTable, NTag, NAlert, NButton, NSpace } from 'naive-ui'
 import { getDocumentStats, listDocuments } from '@/api/documents'
 import { getReviewStats, getReviewQueue } from '@/api/review'
 import { getSearchStats } from '@/api/search'
 import api from '@/api/index'
 import { useAsyncData } from '@/composables/useAsyncData'
 import { formatFileSize, formatDateTime } from '@/utils/format'
+import LoadingState from '@/components/common/LoadingState.vue'
 import type { DocumentMeta, ReviewItem, GraphStats, DocumentStats, ReviewStats, SearchStats } from '@/types/api'
 
 const router = useRouter()
@@ -237,24 +238,7 @@ function drillTo(route: string) {
       </NSpace>
     </NAlert>
 
-    <template v-if="loading">
-      <NGrid :cols="4" :x-gap="16" :y-gap="16" class="stats-grid">
-        <NGi v-for="n in 4" :key="`stat-skel-${n}`">
-          <NCard>
-            <NSkeleton text :width="80" :height="14" />
-            <NSkeleton text :width="120" :height="32" style="margin-top: 12px" />
-          </NCard>
-        </NGi>
-      </NGrid>
-      <NGrid :cols="2" :x-gap="16" :y-gap="16" class="content-grid">
-        <NGi v-for="n in 2" :key="`content-skel-${n}`">
-          <NCard>
-            <NSkeleton text :width="120" :height="18" style="margin-bottom: 16px" />
-            <NSkeleton text :repeat="5" />
-          </NCard>
-        </NGi>
-      </NGrid>
-    </template>
+    <LoadingState v-if="loading" :skeleton="true" />
     <template v-else-if="!error">
       <NGrid :cols="4" :x-gap="16" :y-gap="16" class="stats-grid">
         <!-- P2-8: 统计卡片带 sparkline + delta + 点击下钻 -->

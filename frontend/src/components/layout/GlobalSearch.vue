@@ -187,7 +187,7 @@ if (typeof document !== 'undefined') {
 .search-modal {
   width: 480px;
   max-width: 90vw;
-  background: var(--opskg-bg-card);
+  background: var(--opskg-bg-elevated);
   border-radius: 12px;
   padding: 16px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2);

@@ -7,16 +7,24 @@ import {
   darkTheme,
   zhCN,
   dateZhCN,
+  enUS,
+  dateEnUS,
   type GlobalThemeOverrides,
 } from 'naive-ui'
 import { computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import ErrorBoundary from '@/components/common/ErrorBoundary.vue'
 import LoadingBarBridge from '@/components/common/LoadingBarBridge'
 import PageSkeleton from '@/components/common/PageSkeleton.vue'
 
 const appStore = useAppStore()
+const { locale } = useI18n()
 const theme = computed(() => (appStore.darkMode ? darkTheme : null))
+
+// P0-2a: Naive UI locale 响应 i18n 语言切换
+const naiveLocale = computed(() => (locale.value === 'en-US' ? enUS : zhCN))
+const naiveDateLocale = computed(() => (locale.value === 'en-US' ? dateEnUS : dateZhCN))
 
 // P0-2: Naive UI 主题覆盖，对齐品牌令牌
 const themeOverrides = computed<GlobalThemeOverrides>(() => {
@@ -66,8 +74,8 @@ onMounted(() => {
   <NConfigProvider
     :theme="theme"
     :theme-overrides="themeOverrides"
-    :locale="zhCN"
-    :date-locale="dateZhCN"
+    :locale="naiveLocale"
+    :date-locale="naiveDateLocale"
   >
     <NLoadingBarProvider>
       <LoadingBarBridge />

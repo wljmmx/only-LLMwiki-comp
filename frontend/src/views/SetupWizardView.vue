@@ -16,6 +16,7 @@
  */
 import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import {
   NCard,
   NSteps,
@@ -43,6 +44,7 @@ import { useSetupStore } from '@/stores/setup'
 const router = useRouter()
 const store = useSetupStore()
 const message = useMessage()
+const { t } = useI18n()
 
 const currentStep = ref(0)
 const totalSteps = 5
@@ -70,9 +72,9 @@ onMounted(async () => {
 async function handleTestLLM() {
   const resp = await store.testLLM()
   if (resp.ok) {
-    message.success(`LLM 连通成功（${resp.latency_ms ?? '-'}ms，model: ${resp.model}）`)
+    message.success(t('setup.llmSuccess', { latency: resp.latency_ms ?? '-', model: resp.model }))
   } else {
-    message.error(`LLM 连通失败：${resp.error || '未知错误'}`)
+    message.error(t('setup.llmFailed', { error: resp.error || '未知错误' }))
   }
 }
 
@@ -80,10 +82,10 @@ async function handleTestNeo4j() {
   const resp = await store.testNeo4j()
   if (resp.ok) {
     message.success(
-      `Neo4j 连通成功${resp.version ? `（v${resp.version}, ${resp.latency_ms ?? '-'}ms）` : ''}`,
+      t('setup.neo4jSuccess', { version: resp.version ? ` (v${resp.version})` : '', latency: resp.latency_ms ?? '-' }),
     )
   } else {
-    message.error(`Neo4j 连通失败：${resp.error || '未知错误'}`)
+    message.error(t('setup.neo4jFailed', { error: resp.error || '未知错误' }))
   }
 }
 
@@ -92,10 +94,10 @@ async function handleTestNeo4j() {
 async function handleGenerate() {
   try {
     const resp = await store.generateCommand()
-    message.success('已生成部署命令，请复制执行')
+    message.success(t('setup.copySuccess', { label: '部署命令' }))
     return resp
   } catch (err: any) {
-    message.error(`生成失败：${err.message || '未知错误'}`)
+    message.error(t('setup.generateFailed', { error: err.message || '未知错误' }))
     throw err
   }
 }
@@ -116,7 +118,7 @@ function handlePrev() {
 
 async function handleFinish() {
   store.dismiss()
-  message.success('配置向导已完成')
+  message.success(t('setup.finishSuccess'))
   router.replace('/dashboard')
 }
 
@@ -145,9 +147,9 @@ watch(
 async function copyToClipboard(text: string, label = '内容') {
   try {
     await navigator.clipboard.writeText(text)
-    message.success(`${label}已复制到剪贴板`)
+    message.success(t('setup.copySuccess', { label }))
   } catch {
-    message.error('复制失败，请手动选择文本复制')
+    message.error(t('setup.copyFailed'))
   }
 }
 </script>
@@ -158,20 +160,20 @@ async function copyToClipboard(text: string, label = '内容') {
       <!-- 头部 -->
       <div class="setup-header">
         <div class="logo-icon">🚀</div>
-        <h1 class="setup-title">OpsKG 开箱配置向导</h1>
+        <h1 class="setup-title">{{ $t('setup.title') }}</h1>
         <p class="setup-subtitle">
-          按步骤填写参数并测试连通，最后生成可一键执行的部署命令
+          {{ $t('setup.subtitle') }}
         </p>
       </div>
 
       <!-- 步骤指示器 -->
       <div class="setup-steps">
         <NSteps :current="currentStep + 1" :status="stepStatus" size="small">
-          <NStep title="配置概览" description="检查当前环境" />
-          <NStep title="LLM 配置" description="选择后端并测试连通" />
-          <NStep title="Neo4j 配置" description="图谱数据库连通" />
-          <NStep title="认证配置" description="访问控制与初始管理员" />
-          <NStep title="生成命令" description="复制部署命令" />
+          <NStep :title="$t('setup.stepOverview')" :description="$t('setup.stepOverviewDesc')" />
+          <NStep :title="$t('setup.stepLLM')" :description="$t('setup.stepLLMDesc')" />
+          <NStep :title="$t('setup.stepNeo4j')" :description="$t('setup.stepNeo4jDesc')" />
+          <NStep :title="$t('setup.stepAuth')" :description="$t('setup.stepAuthDesc')" />
+          <NStep :title="$t('setup.stepGenerate')" :description="$t('setup.stepGenerateDesc')" />
         </NSteps>
       </div>
 
@@ -180,13 +182,13 @@ async function copyToClipboard(text: string, label = '内容') {
         <NSpin :show="store.statusLoading">
           <!-- 步骤 1：配置概览 -->
           <div v-if="currentStep === 0" class="step-content">
-            <h2 class="step-title">配置概览</h2>
+            <h2 class="step-title">{{ $t('setup.overviewTitle') }}</h2>
             <p class="step-desc">
-              检测到当前环境的配置状态。未配置项会在后续步骤引导你完成。
+              {{ $t('setup.overviewDesc') }}
             </p>
 
             <NAlert v-if="store.statusError" type="warning" class="step-alert">
-              无法获取后端配置状态：{{ store.statusError }}。请确保后端服务已启动。
+              {{ $t('setup.statusError') }}：{{ store.statusError }}。{{ $t('setup.statusErrorHint') }}
             </NAlert>
 
             <NGrid v-if="store.status" :cols="1" :x-gap="12" :y-gap="12">
@@ -194,13 +196,13 @@ async function copyToClipboard(text: string, label = '内容') {
                 <div class="status-row">
                   <div class="status-info">
                     <NTag :type="store.llmConfigured ? 'success' : 'warning'" size="small">
-                      {{ store.llmConfigured ? '已配置' : '未配置' }}
+                      {{ $t(store.llmConfigured ? 'setup.configured' : 'setup.notConfigured') }}
                     </NTag>
-                    <NText strong>LLM 后端</NText>
+                    <NText strong>{{ $t('setup.llmBackend') }}</NText>
                     <NText depth="3">（{{ store.status.llm_backend }}）</NText>
                   </div>
                   <NText depth="3" class="status-hint">
-                    用于知识抽取、Wiki 编译、Q&A
+                    {{ $t('setup.llmBackendHint') }}
                   </NText>
                 </div>
               </NGi>
@@ -208,13 +210,13 @@ async function copyToClipboard(text: string, label = '内容') {
                 <div class="status-row">
                   <div class="status-info">
                     <NTag :type="store.neo4jConfigured ? 'success' : 'warning'" size="small">
-                      {{ store.neo4jConfigured ? '已配置' : '未配置' }}
+                      {{ $t(store.neo4jConfigured ? 'setup.configured' : 'setup.notConfigured') }}
                     </NTag>
-                    <NText strong>Neo4j</NText>
+                    <NText strong>{{ $t('setup.neo4j') }}</NText>
                     <NText depth="3">（{{ store.status.neo4j_uri }}）</NText>
                   </div>
                   <NText depth="3" class="status-hint">
-                    知识图谱存储
+                    {{ $t('setup.neo4jHint') }}
                   </NText>
                 </div>
               </NGi>
@@ -222,12 +224,12 @@ async function copyToClipboard(text: string, label = '内容') {
                 <div class="status-row">
                   <div class="status-info">
                     <NTag :type="store.authConfigured ? 'success' : 'warning'" size="small">
-                      {{ store.authConfigured ? '已配置' : '未配置' }}
+                      {{ $t(store.authConfigured ? 'setup.configured' : 'setup.notConfigured') }}
                     </NTag>
-                    <NText strong>认证 / 管理员</NText>
+                    <NText strong>{{ $t('setup.authAdmin') }}</NText>
                   </div>
                   <NText depth="3" class="status-hint">
-                    API Token 或 Bootstrap Admin 至少一项
+                    {{ $t('setup.authAdminHint') }}
                   </NText>
                 </div>
               </NGi>
@@ -237,25 +239,25 @@ async function copyToClipboard(text: string, label = '内容') {
               v-if="store.ready"
               type="success"
               class="step-alert"
-              title="环境已就绪"
+              :title="$t('setup.ready')"
             >
-              所有必需配置已就位。如需重新生成部署命令，可直接跳到最后一步。
+              {{ $t('setup.readyDesc') }}
             </NAlert>
             <NAlert
               v-else-if="store.status"
               type="info"
               class="step-alert"
-              :title="`待配置：${store.missing.join(', ')}`"
+              :title="$t('setup.pending', { items: store.missing.join(', ') })"
             >
-              点击"下一步"按引导完成配置。
+              {{ $t('setup.pendingDesc') }}
             </NAlert>
           </div>
 
           <!-- 步骤 2：LLM 配置 -->
           <div v-else-if="currentStep === 1" class="step-content">
-            <h2 class="step-title">LLM 后端配置</h2>
+            <h2 class="step-title">{{ $t('setup.llmTitle') }}</h2>
             <p class="step-desc">
-              选择一种 LLM 后端，填写连接参数后点击"测试连通"验证。
+              {{ $t('setup.llmDesc') }}
             </p>
 
             <NForm label-placement="top">
@@ -333,7 +335,7 @@ async function copyToClipboard(text: string, label = '内容') {
                   :loading="store.testingLLM"
                   @click="handleTestLLM"
                 >
-                  测试连通
+                  {{ $t('setup.testConnection') }}
                 </NButton>
               </NSpace>
 
@@ -341,7 +343,7 @@ async function copyToClipboard(text: string, label = '内容') {
                 v-if="store.llmResult"
                 :type="store.llmResult.ok ? 'success' : 'error'"
                 class="step-alert"
-                :title="store.llmResult.ok ? '连通成功' : '连通失败'"
+                :title="store.llmResult.ok ? $t('setup.connectionSuccess') : $t('setup.connectionFailed')"
               >
                 <div v-if="store.llmResult.ok">
                   后端：{{ store.llmResult.backend }} · 模型：{{ store.llmResult.model }} · 延迟：{{ store.llmResult.latency_ms }}ms
@@ -355,9 +357,9 @@ async function copyToClipboard(text: string, label = '内容') {
 
           <!-- 步骤 3：Neo4j 配置 -->
           <div v-else-if="currentStep === 2" class="step-content">
-            <h2 class="step-title">Neo4j 配置</h2>
+            <h2 class="step-title">{{ $t('setup.neo4jTitle') }}</h2>
             <p class="step-desc">
-              OpsKG 使用 Neo4j 存储知识图谱。填写连接参数后点击"测试连通"。
+              {{ $t('setup.neo4jDesc') }}
             </p>
 
             <NForm label-placement="top">
@@ -387,7 +389,7 @@ async function copyToClipboard(text: string, label = '内容') {
                   :loading="store.testingNeo4j"
                   @click="handleTestNeo4j"
                 >
-                  测试连通
+                  {{ $t('setup.testConnection') }}
                 </NButton>
               </NSpace>
 
@@ -395,7 +397,7 @@ async function copyToClipboard(text: string, label = '内容') {
                 v-if="store.neo4jResult"
                 :type="store.neo4jResult.ok ? 'success' : 'error'"
                 class="step-alert"
-                :title="store.neo4jResult.ok ? '连通成功' : '连通失败'"
+                :title="store.neo4jResult.ok ? $t('setup.connectionSuccess') : $t('setup.connectionFailed')"
               >
                 <div v-if="store.neo4jResult.ok">
                   URI：{{ store.neo4jResult.uri }}
@@ -410,7 +412,7 @@ async function copyToClipboard(text: string, label = '内容') {
               </NAlert>
 
               <NAlert type="info" :show-icon="false" class="step-alert">
-                如尚未启动 Neo4j，可用 docker：
+                {{ $t('setup.neo4jDockerHint') }}
                 <code>docker run -d --name neo4j -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/password neo4j:5-community</code>
               </NAlert>
             </NForm>
@@ -418,16 +420,16 @@ async function copyToClipboard(text: string, label = '内容') {
 
           <!-- 步骤 4：认证配置 -->
           <div v-else-if="currentStep === 3" class="step-content">
-            <h2 class="step-title">认证配置</h2>
+            <h2 class="step-title">{{ $t('setup.authTitle') }}</h2>
             <p class="step-desc">
-              可选启用 API Token 全局访问控制；同时配置 Bootstrap Admin（首次启动自动创建的管理员账号）。
+              {{ $t('setup.authDesc') }}
             </p>
 
             <NForm label-placement="top">
-              <NFormItem label="启用 API Token 认证">
+              <NFormItem :label="$t('setup.enableAuth')">
                 <NSwitch v-model:value="store.form.enable_auth" />
                 <NText depth="3" style="margin-left: 12px;">
-                  启用后所有 API 请求需携带 <code>Authorization: Bearer &lt;token&gt;</code>
+                  {{ $t('setup.enableAuthHint') }} <code>Authorization: Bearer &lt;token&gt;</code>
                 </NText>
               </NFormItem>
 
@@ -440,7 +442,7 @@ async function copyToClipboard(text: string, label = '内容') {
                 />
               </NFormItem>
 
-              <NDivider>Bootstrap Admin</NDivider>
+              <NDivider>{{ $t('setup.bootstrapAdmin') }}</NDivider>
 
               <NFormItem label="管理员用户名">
                 <NInput
@@ -458,16 +460,16 @@ async function copyToClipboard(text: string, label = '内容') {
               </NFormItem>
 
               <NAlert type="info" :show-icon="false" class="step-alert">
-                Bootstrap Admin 仅在用户表为空时创建；首次启动后修改密码请通过"用户管理"页面。
+                {{ $t('setup.bootstrapAdminHint') }}
               </NAlert>
             </NForm>
           </div>
 
           <!-- 步骤 5：生成命令 -->
           <div v-else-if="currentStep === 4" class="step-content">
-            <h2 class="step-title">生成部署命令</h2>
+            <h2 class="step-title">{{ $t('setup.generateTitle') }}</h2>
             <p class="step-desc">
-              选择部署模式与端口、worker 数，生成可复制的 docker 命令与 .env 文件内容。
+              {{ $t('setup.generateDesc') }}
             </p>
 
             <NForm label-placement="top" inline>
@@ -503,7 +505,7 @@ async function copyToClipboard(text: string, label = '内容') {
                   type="primary"
                   @click="handleGenerate"
                 >
-                  重新生成
+                  {{ $t('setup.regenerate') }}
                 </NButton>
               </NFormItem>
             </NForm>
@@ -512,13 +514,13 @@ async function copyToClipboard(text: string, label = '内容') {
 
             <div v-if="store.commandResult" class="result-block">
               <div class="result-header">
-                <NText strong>.env 文件</NText>
+                <NText strong>{{ $t('setup.envFile') }}</NText>
                 <NButton
                   size="small"
                   quaternary
-                  @click="copyToClipboard(store.commandResult?.env_file_content || '', '.env 内容')"
+                  @click="copyToClipboard(store.commandResult?.env_file_content || '', $t('setup.envFile'))"
                 >
-                  复制
+                  {{ $t('setup.copy') }}
                 </NButton>
               </div>
               <NCode
@@ -528,13 +530,13 @@ async function copyToClipboard(text: string, label = '内容') {
               />
 
               <div class="result-header" style="margin-top: 16px;">
-                <NText strong>部署命令</NText>
+                <NText strong>{{ $t('setup.deployCommand') }}</NText>
                 <NButton
                   size="small"
                   quaternary
-                  @click="copyToClipboard(store.commandResult?.command || '', '命令')"
+                  @click="copyToClipboard(store.commandResult?.command || '', $t('setup.deployCommand'))"
                 >
-                  复制
+                  {{ $t('setup.copy') }}
                 </NButton>
               </div>
               <NCode
@@ -543,12 +545,12 @@ async function copyToClipboard(text: string, label = '内容') {
                 class="result-code"
               />
 
-              <NAlert type="success" class="step-alert" title="下一步">
+              <NAlert type="success" class="step-alert" :title="$t('setup.nextSteps')">
                 <ol class="step-list">
-                  <li>将 .env 内容保存到项目根目录的 <code>.env</code> 文件</li>
-                  <li>在项目根目录执行复制的命令</li>
-                  <li>等待服务健康（<code>docker compose logs -f opskg</code> 看到 "Application startup complete"）</li>
-                  <li>访问首页 <code>http://localhost:{{ store.form.port }}</code>，使用 Bootstrap Admin 凭据登录</li>
+                  <li>{{ $t('setup.nextStepsContent[0]') }}</li>
+                  <li>{{ $t('setup.nextStepsContent[1]') }}</li>
+                  <li>{{ $t('setup.nextStepsContent[2]') }}</li>
+                  <li>{{ $t('setup.nextStepsContent[3]', { port: store.form.port }) }}</li>
                 </ol>
               </NAlert>
             </div>
@@ -559,7 +561,7 @@ async function copyToClipboard(text: string, label = '内容') {
         <div class="setup-footer">
           <NSpace justify="space-between" align="center">
             <NButton quaternary @click="handleSkip">
-              跳过向导
+              {{ $t('setup.skip') }}
             </NButton>
             <NSpace>
               <NButton
@@ -567,21 +569,21 @@ async function copyToClipboard(text: string, label = '内容') {
                 secondary
                 @click="handlePrev"
               >
-                上一步
+                {{ $t('setup.prev') }}
               </NButton>
               <NButton
                 v-if="currentStep < totalSteps - 1"
                 type="primary"
                 @click="handleNext"
               >
-                下一步
+                {{ $t('setup.next') }}
               </NButton>
               <NButton
                 v-else
                 type="primary"
                 @click="handleFinish"
               >
-                完成
+                {{ $t('setup.finish') }}
               </NButton>
             </NSpace>
           </NSpace>
@@ -590,9 +592,9 @@ async function copyToClipboard(text: string, label = '内容') {
 
       <!-- 已就绪提示（完成态） -->
       <div v-if="store.ready" class="ready-banner">
-        <NText type="success">✓ 环境已就绪，可直接进入控制台</NText>
+        <NText type="success">✓ {{ $t('setup.readyBanner') }}</NText>
         <NButton size="small" type="primary" ghost @click="router.replace('/dashboard')">
-          进入控制台
+          {{ $t('setup.enterConsole') }}
         </NButton>
       </div>
     </div>
@@ -602,7 +604,7 @@ async function copyToClipboard(text: string, label = '内容') {
 <style scoped>
 .setup-container {
   min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, var(--opskg-color-primary) 0%, color-mix(in srgb, var(--opskg-color-primary) 60%, var(--opskg-color-info) 40%) 100%);
   padding: 32px 20px;
   display: flex;
   justify-content: center;

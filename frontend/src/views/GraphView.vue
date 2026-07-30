@@ -90,17 +90,17 @@ const nodeTypeLabel: Record<string, string> = {
 }
 
 const relationColor: Record<string, string> = {
-  RUNS_ON: '#2080f0',
-  USES: '#18a058',
-  DEPENDS_ON: '#f0a020',
-  HAS_PARAMETER: '#7c4dff',
-  CONFIGURED_BY: '#00bcd4',
-  DESCRIBED_IN: '#9c27b0',
-  INVOLVES: '#d03050',
-  MANIFESTS_AS: '#e91e63',
-  RESOLVED_BY: '#ff5722',
-  DERIVED_FROM: '#ff9800',
-  RELATED_TO: '#607d8b',
+  RUNS_ON: 'var(--opskg-relation-runs-on)',
+  USES: 'var(--opskg-relation-uses)',
+  DEPENDS_ON: 'var(--opskg-relation-depends-on)',
+  HAS_PARAMETER: 'var(--opskg-relation-has-parameter)',
+  CONFIGURED_BY: 'var(--opskg-relation-configured-by)',
+  DESCRIBED_IN: 'var(--opskg-relation-described-in)',
+  INVOLVES: 'var(--opskg-relation-involves)',
+  MANIFESTS_AS: 'var(--opskg-relation-manifests-as)',
+  RESOLVED_BY: 'var(--opskg-relation-resolved-by)',
+  DERIVED_FROM: 'var(--opskg-relation-derived-from)',
+  RELATED_TO: 'var(--opskg-relation-related-to)',
 }
 
 // P0-2: 深色模式响应式颜色（背景网格点 + 边标签文字/底色）
@@ -431,7 +431,7 @@ onMounted(() => {
             :key="r.name"
             size="small"
             checkable
-            :style="{ color: nodeTypeColor[r.type] || '#999', cursor: 'pointer' }"
+            :style="{ color: nodeTypeColor[r.type] || 'var(--opskg-text-3)', cursor: 'pointer' }"
             @click="openEntityDetail(r.name)"
           >
             {{ r.name }} · {{ nodeTypeLabel[r.type] || r.type }}

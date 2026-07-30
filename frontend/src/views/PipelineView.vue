@@ -860,10 +860,10 @@ watch(sourceTab, (val) => {
               <div style="font-size: 16px; font-weight: 500; margin-bottom: 8px">
                 点击或拖拽文件到此处上传
               </div>
-              <div style="font-size: 13px; color: #999">
+              <div class="meta-text" style="font-size: 13px">
                 支持 md、docx、xlsx、pdf、html、txt、sql 等格式
               </div>
-              <div style="font-size: 13px; color: #999">
+              <div class="meta-text" style="font-size: 13px">
                 上传后自动触发编译流水线
               </div>
             </div>
@@ -980,28 +980,28 @@ watch(sourceTab, (val) => {
           <template #default>
             <div style="display: flex; flex-direction: column; gap: 4px">
               <template v-if="step.status === 'done' && step.details">
-                <span style="color: #18a058">{{ step.details }}</span>
+                <span class="success-text">{{ step.details }}</span>
               </template>
               <template v-if="step.status === 'running' && step.details">
-                <span style="color: #2080f0">{{ step.details }}</span>
+                <span class="primary-text">{{ step.details }}</span>
               </template>
               <template v-if="step.status === 'skipped' && step.details">
-                <span style="color: #999">{{ step.details }}</span>
+                <span class="meta-text">{{ step.details }}</span>
               </template>
               <template v-if="step.status === 'error' && step.error">
-                <span style="color: #d03050">{{ step.error }}</span>
+                <span class="danger-text">{{ step.error }}</span>
               </template>
 
               <!-- 步骤级错误详情（LLM 调用错误、实体处理失败等） -->
               <template v-if="step.errors && step.errors.length > 0">
-                <div style="margin-top: 4px; padding: 4px 8px; background: #fff2f0; border: 1px solid #ffccc7; border-radius: 4px">
-                  <div style="font-size: 12px; color: #d03050; margin-bottom: 2px">
+                <div class="error-box" style="margin-top: 4px; padding: 4px 8px">
+                  <div class="danger-text" style="font-size: 12px; margin-bottom: 2px">
                     ⚠️ {{ step.errors.length }} 个错误：
                   </div>
-                  <div v-for="(err, i) in step.errors.slice(0, 5)" :key="i" style="font-size: 11px; color: #666; line-height: 18px">
+                  <div v-for="(err, i) in step.errors.slice(0, 5)" :key="i" class="secondary-text" style="font-size: 11px; line-height: 18px">
                     {{ err.entity }}: {{ err.error?.substring(0, 120) || '未知错误' }}
                   </div>
-                  <div v-if="step.errors.length > 5" style="font-size: 11px; color: #999">
+                  <div v-if="step.errors.length > 5" class="meta-text" style="font-size: 11px">
                     ...还有 {{ step.errors.length - 5 }} 个错误
                   </div>
                 </div>
@@ -1009,7 +1009,7 @@ watch(sourceTab, (val) => {
               <template
                 v-if="step.status === 'running' && step.subProgress && step.subProgress.total > 0"
               >
-                <span style="color: #2080f0">
+                <span class="primary-text">
                   {{ step.name === 'struct_compile' ? '章节' : '编译' }}中 {{ step.subProgress.current }}/{{ step.subProgress.total }}
                   <span v-if="step.subProgress.currentEntity">
                     — {{ step.subProgress.currentEntity }}
@@ -1022,7 +1022,7 @@ watch(sourceTab, (val) => {
                 <NCollapse style="margin-top: 4px">
                   <NCollapseItem :title="'查看详情'" name="detail">
                     <div v-if="step.name === 'parse' && step.output.heading_tree_titles" style="max-height: 200px; overflow-y: auto">
-                      <div style="font-size: 12px; color: #666; margin-bottom: 4px">文档章节结构：</div>
+                      <div class="secondary-text" style="font-size: 12px; margin-bottom: 4px">文档章节结构：</div>
                       <div v-for="(h, i) in step.output.heading_tree_titles" :key="i" :style="{ paddingLeft: (h.level - 1) * 16 + 'px', fontSize: '12px', lineHeight: '20px' }">
                         <NTag size="tiny" :bordered="false" :type="getLevelType(h.level)" style="margin-right: 4px">H{{ h.level }}</NTag>
                         {{ h.title || '(无标题)' }}
@@ -1030,7 +1030,7 @@ watch(sourceTab, (val) => {
                       <NEmpty v-if="!step.output.heading_tree_titles.length" description="无章节结构" size="small" />
                     </div>
                     <div v-else-if="step.name === 'extract' && step.output.entity_names" style="max-height: 200px; overflow-y: auto">
-                      <div style="font-size: 12px; color: #666; margin-bottom: 4px">抽取实体列表：</div>
+                      <div class="secondary-text" style="font-size: 12px; margin-bottom: 4px">抽取实体列表：</div>
                       <NSpace :size="4" wrap>
                         <NTag v-for="name in step.output.entity_names" :key="name" size="tiny" :bordered="false" type="info">
                           {{ name }}
@@ -1039,7 +1039,7 @@ watch(sourceTab, (val) => {
                       <NEmpty v-if="!step.output.entity_names.length" description="无实体" size="small" />
                     </div>
                     <div v-else-if="step.name === 'compile' && step.output.slugs" style="max-height: 200px; overflow-y: auto">
-                      <div style="font-size: 12px; color: #666; margin-bottom: 4px">生成 Wiki 页面：</div>
+                      <div class="secondary-text" style="font-size: 12px; margin-bottom: 4px">生成 Wiki 页面：</div>
                       <NSpace :size="4" wrap>
                         <NTag v-for="slug in step.output.slugs" :key="slug" size="tiny" :bordered="false" type="success" style="cursor: pointer" @click="viewWikiPage(slug)">
                           {{ slug }}
@@ -1048,23 +1048,23 @@ watch(sourceTab, (val) => {
                       <NEmpty v-if="!step.output.slugs.length" description="无页面" size="small" />
                       <!-- LLM 错误详情 -->
                       <template v-if="step.output.llm_errors && step.output.llm_errors.length > 0">
-                        <div style="margin-top: 8px; padding: 6px; background: #fff2f0; border-radius: 4px">
-                          <div style="font-size: 12px; color: #d03050; margin-bottom: 4px">
+                        <div class="error-bg" style="margin-top: 8px; padding: 6px">
+                          <div class="danger-text" style="font-size: 12px; margin-bottom: 4px">
                             ⚠️ LLM 编译错误（{{ step.output.llm_error_count }} 个）：
                           </div>
-                          <div v-for="(err, i) in step.output.llm_errors" :key="i" style="font-size: 11px; color: #666; line-height: 18px">
+                          <div v-for="(err, i) in step.output.llm_errors" :key="i" class="secondary-text" style="font-size: 11px; line-height: 18px">
                             <b>{{ err.entity }}</b>: {{ err.error?.substring(0, 150) }}
                           </div>
                         </div>
                       </template>
                     </div>
                     <div v-else-if="step.name === 'struct_compile'">
-                      <div style="font-size: 12px; color: #666">
+                      <div class="secondary-text" style="font-size: 12px">
                         处理章节数：{{ step.output.sections ?? 0 }}，创建：{{ step.output.pages_created ?? 0 }}，更新：{{ step.output.pages_updated ?? 0 }}
                       </div>
                     </div>
                     <div v-else-if="step.name === 'index'">
-                      <div style="font-size: 12px; color: #666">
+                      <div class="secondary-text" style="font-size: 12px">
                         索引重建：{{ step.output.index_rebuilt ? '已完成' : '已跳过' }}，页面数：{{ step.output.slugs_count ?? 0 }}
                       </div>
                     </div>
@@ -1107,7 +1107,7 @@ watch(sourceTab, (val) => {
           </NGi>
         </NGrid>
         <div v-if="compileResult.slugs?.length" style="margin-top: 12px">
-          <span style="font-size: 13px; color: #666; margin-right: 8px">生成页面：</span>
+          <span class="secondary-text" style="font-size: 13px; margin-right: 8px">生成页面：</span>
           <NTag
             v-for="slug in compileResult.slugs"
             :key="slug"
@@ -1150,13 +1150,13 @@ watch(sourceTab, (val) => {
       <div
         v-for="node in sectionNodes"
         :key="node.slug"
-        style="display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid #f0f0f0; gap: 8px"
+        class="border-light" style="display: flex; align-items: center; padding: 8px 12px; gap: 8px"
       >
         <!-- 状态图标 -->
         <NSpin v-if="node.status === 'running'" :size="16" />
-        <span v-else-if="node.status === 'done'" style="color: #18a058; font-size: 16px">✅</span>
-        <span v-else-if="node.status === 'error'" style="color: #d03050; font-size: 16px">❌</span>
-        <span v-else style="color: #ccc; font-size: 16px">⏳</span>
+        <span v-else-if="node.status === 'done'" class="success-text" style="font-size: 16px">✅</span>
+        <span v-else-if="node.status === 'error'" class="danger-text" style="font-size: 16px">❌</span>
+        <span v-else class="muted-text" style="font-size: 16px">⏳</span>
 
         <!-- 层级标签 -->
         <NTag
@@ -1179,12 +1179,12 @@ watch(sourceTab, (val) => {
         </NTag>
 
         <!-- 处理时间 -->
-        <span v-if="node.processing_time_ms" style="font-size: 12px; color: #999; white-space: nowrap">
+        <span v-if="node.processing_time_ms" class="meta-text" style="font-size: 12px; white-space: nowrap">
           {{ formatMs(node.processing_time_ms) }}
         </span>
 
         <!-- 字符变化 -->
-        <span v-if="node.raw_chars !== undefined && node.compiled_chars !== undefined" style="font-size: 12px; color: #999; white-space: nowrap">
+        <span v-if="node.raw_chars !== undefined && node.compiled_chars !== undefined" class="meta-text" style="font-size: 12px; white-space: nowrap">
           {{ node.raw_chars }} → {{ node.compiled_chars }}
         </span>
 
@@ -1339,10 +1339,10 @@ watch(sourceTab, (val) => {
               >
                 {{ section.llm_success ? 'LLM 成功' : 'LLM 失败' }}
               </NTag>
-              <span style="font-size: 12px; color: #999">
+              <span class="meta-text" style="font-size: 12px">
                 {{ formatMs(section.processing_time_ms) }}
               </span>
-              <span style="font-size: 12px; color: #999">
+              <span class="meta-text" style="font-size: 12px">
                 {{ section.raw_chars }} → {{ section.compiled_chars }} 字符
                 ({{ calcReduction(section.raw_chars, section.compiled_chars) }})
               </span>
@@ -1386,7 +1386,7 @@ watch(sourceTab, (val) => {
 
           <NGrid :cols="2" :x-gap="12" responsive="screen">
             <NGi>
-              <div style="margin-bottom: 4px; font-weight: 600; color: #d03050">
+              <div class="danger-text" style="margin-bottom: 4px; font-weight: 600">
                 处理前（原始内容）
               </div>
               <NCode
@@ -1397,7 +1397,7 @@ watch(sourceTab, (val) => {
               />
             </NGi>
             <NGi>
-              <div style="margin-bottom: 4px; font-weight: 600; color: #18a058">
+              <div class="success-text" style="margin-bottom: 4px; font-weight: 600">
                 处理后（LLM 编译）
               </div>
               <NCode
@@ -1439,7 +1439,7 @@ watch(sourceTab, (val) => {
     preset="card"
   >
     <template v-if="recompileTarget">
-      <p style="margin-bottom: 16px; color: #666">
+      <p class="secondary-text" style="margin-bottom: 16px">
         章节：<strong>{{ recompileTarget.title }}</strong>（{{ recompileTarget.slug }}）
       </p>
 
@@ -1455,7 +1455,7 @@ watch(sourceTab, (val) => {
             />
             <span style="width: 40px; text-align: right">{{ recompileTemperature.toFixed(2) }}</span>
           </NSpace>
-          <div style="font-size: 11px; color: #999; margin-top: 4px">
+          <div class="meta-text" style="font-size: 11px; margin-top: 4px">
             0 = 确定性输出，1 = 创造性，2 = 高度随机
           </div>
         </NFormItem>
@@ -1494,3 +1494,15 @@ watch(sourceTab, (val) => {
     </template>
   </NModal>
 </template>
+
+<style scoped>
+.meta-text { color: var(--opskg-text-3); }
+.secondary-text { color: var(--opskg-text-2); }
+.danger-text { color: var(--opskg-color-danger); }
+.success-text { color: var(--opskg-color-success); }
+.primary-text { color: var(--opskg-color-primary); }
+.muted-text { color: var(--opskg-text-3); }
+.border-light { border-bottom: 1px solid var(--opskg-border-color); }
+.error-box { background: color-mix(in srgb, var(--opskg-color-danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--opskg-color-danger) 20%, transparent); border-radius: 4px; }
+.error-bg { background: color-mix(in srgb, var(--opskg-color-danger) 8%, transparent); border-radius: 4px; }
+</style>

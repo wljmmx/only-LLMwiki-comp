@@ -22,6 +22,7 @@ import {
   NForm,
   NFormItem,
   NSlider,
+  NAlert,
   useMessage,
 } from 'naive-ui'
 import type { UploadFileInfo } from 'naive-ui'
@@ -37,6 +38,7 @@ const message = useMessage()
 const router = useRouter()
 
 const loading = ref(false)
+const error = ref<string | null>(null)
 const documents = ref<DocumentMeta[]>([])
 const total = ref(0)
 const limit = ref(10)
@@ -126,6 +128,7 @@ const statusText: Record<string, string> = {
 async function fetchDocuments() {
   // 退出搜索模式，回到分页列表
   isSearching.value = false
+  error.value = null
   loading.value = true
   try {
     const params: Record<string, any> = {
@@ -139,7 +142,7 @@ async function fetchDocuments() {
     documents.value = res.data.items
     total.value = res.data.total
   } catch (err) {
-    message.error('获取文档列表失败')
+    error.value = '获取文档列表失败'
     console.error(err)
   } finally {
     loading.value = false
@@ -478,6 +481,18 @@ onMounted(() => {
       @page-size-change="handlePageSizeChange"
     />
 
+    <NAlert
+      v-if="error && !loading"
+      type="error"
+      :show-icon="true"
+      class="error-alert"
+    >
+      <template #header>{{ error }}</template>
+      <NSpace style="margin-top: 8px">
+        <NButton size="small" type="primary" @click="fetchDocuments">重试</NButton>
+      </NSpace>
+    </NAlert>
+
     <NDrawer v-model:show="drawerVisible" :width="720" placement="right">
       <NDrawerContent title="文档详情" :closable="true">
         <template v-if="currentDoc">
@@ -613,8 +628,8 @@ onMounted(() => {
                           >
                             {{ section.llm_success ? 'LLM 成功' : 'LLM 失败' }}
                           </NTag>
-                          <span style="font-size: 12px; color: #999">{{ formatMs(section.processing_time_ms) }}</span>
-                          <span style="font-size: 12px; color: #999">
+                          <span class="meta-text">{{ formatMs(section.processing_time_ms) }}</span>
+                          <span class="meta-text">
                             {{ section.raw_chars }} → {{ section.compiled_chars }} 字符
                             ({{ calcReduction(section.raw_chars, section.compiled_chars) }})
                           </span>
@@ -640,7 +655,7 @@ onMounted(() => {
                       </div>
                       <div class="section-content">
                         <div class="content-col">
-                          <div class="col-label" style="color: #d03050">处理前（原始内容）</div>
+                          <div class="col-label col-label-raw">处理前（原始内容）</div>
                           <NCode
                             :code="section.raw_content || '(空)'"
                             language="markdown"
@@ -649,10 +664,10 @@ onMounted(() => {
                           />
                         </div>
                         <div class="content-col">
-                          <div class="col-label" style="color: #18a058">
-                            处理后（LLM 编译）
-                            <span v-if="editingSlug === section.slug" style="color: #f0a020; font-size: 12px">（编辑模式）</span>
-                          </div>
+                          <div class="col-label col-label-compiled">
+                          处理后（LLM 编译）
+                          <span v-if="editingSlug === section.slug" class="edit-mode-hint">（编辑模式）</span>
+                        </div>
                           <template v-if="editingSlug === section.slug">
                             <textarea
                               v-model="editingContent"
@@ -680,7 +695,7 @@ onMounted(() => {
 
                 <!-- 无追踪数据 -->
                 <div v-if="traceData && !traceData.available" class="no-trace">
-                  <span style="color: #999">{{ traceData.message || '该文档无管道追踪数据' }}</span>
+                  <span class="meta-text">{{ traceData.message || '该文档无管道追踪数据' }}</span>
                 </div>
               </div>
             </NTabPane>
@@ -697,7 +712,7 @@ onMounted(() => {
       preset="card"
     >
       <template v-if="recompileTarget">
-        <p style="margin-bottom: 16px; color: #666">
+        <p class="recompile-title">
           章节：<strong>{{ recompileTarget.title }}</strong>（{{ recompileTarget.slug }}）
         </p>
         <NForm label-placement="top" size="small">
@@ -712,7 +727,7 @@ onMounted(() => {
               />
               <span style="width: 40px; text-align: right">{{ recompileTemperature.toFixed(2) }}</span>
             </NSpace>
-            <div style="font-size: 11px; color: #999; margin-top: 4px">
+            <div class="temperature-hint">
               0 = 确定性输出，1 = 创造性，2 = 高度随机
             </div>
           </NFormItem>
@@ -898,6 +913,35 @@ onMounted(() => {
 .edit-textarea:focus {
   outline: none;
   border-color: var(--n-primary-color, #3b82f6);
+}
+
+.meta-text {
+  font-size: 12px;
+  color: var(--opskg-text-3);
+}
+
+.col-label-raw {
+  color: var(--opskg-color-danger);
+}
+
+.col-label-compiled {
+  color: var(--opskg-color-success);
+}
+
+.edit-mode-hint {
+  color: var(--opskg-color-warning);
+  font-size: 12px;
+}
+
+.recompile-title {
+  margin-bottom: 16px;
+  color: var(--opskg-text-2);
+}
+
+.temperature-hint {
+  font-size: 11px;
+  color: var(--opskg-text-3);
+  margin-top: 4px;
 }
 
 .no-trace {
