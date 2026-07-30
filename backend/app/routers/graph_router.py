@@ -71,6 +71,12 @@ async def graph_upload(file: UploadFile = File(...)) -> dict:
         result = await extractor.extract(doc)
 
         # 转换为 GraphEntity/GraphRelation
+        # 同时接受 auto_accepted（高置信度）和 review（中置信度，需人工审查）实体，
+        # 与 wiki_compiler._compile_to_graph 保持一致。
+        # 修复：旧版仅取 auto_accepted，LLM 不可用时 fallback 实体 confidence=0.65
+        # 只进 review，导致图谱写入 0 实体。
+        all_entities = list(result.auto_accepted_entities) + list(result.review_entities)
+        all_relations = list(result.auto_accepted_relations) + list(result.review_relations)
         entities = [
             GraphEntity(
                 entity_type=e.entity_type,
@@ -79,7 +85,7 @@ async def graph_upload(file: UploadFile = File(...)) -> dict:
                 source_doc_id=doc.doc_id,
                 confidence=e.confidence,
             )
-            for e in result.auto_accepted_entities
+            for e in all_entities
         ]
         relations = [
             GraphRelation(
@@ -90,7 +96,7 @@ async def graph_upload(file: UploadFile = File(...)) -> dict:
                 source_doc_id=doc.doc_id,
                 confidence=r.confidence,
             )
-            for r in result.auto_accepted_relations
+            for r in all_relations
         ]
 
         # 编译 + 写入
@@ -133,14 +139,17 @@ async def graph_upload(file: UploadFile = File(...)) -> dict:
             "parsed_elements": len(doc.elements),
             "extracted_entities": len(entities),
             "extracted_relations": len(relations),
+            "auto_accepted_entities": len(result.auto_accepted_entities),
+            "review_entities": len(result.review_entities),
+            "graph_written_entities": len(entities),
             "compile": {
                 "input": compile_result.input_entities,
                 "after_dedup": compile_result.after_dedup,
                 "merged": compile_result.merged,
                 "scored": compile_result.scored,
             },
-            "review_entities": len(result.review_entities),
-            "review_relations": len(result.review_relations),
+            "review_entities_queued": len(result.review_entities),
+            "review_relations_queued": len(result.review_relations),
             "review_queued": review_result,
             "discarded": result.discarded_count,
         }

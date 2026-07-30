@@ -109,17 +109,32 @@ def cancel_pause(run_id: str) -> None:
         logger.info("compile_pause_cleaned", run_id=run_id)
 
 
-async def _check_paused(run_id: str | None) -> bool:
-    """检查是否暂停，若暂停则等待直到继续。返回 True 表示已暂停等待过"""
+async def _check_paused(run_id: str | None, timeout: float = 600.0) -> bool:
+    """检查是否暂停，若暂停则等待直到继续。返回 True 表示已暂停等待过。
+
+    修复：旧版 `await evt.wait()` 无超时，若调用 pause 后未 resume
+    （如用户关闭浏览器且 SSE 已断），编译协程将永久阻塞，占用 LLM 并发槽。
+    现加入超时（默认 600s），超时后自动恢复，避免永久卡死。
+    超时也会清理 _paused_events 中的条目，防止内存泄漏。
+    """
     if not run_id or run_id not in _paused_events:
         return False
     evt = _paused_events[run_id]
     if evt.is_set():
         return False
-    logger.info("compile_waiting_paused", run_id=run_id)
-    await evt.wait()
-    logger.info("compile_resumed_after_pause", run_id=run_id)
-    return True
+    logger.info("compile_waiting_paused", run_id=run_id, timeout=timeout)
+    try:
+        await asyncio.wait_for(evt.wait(), timeout=timeout)
+        logger.info("compile_resumed_after_pause", run_id=run_id)
+        return True
+    except asyncio.TimeoutError:
+        # 超时自动恢复，避免永久阻塞；清理暂停状态
+        logger.warning(
+            "compile_pause_timeout_auto_resume",
+            run_id=run_id, timeout=timeout,
+        )
+        cancel_pause(run_id)
+        return True
 
 
 # ────────── 编译器主体 ──────────
@@ -454,6 +469,12 @@ class WikiCompiler:
                 pass
 
         def _finish_run(status: str = "done") -> None:
+            # 修复：所有结束路径（done/error/cancelled）都清理暂停事件，
+            # 防止 _paused_events 字典在异常路径下泄漏条目。
+            try:
+                cancel_pause(pipeline_run_id)
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 self.store.finish_pipeline_run(pipeline_run_id, status)
             except Exception:  # noqa: BLE001

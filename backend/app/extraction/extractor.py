@@ -9,8 +9,8 @@ LLM Few-shot 抽取实体/关系 → 置信度门控分流（自动入图 / 建�
 
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 
 import structlog
 
@@ -214,7 +214,10 @@ class KnowledgeExtractor:
         """从 ParsedDocument 抽取知识"""
         result = ExtractionResult(doc_id=doc.doc_id)
 
-        if not doc.elements:
+        # 修复：旧版仅检查 doc.elements 为空就早返回，但 compiled_extractor 可从
+        # heading_tree 提取 Concept 实体。当文档只有标题树无元素时，旧逻辑直接返回
+        # 空结果，跳过 LLM 调用与 fallback，导致 0 产出。现仅当两者均空时早返回。
+        if not doc.elements and not doc.heading_tree:
             return result
 
         if on_progress:
@@ -246,24 +249,59 @@ class KnowledgeExtractor:
             except Exception:
                 pass
 
-        # 转换为内部类型
+        # 转换为内部类型（_parse_entity/_parse_relation 内部已对畸形 confidence 容错）
         entities = [self._parse_entity(e, doc.doc_id) for e in raw_entities]
         relations = [self._parse_relation(r, doc.doc_id) for r in raw_relations]
 
         # LLM 抽取为空时启用编译抽取兜底
+        # 修复：旧版条件 `if not entities and not relations` 只在 LLM 返回空列表时触发，
+        # 但若 LLM 返回了实体却全部因 confidence 低于 review 阈值被门控丢弃，
+        # 旧逻辑不会触发 fallback，导致 0 产出。这里在门控后再做一次判定。
         if not entities and not relations:
-            logger.info("extraction_fallback_to_compiled", doc_id=doc.doc_id)
+            logger.info("extraction_fallback_to_compiled", doc_id=doc.doc_id, reason="llm_empty")
             if on_progress:
                 try:
                     on_progress("progress", {"percent": 80, "message": "LLM 抽取为空，启用规则兜底抽取..."})
                 except Exception:
                     pass
-            compiled_result = self.compiled_extractor.extract_from_document(doc)
-            entities = compiled_result.entities or []
-            relations = compiled_result.relations or []
+            try:
+                compiled_result = self.compiled_extractor.extract_from_document(doc)
+                entities = compiled_result.entities or []
+                relations = compiled_result.relations or []
+            except Exception as e:  # noqa: BLE001
+                # fallback 自身失败不应中断 extract()
+                logger.error("extraction_fallback_failed", doc_id=doc.doc_id, error=str(e))
+                entities, relations = [], []
 
         # 置信度门控
         self._apply_gating(entities, relations, result)
+
+        # 修复：若 LLM 返回了实体但门控后 auto+review 均为空（全部被 discard），
+        # 且未触发前面的 fallback（因为 entities 非空），则补一次 fallback。
+        if (
+            entities
+            and not result.auto_accepted_entities
+            and not result.review_entities
+            and not result.auto_accepted_relations
+            and not result.review_relations
+        ):
+            logger.info(
+                "extraction_fallback_to_compiled",
+                doc_id=doc.doc_id, reason="all_discarded_after_gating",
+            )
+            if on_progress:
+                try:
+                    on_progress("progress", {"percent": 85, "message": "LLM 实体全部被门控丢弃，启用规则兜底..."})
+                except Exception:
+                    pass
+            try:
+                compiled_result = self.compiled_extractor.extract_from_document(doc)
+                fallback_entities = compiled_result.entities or []
+                fallback_relations = compiled_result.relations or []
+                # 合并 fallback 结果到 result（不覆盖原 entities 统计）
+                self._apply_gating(fallback_entities, fallback_relations, result)
+            except Exception as e:  # noqa: BLE001
+                logger.error("extraction_fallback_failed", doc_id=doc.doc_id, error=str(e))
 
         if on_progress:
             try:
@@ -371,12 +409,29 @@ class KnowledgeExtractor:
                     pass
             return []
 
+    @staticmethod
+    def _safe_confidence(raw, default: float = 0.5) -> float:
+        """安全解析 confidence 字段，容忍 None/字符串/超出范围等畸形输入。
+
+        修复：旧版 `float(raw.get("confidence", 0.5))` 在 LLM 返回
+        `{"confidence": null}` 或 `{"confidence": "high"}` 时抛 TypeError/ValueError，
+        且该调用在列表推导中无 try/except，单条坏数据会中止整个 extract()。
+        """
+        try:
+            value = float(raw) if not isinstance(raw, dict) else float(raw.get("confidence", default))
+        except (TypeError, ValueError):
+            return default
+        # 超出 [0,1] 范围视为畸形，回退默认值
+        if value < 0 or value > 1:
+            return default
+        return value
+
     def _parse_entity(self, raw: dict, doc_id: str) -> ExtractedEntity:
         return ExtractedEntity(
             entity_type=raw.get("entity_type", "Concept"),
             name=raw.get("name", raw.get("term", "")),
             properties=raw.get("properties", {}),
-            confidence=float(raw.get("confidence", 0.5)),
+            confidence=self._safe_confidence(raw, default=0.5),
             evidence_span=raw.get("evidence_span", ""),
             source_doc_id=doc_id,
         )
@@ -387,7 +442,7 @@ class KnowledgeExtractor:
             from_entity=raw.get("from_entity", ""),
             to_entity=raw.get("to_entity", ""),
             properties=raw.get("properties", {}),
-            confidence=float(raw.get("confidence", 0.5)),
+            confidence=self._safe_confidence(raw, default=0.5),
             evidence_span=raw.get("evidence_span", ""),
             source_doc_id=doc_id,
         )
