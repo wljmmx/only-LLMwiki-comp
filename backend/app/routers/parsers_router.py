@@ -13,6 +13,7 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
+import structlog
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
@@ -22,6 +23,7 @@ from app.parsers.base import ParsedDocument
 from app.search import get_search_engine
 from app.storage import get_document_store
 
+logger = structlog.get_logger()
 router = APIRouter()
 
 # 扩展名 → 格式映射（统一）。多个 router 共用，故置于本模块导出。
@@ -79,6 +81,7 @@ async def list_parsers() -> dict[str, list[str]]:
 @router.post("/parsers/parse/batch", dependencies=[Depends(verify_token)])
 async def parse_batch(files: list[UploadFile] = File(..., alias="files")) -> dict:
     """批量解析，自动检测格式（文件持久化存储）"""
+    logger.info("parse_batch_start", file_count=len(files))
     results = []
     formats = set(supported_formats())
     store = get_document_store()
@@ -91,13 +94,16 @@ async def parse_batch(files: list[UploadFile] = File(..., alias="files")) -> dic
         )
         fmt = EXT_FMT_MAP.get(ext, ext)
         if fmt not in formats:
+            logger.warning("parse_batch_unsupported_format", filename=file.filename, format=fmt)
             results.append({"filename": file.filename, "error": f"不支持的格式: {fmt}"})
             continue
 
         content = await file.read()
+        logger.debug("parse_batch_file_read", filename=file.filename, size_bytes=len(content))
         # 持久化存储
         doc_meta = store.save(file.filename or "unknown", content, fmt)
         stored_path = doc_meta["stored_path"]
+        logger.info("parse_batch_doc_saved", doc_id=doc_meta["doc_id"], filename=file.filename, format=fmt)
 
         # 触发 webhook：document.created
         from app.webhooks import dispatch_event
@@ -122,6 +128,7 @@ async def parse_batch(files: list[UploadFile] = File(..., alias="files")) -> dic
 
         try:
             parser = get_parser(fmt)
+            logger.debug("parse_batch_parsing", doc_id=doc_meta["doc_id"], format=fmt)
             doc = parser.parse(stored_path, doc_meta["doc_id"])
             # P0-3: 持久化解析结果
             store.update_status(
@@ -129,6 +136,7 @@ async def parse_batch(files: list[UploadFile] = File(..., alias="files")) -> dic
                 title=doc.title,
                 parse_result=_serialize_doc(doc),
             )
+            logger.info("parse_batch_done", doc_id=doc_meta["doc_id"], title=doc.title, elements=len(doc.elements))
             dispatch_event(
                 "document.parsed",
                 {
@@ -146,9 +154,11 @@ async def parse_batch(files: list[UploadFile] = File(..., alias="files")) -> dic
                 }
             )
         except Exception as e:
+            logger.error("parse_batch_failed", doc_id=doc_meta.get("doc_id"), filename=file.filename, error=str(e))
             store.update_status(doc_meta["doc_id"], "error")
             results.append({"filename": file.filename, "format": fmt, "error": str(e)})
 
+    logger.info("parse_batch_complete", total=len(results), success=sum(1 for r in results if "error" not in r))
     return {"results": results}
 
 
@@ -159,9 +169,11 @@ async def parse_file(fmt: str, file: UploadFile = File(...)) -> dict:
         raise HTTPException(400, f"不支持的格式: {fmt}。支持: {supported_formats()}")
 
     content = await file.read()
+    logger.info("parse_file_start", filename=file.filename, format=fmt, size_bytes=len(content))
     store = get_document_store()
     doc_meta = store.save(file.filename or "unknown", content, fmt)
     stored_path = doc_meta["stored_path"]
+    logger.debug("parse_file_saved", doc_id=doc_meta["doc_id"])
 
     # 触发 webhook：document.created
     from app.webhooks import dispatch_event
@@ -193,6 +205,7 @@ async def parse_file(fmt: str, file: UploadFile = File(...)) -> dict:
             title=doc.title,
             parse_result=_serialize_doc(doc),
         )
+        logger.info("parse_file_done", doc_id=doc_meta["doc_id"], title=doc.title, elements=len(doc.elements))
         # 建立搜索索引
         content_text = " ".join(e.content for e in doc.elements if e.content)
         get_search_engine().index_document(
@@ -211,6 +224,7 @@ async def parse_file(fmt: str, file: UploadFile = File(...)) -> dict:
         result["stored"] = True
         return result
     except Exception as e:
+        logger.error("parse_file_failed", doc_id=doc_meta.get("doc_id"), format=fmt, error=str(e))
         store.update_status(doc_meta["doc_id"], "error")
         raise HTTPException(500, f"解析失败: {e}")
 

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import structlog
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.auth import verify_token
@@ -15,6 +16,7 @@ from app.knowledge import GraphEntity, get_compiler
 from app.parsers import get_parser, supported_formats
 from app.routers.parsers_router import EXT_FMT_MAP
 
+logger = structlog.get_logger()
 router = APIRouter()
 
 
@@ -37,6 +39,8 @@ async def extract_knowledge(file: UploadFile = File(...)) -> dict:
     if fmt not in supported_formats():
         raise HTTPException(400, f"不支持的格式: {fmt}。支持: {supported_formats()}")
 
+    logger.info("extract_knowledge_start", filename=file.filename, format=fmt)
+
     suffix = os.path.splitext(file.filename or "")[1] or f".{fmt}"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(await file.read())
@@ -45,12 +49,20 @@ async def extract_knowledge(file: UploadFile = File(...)) -> dict:
     try:
         # 解析
         parser = get_parser(fmt)
+        logger.debug("extract_knowledge_parsing", tmp_path=tmp_path)
         doc = parser.parse(tmp_path, file.filename or "unknown")
+        logger.info("extract_knowledge_parsed", title=doc.title, elements=len(doc.elements))
 
         # 抽取
         extractor = KnowledgeExtractor()
+        logger.debug("extract_knowledge_extracting", doc_id=doc.doc_id)
         result = await extractor.extract(doc)
         stats = extractor.get_stats(result)
+        logger.info("extract_knowledge_done", doc_id=doc.doc_id,
+                     total_entities=stats.total_entities,
+                     auto_accepted=stats.auto_accepted,
+                     review_needed=stats.review_needed,
+                     confidence_avg=round(stats.confidence_avg, 3))
 
         return {
             "doc_id": doc.doc_id,

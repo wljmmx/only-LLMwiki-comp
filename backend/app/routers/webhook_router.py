@@ -29,12 +29,14 @@ S15-2 告警路由规则引擎：
 
 from __future__ import annotations
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth import verify_token
 from app.storage import get_webhook_store
 from app.webhooks import EVENT_CATALOG, dispatch_event, get_webhook_manager
 
+logger = structlog.get_logger()
 router = APIRouter()
 
 
@@ -104,6 +106,7 @@ async def create_subscription(payload: dict) -> dict:
             description=str(payload.get("description", "")),
             active=bool(payload.get("active", True)),
         )
+        logger.info("webhook_subscription_created", sub_id=sub.get("id"), url=url, events_count=len(events))
     except ValueError as e:
         raise HTTPException(400, str(e))
     return sub
@@ -371,8 +374,10 @@ async def list_all_deliveries(
 )
 async def retry_pending_deliveries() -> dict:
     """手动触发一次到期重试扫描（不必等后台 worker）"""
+    logger.info("webhook_retry_triggered")
     mgr = get_webhook_manager()
     n = await mgr.process_pending_retries()
+    logger.info("webhook_retry_done", processed=n)
     return {"processed": n}
 
 
@@ -428,6 +433,7 @@ async def delete_subscription(sub_id: str) -> dict:
     ok = store.delete_subscription(sub_id)
     if not ok:
         raise HTTPException(404, f"订阅不存在: {sub_id}")
+    logger.info("webhook_subscription_deleted", sub_id=sub_id)
     return {"deleted": True, "id": sub_id}
 
 
@@ -440,6 +446,7 @@ async def rotate_secret(sub_id: str) -> dict:
     new_secret = store.rotate_secret(sub_id)
     if not new_secret:
         raise HTTPException(404, f"订阅不存在: {sub_id}")
+    logger.info("webhook_secret_rotated", sub_id=sub_id)
     return {"id": sub_id, "secret": new_secret}
 
 
@@ -458,6 +465,7 @@ async def test_subscription(sub_id: str) -> dict:
     if not sub.get("active"):
         raise HTTPException(400, "订阅未启用，请先 active=true")
 
+    logger.info("webhook_test_sending", sub_id=sub_id, url=sub["url"])
     matched = dispatch_event(
         "webhook.test",
         {
@@ -467,6 +475,7 @@ async def test_subscription(sub_id: str) -> dict:
             "sent_by": "webhook_router.test",
         },
     )
+    logger.info("webhook_test_sent", sub_id=sub_id, matched=matched)
     return {
         "subscription_id": sub_id,
         "matched": matched,

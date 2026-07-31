@@ -29,6 +29,7 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
+import structlog
 import yaml
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -63,6 +64,7 @@ from app.parsers import supported_formats
 from app.routers.parsers_router import EXT_FMT_MAP
 from app.storage import get_document_store, get_version_control
 
+logger = structlog.get_logger()
 router = APIRouter()
 
 # AGENTS.md §三 允许的 wiki 页面类型
@@ -132,18 +134,29 @@ async def llm_wiki_ingest(file: UploadFile = File(...)) -> dict:
     if fmt not in supported_formats():
         raise HTTPException(400, f"不支持的格式: {fmt}")
 
+    logger.info("llm_wiki_ingest_start", filename=file.filename, format=fmt)
+
     content = await file.read()
     store = get_document_store()
     meta = store.save(file.filename or "unknown", content, fmt)
+    logger.debug("llm_wiki_ingest_saved", doc_id=meta["doc_id"], size_bytes=len(content))
 
     # 漂移检测：若 doc_id 已存在过编译记录且 checksum 变化 → 标记关联页面 stale
     drift = detect_drift(meta["doc_id"])
     if drift.changed:
+        logger.info("llm_wiki_ingest_drift_detected", doc_id=meta["doc_id"],
+                     affected_slugs=drift.affected_slugs)
         mark_pages_stale(drift.affected_slugs, drift.doc_id)
 
     # 调用 wiki 编译器
     compiler = get_wiki_compiler()
+    logger.info("llm_wiki_ingest_compiling", doc_id=meta["doc_id"])
     result = await compiler.compile_raw_to_wiki(meta["doc_id"], force=drift.changed)
+    logger.info("llm_wiki_ingest_done", doc_id=meta["doc_id"],
+                pages_created=result.pages_created,
+                pages_updated=result.pages_updated,
+                pages_unchanged=result.pages_unchanged,
+                errors=len(result.errors))
     return {
         "doc_id": meta["doc_id"],
         "filename": file.filename,

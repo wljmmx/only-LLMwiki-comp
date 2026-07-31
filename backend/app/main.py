@@ -17,6 +17,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
+
+# P0: 尽早初始化结构化日志（必须在所有 logger 创建之前）
+from app.core.logging_config import setup_logging
+
+setup_logging()
 from app.routers.anomaly_router import router as anomaly_router
 from app.routers.auth_router import router as auth_router
 from app.routers.backup_router import router as backup_router

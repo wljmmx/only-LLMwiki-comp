@@ -16,6 +16,7 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
+import structlog
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -26,6 +27,7 @@ from app.search import get_search_engine
 from app.storage import get_version_control
 from app.storage.version_control import _get_db as get_vc_db
 
+logger = structlog.get_logger()
 router = APIRouter()
 
 
@@ -83,9 +85,11 @@ async def wiki_publish(
     change_summary: str = "",
 ) -> dict:
     """发布/更新 Wiki 文档（自动创建新版本）"""
+    logger.info("wiki_publish_start", slug=slug, title=title)
     vc = get_version_control()
     doc_key = f"wiki:{slug}"
     result = vc.save_version(doc_key, title, content, change_summary=change_summary)
+    logger.info("wiki_publish_saved", slug=slug, version=result.get("version"))
     # 同时建立搜索索引
     get_search_engine().index_document(doc_key, title, content, "wiki")
 
@@ -111,12 +115,14 @@ async def wiki_publish(
 @router.delete("/wiki/{slug}", dependencies=[Depends(verify_token)])
 async def wiki_delete(slug: str) -> dict:
     """删除 Wiki 文档"""
+    logger.info("wiki_delete_start", slug=slug)
     vc = get_version_control()
     doc_key = f"wiki:{slug}"
     count = vc.delete_all(doc_key)
     if count == 0:
         raise HTTPException(404, f"Wiki 文档不存在: {slug}")
     get_search_engine().remove_index(doc_key)
+    logger.info("wiki_delete_done", slug=slug, versions_removed=count)
 
     # 触发 webhook：wiki.deleted
     from app.webhooks import dispatch_event

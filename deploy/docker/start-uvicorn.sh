@@ -34,10 +34,12 @@ if [ ! -f /app/app/config.py ]; then
 fi
 
 echo "[uvicorn-start] 启动 uvicorn..."
+# 使用环境变量 LOG_LEVEL（默认 info），确保 .env 中的 debug 设置生效
+UVICORN_LOG_LEVEL="${LOG_LEVEL:-info}"
 exec /usr/local/bin/python3 -m uvicorn app.main:app \
     --host 127.0.0.1 \
     --port 8000 \
     --workers 2 \
-    --log-level info \
+    --log-level "${UVICORN_LOG_LEVEL}" \
     --access-log \
     --no-proxy-headers

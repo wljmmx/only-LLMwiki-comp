@@ -17,11 +17,13 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
+import structlog
 from fastapi import HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_settings
 
+logger = structlog.get_logger()
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -58,6 +60,7 @@ async def verify_token(
     identity = verify_token_string(token)
     if identity is None:
         request.state.user = None
+        logger.warning("auth_failed_invalid_token", client=request.client.host if request.client else "unknown")
         raise HTTPException(401, "认证失败：Token 无效")
     # session token 模式：尝试注入用户 dict 供审计使用
     # legacy 模式（"user"）无用户对象，注入 None
@@ -186,6 +189,7 @@ def require_role(min_role: str):
             if user and has_role(user["role"], min_role):
                 return f"user:{user['username']}"
             if user:
+                logger.warning("auth_failed_insufficient_role", username=user.get("username"), role=user.get("role"), required=min_role)
                 raise HTTPException(
                     403, f"权限不足：需要 {min_role} 及以上角色"
                 )
@@ -194,6 +198,7 @@ def require_role(min_role: str):
         except Exception:  # noqa: BLE001
             pass
 
+        logger.warning("auth_failed_invalid_token_role_check")
         raise HTTPException(401, "认证失败：Token 无效")
 
     return _check

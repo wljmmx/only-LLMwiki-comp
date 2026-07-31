@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import structlog
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
@@ -38,6 +39,7 @@ from app.knowledge.graph_store import _to_jsonable
 from app.parsers import get_parser, supported_formats
 from app.routers.parsers_router import EXT_FMT_MAP
 
+logger = structlog.get_logger()
 router = APIRouter()
 
 
@@ -56,6 +58,8 @@ async def graph_upload(file: UploadFile = File(...)) -> dict:
     if fmt not in supported_formats():
         raise HTTPException(400, f"不支持的格式: {fmt}")
 
+    logger.info("graph_upload_start", filename=file.filename, format=fmt)
+
     suffix = os.path.splitext(file.filename or "")[1] or f".{fmt}"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(await file.read())
@@ -64,11 +68,18 @@ async def graph_upload(file: UploadFile = File(...)) -> dict:
     try:
         # 解析
         parser = get_parser(fmt)
+        logger.debug("graph_upload_parsing", tmp_path=tmp_path, format=fmt)
         doc = parser.parse(tmp_path, file.filename or "unknown")
+        logger.info("graph_upload_parsed", doc_id=doc.doc_id, title=doc.title, elements=len(doc.elements))
 
         # 抽取
         extractor = KnowledgeExtractor()
+        logger.debug("graph_upload_extracting", doc_id=doc.doc_id)
         result = await extractor.extract(doc)
+        logger.info("graph_upload_extracted", doc_id=doc.doc_id,
+                     auto_accepted=len(result.auto_accepted_entities),
+                     review=len(result.review_entities),
+                     discarded=result.discarded_count)
 
         # 转换为 GraphEntity/GraphRelation
         # 同时接受 auto_accepted（高置信度）和 review（中置信度，需人工审查）实体，
@@ -101,7 +112,12 @@ async def graph_upload(file: UploadFile = File(...)) -> dict:
 
         # 编译 + 写入
         compiler = get_compiler()
+        logger.debug("graph_upload_compiling", doc_id=doc.doc_id, entities=len(entities), relations=len(relations))
         compile_result = compiler.compile_and_store(entities, relations)
+        logger.info("graph_upload_compiled", doc_id=doc.doc_id,
+                    input_entities=compile_result.input_entities,
+                    after_dedup=compile_result.after_dedup,
+                    merged=compile_result.merged)
 
         # 审查项存入审查队列
         review_queue = get_review_queue()
@@ -131,7 +147,14 @@ async def graph_upload(file: UploadFile = File(...)) -> dict:
         review_result = review_queue.batch_add(
             review_entities_data, review_relations_data
         )
+        logger.info("graph_upload_review_queued", doc_id=doc.doc_id,
+                    review_entities=len(result.review_entities),
+                    review_relations=len(result.review_relations))
 
+        logger.info("graph_upload_done", doc_id=doc.doc_id,
+                    total_entities=len(entities),
+                    total_relations=len(relations),
+                    graph_written=len(entities))
         return {
             "doc_id": doc.doc_id,
             "title": doc.title,
@@ -153,6 +176,9 @@ async def graph_upload(file: UploadFile = File(...)) -> dict:
             "review_queued": review_result,
             "discarded": result.discarded_count,
         }
+    except Exception as e:
+        logger.error("graph_upload_failed", filename=file.filename, format=fmt, error=str(e))
+        raise
     finally:
         os.unlink(tmp_path)
 
@@ -302,20 +328,28 @@ def _entity_group(entity_type: str) -> int:
 @router.delete("/graph/entity/{name}", dependencies=[Depends(verify_token)])
 async def graph_delete_entity(name: str) -> dict:
     """删除图谱实体及其所有关联关系"""
+    logger.info("graph_delete_entity_start", name=name)
     try:
         store = get_graph_store()
-        return store.delete_entity(name)
+        result = store.delete_entity(name)
+        logger.info("graph_delete_entity_done", name=name)
+        return result
     except Exception as e:
+        logger.error("graph_delete_entity_failed", name=name, error=str(e))
         raise HTTPException(500, f"删除实体失败: {e}")
 
 
 @router.delete("/graph/clear", dependencies=[Depends(verify_token)])
 async def graph_clear() -> dict:
     """清空所有图谱数据"""
+    logger.warning("graph_clear_start")
     try:
         store = get_graph_store()
-        return store.clear_all()
+        result = store.clear_all()
+        logger.info("graph_clear_done")
+        return result
     except Exception as e:
+        logger.error("graph_clear_failed", error=str(e))
         raise HTTPException(500, f"清空图谱失败: {e}")
 
 
@@ -474,10 +508,14 @@ async def graph_maintenance_bulk_delete(body: BulkDeleteEntitiesRequest) -> dict
     """批量删除实体（按名称列表）"""
     if not body.names:
         raise HTTPException(400, "names 不能为空")
+    logger.info("graph_bulk_delete_start", count=len(body.names))
     try:
         store = get_graph_store()
-        return store.batch_delete_entities(body.names)
+        result = store.batch_delete_entities(body.names)
+        logger.info("graph_bulk_delete_done", count=len(body.names))
+        return result
     except Exception as e:
+        logger.error("graph_bulk_delete_failed", count=len(body.names), error=str(e))
         raise HTTPException(500, f"批量删除失败: {e}")
 
 
@@ -492,12 +530,14 @@ async def graph_maintenance_cleanup_low_confidence(
 
     dry_run=True 仅返回将删除的实体列表，不实际删除。
     """
+    logger.info("graph_cleanup_low_confidence_start", threshold=body.threshold, dry_run=body.dry_run)
     try:
         store = get_graph_store()
         if body.dry_run:
             entities = store.query_low_confidence_entities(
                 threshold=body.threshold, limit=body.limit,
             )
+            logger.info("graph_cleanup_low_confidence_dry_run", would_delete=len(entities))
             return {
                 "dry_run": True,
                 "threshold": body.threshold,
@@ -508,8 +548,10 @@ async def graph_maintenance_cleanup_low_confidence(
             threshold=body.threshold, limit=body.limit,
         )
         result["threshold"] = body.threshold
+        logger.info("graph_cleanup_low_confidence_done", deleted=result.get("deleted", 0))
         return result
     except Exception as e:
+        logger.error("graph_cleanup_low_confidence_failed", error=str(e))
         raise HTTPException(500, f"清理低置信度实体失败: {e}")
 
 
@@ -524,17 +566,22 @@ async def graph_maintenance_cleanup_orphans(
 
     dry_run=True 仅返回将删除的实体列表，不实际删除。
     """
+    logger.info("graph_cleanup_orphans_start", dry_run=body.dry_run)
     try:
         store = get_graph_store()
         if body.dry_run:
             entities = store.query_orphan_entities(limit=body.limit)
+            logger.info("graph_cleanup_orphans_dry_run", would_delete=len(entities))
             return {
                 "dry_run": True,
                 "would_delete": [e["name"] for e in entities if e.get("name")],
                 "count": len(entities),
             }
-        return store.cleanup_orphan_entities(limit=body.limit)
+        result = store.cleanup_orphan_entities(limit=body.limit)
+        logger.info("graph_cleanup_orphans_done", deleted=result.get("deleted", 0))
+        return result
     except Exception as e:
+        logger.error("graph_cleanup_orphans_failed", error=str(e))
         raise HTTPException(500, f"清理孤立实体失败: {e}")
 
 
@@ -547,8 +594,12 @@ async def graph_delete_by_source(doc_id: str) -> dict:
 
     用于：删除文档后清理残留图谱数据。
     """
+    logger.info("graph_delete_by_source_start", doc_id=doc_id)
     try:
         store = get_graph_store()
-        return store.delete_by_source(doc_id)
+        result = store.delete_by_source(doc_id)
+        logger.info("graph_delete_by_source_done", doc_id=doc_id)
+        return result
     except Exception as e:
+        logger.error("graph_delete_by_source_failed", doc_id=doc_id, error=str(e))
         raise HTTPException(500, f"按源文档删除失败: {e}")
