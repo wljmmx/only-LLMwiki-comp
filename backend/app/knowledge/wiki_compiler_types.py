@@ -52,6 +52,8 @@ class ProgressEventType(str, Enum):
     STEP_DONE = "step_done"
     PAGE_START = "page_start"
     PAGE_DONE = "page_done"
+    PAGE_CHUNK = "page_chunk"      # LLM 流式输出 chunk
+    PAGE_COMPLETE = "page_complete"  # 页面完整内容（对比视图用）
     QUALITY_CHECK = "quality_check"
     CONFLICT_DETECTED = "conflict_detected"
     PROGRESS = "progress"  # 百分比进度

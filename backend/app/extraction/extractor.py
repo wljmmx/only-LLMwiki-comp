@@ -62,7 +62,13 @@ EXTRACTION_SYSTEM_PROMPT = """你是一个运维知识抽取专家。从给定�
 1. 每个实体必须给出 0-1 置信度，基于证据充分性
 2. 仅抽取文档中明确提到的实体，不要编造
 3. 关系必须同时有 from 和 to 的实体证据
-4. 如果文档没有可抽取的实体，返回空数组 []"""
+4. 如果文档没有可抽取的实体，返回空数组 []
+5. **实体名称必须由你基于章节内容总结生成简洁的标准术语**，禁止直接复制章节标题或原文中的装饰性文字
+6. **实体名称示例**：
+   - 章节标题 "子网掩码（这个很重要，划重点！！！）" → 实体名应为 "子网掩码"
+   - 章节标题 "Nginx 配置详解（必看！！！）" → 实体名应为 "Nginx 配置"
+   - 章节标题 "注意：MySQL 数据库性能优化（重要）" → 实体名应为 "MySQL 数据库性能优化"
+7. 实体名称应简洁、规范、无装饰性文字（不含感叹号、括号注释、强调标记等）""".strip()
 
 # 段落归类提示
 PARAGRAPH_CLASSIFY_PROMPT = """你是一个运维知识文档分析专家。请对以下文档段落进行智能归类和处理。
@@ -268,6 +274,11 @@ class KnowledgeExtractor:
                 compiled_result = self.compiled_extractor.extract_from_document(doc)
                 entities = compiled_result.entities or []
                 relations = compiled_result.relations or []
+                # LLM 清理 fallback 实体名 — 用 LLM 总结生成简洁规范的实体名
+                if entities:
+                    entities = await self._llm_clean_fallback_entity_names(
+                        entities, doc.title or ""
+                    )
             except Exception as e:  # noqa: BLE001
                 # fallback 自身失败不应中断 extract()
                 logger.error("extraction_fallback_failed", doc_id=doc.doc_id, error=str(e))
@@ -298,6 +309,11 @@ class KnowledgeExtractor:
                 compiled_result = self.compiled_extractor.extract_from_document(doc)
                 fallback_entities = compiled_result.entities or []
                 fallback_relations = compiled_result.relations or []
+                # LLM 清理 fallback 实体名
+                if fallback_entities:
+                    fallback_entities = await self._llm_clean_fallback_entity_names(
+                        fallback_entities, doc.title or ""
+                    )
                 # 合并 fallback 结果到 result（不覆盖原 entities 统计）
                 self._apply_gating(fallback_entities, fallback_relations, result)
             except Exception as e:  # noqa: BLE001
@@ -435,6 +451,86 @@ class KnowledgeExtractor:
             evidence_span=raw.get("evidence_span", ""),
             source_doc_id=doc_id,
         )
+
+    # Fallback 实体名 LLM 清理
+
+    _FALLBACK_CLEAN_PROMPT = """你是一个运维知识图谱的实体命名专家。请根据章节内容为每个实体生成简洁、规范的标准名称。
+
+## 规则
+1. 实体名称应为简洁的标准术语，不超过 15 个字符
+2. 必须去除所有装饰性文字：括号注释（如"重要"、"划重点"）、感叹号、强调标记
+3. 保留核心技术术语，不要改变实体含义
+4. 按 JSON 格式输出，只输出 JSON
+
+## 输出格式
+[{{"index": 0, "cleaned_name": "清理后的标准名称"}}]"""
+
+    async def _llm_clean_fallback_entity_names(
+        self, entities: list, doc_title: str = "",
+    ) -> list:
+        """对 fallback 路径提取的实体名进行 LLM 清理
+
+        Args:
+            entities: fallback 提取的实体列表（compiled_extractor.ExtractedEntity）
+            doc_title: 文档标题
+
+        Returns:
+            清理后的实体列表
+        """
+        if not entities:
+            return entities
+
+        # 构建 LLM 输入 — 传入原始名称和上下文
+        input_items = [
+            {
+                "index": i,
+                "original_name": e.name,
+                "evidence": (getattr(e, 'evidence_span', '') or '')[:100],
+                "type": getattr(e, 'entity_type', 'Concept'),
+            }
+            for i, e in enumerate(entities[:30])
+        ]
+
+        user_prompt = f"""## 文档标题
+{doc_title or '未指定'}
+
+## 实体列表
+{json.dumps(input_items, ensure_ascii=False, indent=2)}
+
+## 要求
+为每个实体生成简洁规范的标准名称。
+示例：原始名"子网掩码（这个很重要，划重点！！！）" → 清理为"子网掩码""
+
+请直接输出 JSON 数组。"""
+
+        call_timeout = getattr(self.settings, 'llm_call_timeout', 60)
+        try:
+            resp = await asyncio.wait_for(
+                self.llm.chat(
+                    messages=[
+                        ChatMessage(role="system", content=self._FALLBACK_CLEAN_PROMPT),
+                        ChatMessage(role="user", content=user_prompt),
+                    ],
+                    temperature=0.1,
+                    max_tokens=2000,
+                ),
+                timeout=call_timeout,
+            )
+            data = self._parse_json(resp.text)
+            if not isinstance(data, list):
+                return entities
+
+            # 应用清理结果
+            for item in data:
+                idx = item.get("index", -1)
+                cleaned = item.get("cleaned_name", "")
+                if 0 <= idx < len(entities) and cleaned:
+                    entities[idx].name = cleaned
+
+            return entities
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning("fallback_entity_clean_failed", error=str(e), count=len(entities))
+            return entities
 
     def _parse_relation(self, raw: dict, doc_id: str) -> ExtractedRelation:
         return ExtractedRelation(

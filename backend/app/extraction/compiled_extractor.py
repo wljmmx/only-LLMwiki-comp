@@ -97,7 +97,8 @@ class CompiledKnowledgeExtractor:
         """从 ParsedDocument 提取实体和关系（兜底方案）
 
         当 LLM 抽取失败时，从文档标题树和元素中提取实体。
-        不依赖正则，基于文档结构（标题层级、代码块、表格）。
+        不做正则清理 — 实体名由 LLM 在上游抽取环节生成。
+        此处仅作结构性兜底：从标题/代码块中提取骨架实体。
 
         Args:
             doc: ParsedDocument 实例
@@ -108,7 +109,7 @@ class CompiledKnowledgeExtractor:
         entities: list[ExtractedEntity] = []
         relations: list[ExtractedRelation] = []
 
-        # 从标题树提取实体（置信度 ≥ 0.65，确保通过 review 门控）
+        # 从标题树提取实体（直接用标题文本，不做正则清理）
         heading_tree = getattr(doc, 'heading_tree', []) or []
         for node_dict in heading_tree if isinstance(heading_tree, list) else []:
             title = node_dict.get('title', '') if isinstance(node_dict, dict) else getattr(node_dict, 'title', '')

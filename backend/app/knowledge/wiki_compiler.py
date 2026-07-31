@@ -248,6 +248,61 @@ class WikiCompiler:
         # 抛出带详细信息的异常，让调用方能捕获并上报
         raise RuntimeError(f"LLM 调用失败（重试 {_MAX_LLM_RETRIES} 次）：{last_error}")
 
+    async def _llm_complete_stream(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        temperature: float = 0.3,
+        on_chunk: Any | None = None,
+    ) -> str:
+        """流式 LLM 调用 — 通过 stream() 方法实时推送 chunk
+
+        Args:
+            prompt: 用户 prompt
+            system: system message
+            temperature: 温度
+            on_chunk: chunk 回调 (chunk_text: str) -> None
+
+        Returns:
+            完整的 LLM 响应文本
+        """
+        messages: list[ChatMessage] = []
+        if system:
+            messages.append(ChatMessage(role="system", content=system))
+        messages.append(ChatMessage(role="user", content=prompt))
+
+        controller = get_llm_concurrency_controller()
+        last_error = ""
+        for attempt in range(1, _MAX_LLM_RETRIES + 1):
+            try:
+                async with controller.acquire(
+                    stage="section_compile",
+                    priority=TaskPriority.MEDIUM,
+                ):
+                    full_text = ""
+                    async for chunk in self.llm.stream(
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=self.settings.llm_max_tokens,
+                    ):
+                        if chunk:
+                            full_text += chunk
+                            if on_chunk:
+                                try:
+                                    on_chunk(chunk)
+                                except Exception:
+                                    pass
+                return full_text
+            except Exception as e:
+                last_error = str(e)
+                if attempt < _MAX_LLM_RETRIES:
+                    delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                    await asyncio.sleep(delay)
+                else:
+                    raise RuntimeError(f"LLM 流式调用失败（重试 {_MAX_LLM_RETRIES} 次）：{last_error}")
+        return ""
+
     # ── S2: 页面质量校验 ──
 
     @staticmethod
@@ -840,11 +895,29 @@ class WikiCompiler:
                         # L1: 断点恢复 — 跳过已处理的实体
                         if task_state is not None and idx <= task_state.get("last_entity_idx", -1):
                             return (idx, entity, None, None)
+
+                        # 为每个实体创建流式 chunk 回调
+                        entity_chunk_buffer = []
+
+                        def _make_chunk_cb(ent_name: str):
+                            def _cb(chunk_text: str) -> None:
+                                entity_chunk_buffer.append(chunk_text)
+                                _emit(ProgressEventType.PAGE_CHUNK, {
+                                    "entity": ent_name,
+                                    "chunk": chunk_text,
+                                    "buffer_length": sum(len(c) for c in entity_chunk_buffer),
+                                })
+                            return _cb
+
+                        chunk_cb = _make_chunk_cb(entity.name)
+
                         try:
                             _emit(ProgressEventType.PAGE_START, {
                                 "entity": entity.name,
                                 "index": idx + 1,
                                 "total": total_entities,
+                                "raw_content": (entity.evidence_span or "")[:500],
+                                "entity_type": entity.entity_type,
                             })
                             _emit(ProgressEventType.PROGRESS, {
                                 "percent": round((idx + 1) / max(total_entities, 1) * 100),
@@ -854,6 +927,7 @@ class WikiCompiler:
                             page = await self._compile_entity_page(
                                 entity, source_entry, para_labels=doc_labels,
                                 relations_map=relations_map,
+                                on_chunk=chunk_cb,
                             )
                             return (idx, entity, page, None)
                         except Exception as e:
@@ -947,6 +1021,16 @@ class WikiCompiler:
                         if page.llm_error:
                             page_done_data["llm_error"] = page.llm_error
                         _emit(ProgressEventType.PAGE_DONE, page_done_data)
+                        # 发射 PAGE_COMPLETE 事件，包含原文和编译后内容供对比视图
+                        _emit(ProgressEventType.PAGE_COMPLETE, {
+                            "entity": entity.name,
+                            "slug": page.slug,
+                            "raw_content": (entity.evidence_span or "")[:2000],
+                            "compiled_content": page.body_md[:3000],
+                            "compiled_chars": len(page.body_md),
+                            "review_status": page.review_status,
+                            "llm_error": page.llm_error,
+                        })
                         # M2: 冲突检测 — 合并后检测语义冲突
                         if outcome == "updated":
                             try:
@@ -1464,13 +1548,15 @@ H{level}
         source_entry: dict,
         para_labels: list[str] | None = None,
         relations_map: dict[str, str] | None = None,
+        on_chunk: Any | None = None,
     ) -> WikiPage | None:
-        """把单个实体编译为 wiki 页面
+        """把单个实体编译为 wiki 页面（支持流式 chunk 回调）
 
         - 用 LLM 生成正文（按 AGENTS.md 骨架）
         - LLM 不可用时退化为模板化正文（基于 evidence_span）
         - S1: 段落分类标签作为页面标签
         - relations_map: P1 (K4) 预取的关系映射
+        - on_chunk: 可选流式回调 (chunk_text: str) -> None
         """
         slug = make_slug(entity.entity_type, entity.name)
         page_type = ENTITY_TYPE_TO_PAGE_TYPE.get(entity.entity_type, "concept")
@@ -1492,10 +1578,14 @@ H{level}
         else:
             tags = tags[:5]
 
-        # 调 LLM 写正文 —— 捕获错误详情供前端展示
+        # 调 LLM 写正文 —— 带流式回调
         llm_error: str | None = None
         try:
-            body_md = await self._llm_write_body(entity, page_type, relations_map=relations_map)
+            body_md = await self._llm_write_body(
+                entity, page_type,
+                relations_map=relations_map,
+                on_chunk=on_chunk,
+            )
         except Exception as e:
             llm_error = str(e)
             logger.warning("wiki_compiler_llm_write_failed", entity=entity.name, error=str(e))
@@ -2112,13 +2202,20 @@ H{level}
 
         return "\n".join(lines)
 
-    async def _llm_write_body(self, entity: ExtractedEntity, page_type: str, relations_map: dict[str, str] | None = None) -> str:
-        """让 LLM 按 AGENTS.md 骨架写页面正文
+    async def _llm_write_body(
+        self,
+        entity: ExtractedEntity,
+        page_type: str,
+        relations_map: dict[str, str] | None = None,
+        on_chunk: Any | None = None,
+    ) -> str:
+        """让 LLM 按 AGENTS.md 骨架写页面正文（支持流式 chunk 回调）
 
         Args:
             entity: 抽取实体
             page_type: wiki 页面类型
             relations_map: P1 (K4) 预取的关系映射
+            on_chunk: 可选回调，每次收到 LLM chunk 时调用 (chunk_text: str) -> None
 
         返回不含 frontmatter 的 Markdown 正文。
         """
@@ -2130,7 +2227,13 @@ H{level}
                 record_business_metric("llm_cache_hits_total", cache_type="write_body")
             except Exception:  # noqa: BLE001
                 pass
-            return self._llm_cache[cache_key]
+            result = self._llm_cache[cache_key]
+            if on_chunk:
+                try:
+                    on_chunk(result)
+                except Exception:
+                    pass
+            return result
 
         logger.info("llm_cache_miss", method="write_body", entity=entity.name, type=entity.entity_type)
         system = (
@@ -2140,7 +2243,13 @@ H{level}
             "只输出 Markdown 正文，不要 YAML frontmatter，不要 ```md 包裹。"
         )
         prompt = self._build_writing_prompt(entity, page_type, relations_map=relations_map)
-        text = await self._llm_complete(prompt, system=system, temperature=0.2)
+
+        # 流式输出模式
+        if on_chunk:
+            text = await self._llm_complete_stream(prompt, system=system, temperature=0.2, on_chunk=on_chunk)
+        else:
+            text = await self._llm_complete(prompt, system=system, temperature=0.2)
+
         # 防御：剥离可能误加的代码块围栏
         text = self._strip_codefence(text)
         result = text.strip()

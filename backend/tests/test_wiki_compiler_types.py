@@ -164,6 +164,8 @@ class TestProgressEventType:
         assert ProgressEventType.STEP_DONE == "step_done"
         assert ProgressEventType.PAGE_START == "page_start"
         assert ProgressEventType.PAGE_DONE == "page_done"
+        assert ProgressEventType.PAGE_CHUNK == "page_chunk"
+        assert ProgressEventType.PAGE_COMPLETE == "page_complete"
         assert ProgressEventType.QUALITY_CHECK == "quality_check"
         assert ProgressEventType.CONFLICT_DETECTED == "conflict_detected"
         assert ProgressEventType.PROGRESS == "progress"
@@ -185,7 +187,7 @@ class TestProgressEventType:
     def test_enum_membership(self):
         """验证成员数量"""
         members = list(ProgressEventType)
-        assert len(members) == 10
+        assert len(members) == 12
 
 
 # ────────── PipelineTrace / SectionTrace ──────────

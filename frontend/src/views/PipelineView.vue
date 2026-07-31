@@ -229,7 +229,13 @@ interface EntityProgressItem {
   error?: string
   started_at?: number
   done_at?: number
-  extra?: Record<string, any>  // 扩展字段（confidence, section, entity_type 等）
+  extra?: Record<string, any>
+  // 流式编译输出
+  compiled_content?: string      // LLM 编译后的内容（累积）
+  raw_content?: string           // 原始内容（对比用）
+  compiled_chars?: number        // 编译后字符数
+  review_status?: string         // 审查状态
+  showCompare?: boolean          // 是否显示对比面板
 }
 
 // 知识抽取环节的实体进度（step 2）
@@ -561,15 +567,20 @@ function startCompile() {
 
         const itemName = data.entity || data.section
         if (targetList && itemName) {
-          const item = targetList.find(e => e.name === itemName)
-          if (item) {
-            item.status = data.status === 'error' ? 'error'
-              : data.status === 'skipped' ? 'skipped'
-              : 'done'
-            item.done_at = Date.now()
-            if (data.error || data.llm_error) {
-              item.error = data.error || data.llm_error
+          const i = targetList.findIndex(e => e.name === itemName)
+          if (i >= 0) {
+            // 用 splice 替换整个对象，确保 Vue 响应性触发视图更新
+            const updated: EntityProgressItem = {
+              ...targetList[i],
+              status: data.status === 'error' ? 'error'
+                : data.status === 'skipped' ? 'skipped'
+                : 'done',
+              done_at: Date.now(),
             }
+            if (data.error || data.llm_error) {
+              updated.error = data.error || data.llm_error
+            }
+            targetList.splice(i, 1, updated)
           }
         }
 
@@ -600,6 +611,35 @@ function startCompile() {
         if (typeof percent === 'number' && percent > 0 && runningIdx >= 0) {
           // 进度公式：步骤起始百分比 + 步骤内进度
           compileProgress.value = ((runningIdx * 100 + percent) / 6)
+        }
+      } else if (evt.type === 'page_chunk') {
+        // LLM 流式输出 chunk — 累积到对应实体
+        const data = evt.data
+        const entityName = data.entity as string
+        const chunk = data.chunk as string
+        if (entityName && chunk) {
+          const item = compileEntities.value.find(e => e.name === entityName)
+          if (item) {
+            item.compiled_content = (item.compiled_content || '') + chunk
+          }
+        }
+      } else if (evt.type === 'page_complete') {
+        // 页面完整内容 — 用于对比视图
+        const data = evt.data
+        const entityName = data.entity as string
+        if (entityName) {
+          const i = compileEntities.value.findIndex(e => e.name === entityName)
+          if (i >= 0) {
+            const existing = compileEntities.value[i]
+            const updated: EntityProgressItem = {
+              ...existing,
+              compiled_content: data.compiled_content || existing.compiled_content || '',
+              raw_content: data.raw_content || '',
+              compiled_chars: data.compiled_chars || 0,
+              review_status: data.review_status,
+            }
+            compileEntities.value.splice(i, 1, updated)
+          }
         }
       } else if (evt.type === 'section_start') {
         // 添加新章节节点
@@ -1026,7 +1066,7 @@ watch(sourceTab, (val) => {
   <div v-if="phase === 'compiling' || phase === 'done'">
     <NCard title="编译进度" size="small" style="margin-bottom: 16px">
       <NProgress
-        :percentage="compileProgress"
+        :percentage="Math.round(compileProgress * 100) / 100"
         :indicator-placement="'inside'"
         :height="24"
         :border-radius="4"
@@ -1194,6 +1234,37 @@ watch(sourceTab, (val) => {
                       <span v-if="item.error" class="entity-error-text danger-text" :title="item.error">
                         {{ item.error.substring(0, 60) }}{{ item.error.length > 60 ? '...' : '' }}
                       </span>
+                      <!-- 对比视图展开按钮（LLM 编译环节，有内容时） -->
+                      <NButton
+                        v-if="step.name === 'compile' && (item.raw_content || item.compiled_content)"
+                        size="tiny"
+                        quaternary
+                        type="primary"
+                        @click="item.showCompare = !item.showCompare"
+                      >
+                        {{ item.showCompare ? '收起' : '对比' }}
+                      </NButton>
+                    </div>
+                    <!-- 对比视图：原文 vs LLM 输出 -->
+                    <div
+                      v-if="item.showCompare && step.name === 'compile'"
+                      class="compare-panel"
+                    >
+                      <div class="compare-column">
+                        <div class="compare-header">📋 原始内容</div>
+                        <div class="compare-body">{{ item.raw_content || '无原始内容' }}</div>
+                      </div>
+                      <div class="compare-arrow">→</div>
+                      <div class="compare-column">
+                        <div class="compare-header">
+                          ✨ LLM 编译输出
+                          <span v-if="item.status === 'running'" class="streaming-indicator">● 流式输出中</span>
+                        </div>
+                        <div
+                          class="compare-body compiled-body"
+                          :class="{ 'is-streaming': item.status === 'running' }"
+                        >{{ item.compiled_content || '等待 LLM 输出...' }}</div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1807,5 +1878,72 @@ watch(sourceTab, (val) => {
 }
 @keyframes entity-spin {
   to { transform: rotate(360deg); }
+}
+
+/* ── 对比视图样式 ── */
+.compare-panel {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 4px 0;
+  padding: 8px;
+  background: var(--opskg-color-embedded, #f8f9fa);
+  border-radius: 6px;
+  border: 1px solid var(--opskg-border-color);
+}
+
+.compare-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.compare-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--opskg-color-text-3, #999);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.compare-body {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--opskg-color-text-2, #666);
+  background: var(--opskg-color, #fff);
+  border: 1px solid var(--opskg-border-color);
+  border-radius: 4px;
+  padding: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.compare-body.compiled-body.is-streaming {
+  border-color: var(--opskg-color-primary, #18a058);
+  background: linear-gradient(180deg, #f0fff4 0%, #ffffff 30px);
+}
+
+.streaming-indicator {
+  font-size: 10px;
+  color: var(--opskg-color-primary, #18a058);
+  animation: stream-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes stream-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+.compare-arrow {
+  display: flex;
+  align-items: center;
+  font-size: 16px;
+  color: var(--opskg-color-text-3, #999);
+  padding: 0 4px;
+  flex-shrink: 0;
 }
 </style>
