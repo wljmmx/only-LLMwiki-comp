@@ -57,7 +57,7 @@ services:
       # LLM 配置
       - LLM_BACKEND=${LLM_BACKEND:-openai_compat}
       - LLM_MODEL=${LLM_MODEL:-deepseek-chat}
-      - LLM_TIMEOUT=${LLM_TIMEOUT:-120}
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-600}
       - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-4096}
       - OPENAI_COMPAT_BASE_URL=${OPENAI_COMPAT_BASE_URL:-https://api.deepseek.com/v1}
       - OPENAI_COMPAT_API_KEY=${OPENAI_COMPAT_API_KEY:-}
