@@ -222,22 +222,34 @@ const compileSteps = ref<PipelineStep[]>([
 // 章节级节点列表（独立展示每个章节的处理状态）
 const sectionNodes = ref<SectionNode[]>([])
 
-// ── 实体编译实时进度（LLM 编译 Wiki 环节）──
-interface EntityCompileItem {
-  entity: string       // 实体名/slug
+// ── 实体进度追踪（按步骤分离，避免错位）──
+interface EntityProgressItem {
+  name: string
   status: 'pending' | 'running' | 'done' | 'error' | 'skipped'
   error?: string
-  started_at?: number  // Date.now()
-  done_at?: number     // Date.now()
+  started_at?: number
+  done_at?: number
+  extra?: Record<string, any>  // 扩展字段（confidence, section, entity_type 等）
 }
-const compileEntities = ref<EntityCompileItem[]>([])
-const compileStepStartTime = ref<number>(0)  // 当前步骤开始时间
+
+// 知识抽取环节的实体进度（step 2）
+const extractEntities = ref<EntityProgressItem[]>([])
+// LLM 编译 Wiki 环节的实体进度（step 3）
+const compileEntities = ref<EntityProgressItem[]>([])
+const compileStepStartTime = ref<number>(0)
 
 // 当前正在编译的实体名（用于醒目标识）
 const currentCompileEntity = computed(() => {
   const running = compileEntities.value.find(e => e.status === 'running')
-  return running?.entity ?? ''
+  return running?.name ?? ''
 })
+
+// 根据步骤名获取对应的实体进度列表
+function getStepEntityList(step: typeof compileSteps.value[0]): EntityProgressItem[] {
+  if (step.name === 'extract') return extractEntities.value
+  if (step.name === 'compile') return compileEntities.value
+  return []
+}
 
 const compileResult = ref<{
   pages_created?: number
@@ -357,9 +369,12 @@ function startCompile() {
         if (step in stepIndex) {
           compileSteps.value[idx].status = 'running'
           compileProgress.value = (idx / 6) * 100
-          // 步骤开始时记录时间并清空子状态
           compileStepStartTime.value = Date.now()
-          if (step === 'compile') {
+          // 步骤开始时清空对应的实体进度列表
+          if (step === 'extract') {
+            extractEntities.value = []
+            compileSteps.value[idx].details = '正在连接 LLM 服务，构建抽取上下文...'
+          } else if (step === 'compile') {
             compileEntities.value = []
             compileSteps.value[idx].details = '正在连接 LLM 服务，准备编译 Wiki 页面...'
           }
@@ -466,90 +481,107 @@ function startCompile() {
         }
       } else if (evt.type === 'page_start') {
         const data = evt.data
-        // 确定当前运行中的步骤索引
         const runningIdx = compileSteps.value.findIndex(s => s.status === 'running')
-        if (runningIdx >= 0) {
-          compileSteps.value[runningIdx].subProgress = {
-            current: data.index ?? 0,
-            total: data.total ?? 0,
-            currentEntity: data.entity ?? '',
-          }
-          // 更新步骤详情文本
-          const stepName = compileSteps.value[runningIdx].name
-          if (stepName === 'compile') {
-            compileSteps.value[runningIdx].details = `正在编译：${data.entity ?? '...'} (${(data.index ?? 0) + 1}/${data.total ?? '?'})`
-          }
+        if (runningIdx < 0) return
+        const runningStep = compileSteps.value[runningIdx]
+        const stepName = runningStep.name
+
+        // 更新子进度
+        runningStep.subProgress = {
+          current: data.index ?? 0,
+          total: data.total ?? 0,
+          currentEntity: data.entity ?? data.section ?? '',
         }
-        // ── 实体编译实时追踪 ──
-        const entity = data.entity as string | undefined
-        if (entity && (data.index ?? 0) === 0 && compileEntities.value.length === 0) {
-          // 第一次 page_start：预填充所有实体（如果已知 total）
-          if (data.total) {
-            // 预填充占位，后续 page_start 会更新
-          }
+
+        // 步骤详情文本
+        if (stepName === 'extract') {
+          const section = data.section ? `章节「${data.section}」` : ''
+          const entity = data.entity ? `实体 ${data.entity}` : '抽取中'
+          runningStep.details = `正在${section}抽取：${entity} (${(data.index ?? 0) + 1}/${data.total ?? '?'})`
+        } else if (stepName === 'compile') {
+          runningStep.details = `正在编译：${data.entity ?? '...'} (${(data.index ?? 0) + 1}/${data.total ?? '?'})`
         }
-        if (entity) {
-          // 更新或添加实体项
-          const existing = compileEntities.value.find(e => e.entity === entity)
+
+        // ── 按步骤路由实体进度到对应列表 ──
+        const targetList: EntityProgressItem[] | null =
+          stepName === 'extract' ? extractEntities.value :
+          stepName === 'compile' ? compileEntities.value : null
+
+        if (targetList && (data.entity || data.section)) {
+          const itemName = data.entity || data.section
+          const existing = targetList.find(e => e.name === itemName)
           if (existing) {
             existing.status = 'running'
             existing.started_at = Date.now()
+            existing.extra = { confidence: data.confidence, entity_type: data.entity_type, section: data.section }
           } else {
-            compileEntities.value.push({
-              entity,
+            targetList.push({
+              name: itemName,
               status: 'running',
               started_at: Date.now(),
+              extra: { confidence: data.confidence, entity_type: data.entity_type, section: data.section },
             })
           }
         }
       } else if (evt.type === 'page_done') {
         const data = evt.data
         const runningIdx = compileSteps.value.findIndex(s => s.status === 'running')
-        if (runningIdx >= 0) {
-          const sp = compileSteps.value[runningIdx].subProgress
-          if (sp) {
-            sp.current = data.index ?? sp.current
-            // 显示状态信息
-            if (data.status === 'error') {
-              sp.currentEntity = `❌ ${data.entity} 失败：${data.error?.substring(0, 100) || '未知错误'}`
-            } else if (data.status === 'skipped') {
-              sp.currentEntity = `⏭ ${data.entity} 跳过`
-            } else if (data.llm_error) {
-              sp.currentEntity = `⚠️ ${data.entity} 完成（LLM 警告：${data.llm_error.substring(0, 80)}）`
-            } else {
-              sp.currentEntity = `✅ ${data.entity} 完成`
+        if (runningIdx < 0) return
+        const runningStep = compileSteps.value[runningIdx]
+        const stepName = runningStep.name
+
+        const sp = runningStep.subProgress
+        if (sp) {
+          sp.current = data.index ?? sp.current
+          if (data.status === 'error') {
+            sp.currentEntity = `❌ ${data.entity || data.section} 失败：${data.error?.substring(0, 100) || '未知错误'}`
+          } else if (data.status === 'skipped') {
+            sp.currentEntity = `⏭ ${data.entity || data.section} 跳过`
+          } else if (data.llm_error) {
+            sp.currentEntity = `⚠️ ${data.entity || data.section} 完成（LLM 警告：${data.llm_error.substring(0, 80)}）`
+          } else {
+            sp.currentEntity = `✅ ${data.entity || data.section} 完成`
+          }
+        }
+
+        // 收集错误
+        if (data.status === 'error' || data.llm_error) {
+          if (!runningStep.errors) runningStep.errors = []
+          runningStep.errors.push({
+            entity: data.entity || data.section,
+            error: data.error || data.llm_error,
+            status: data.status || 'llm_warning',
+          })
+        }
+
+        // ── 按步骤路由更新 ──
+        const targetList: EntityProgressItem[] | null =
+          stepName === 'extract' ? extractEntities.value :
+          stepName === 'compile' ? compileEntities.value : null
+
+        const itemName = data.entity || data.section
+        if (targetList && itemName) {
+          const item = targetList.find(e => e.name === itemName)
+          if (item) {
+            item.status = data.status === 'error' ? 'error'
+              : data.status === 'skipped' ? 'skipped'
+              : 'done'
+            item.done_at = Date.now()
+            if (data.error || data.llm_error) {
+              item.error = data.error || data.llm_error
             }
           }
-          // 收集错误到步骤级别
-          if (data.status === 'error' || data.llm_error) {
-            const step = compileSteps.value[runningIdx]
-            if (!step.errors) step.errors = []
-            step.errors.push({
-              entity: data.entity,
-              error: data.error || data.llm_error,
-              status: data.status || 'llm_warning',
-            })
-          }
-          // ── 更新实体编译列表 ──
-          const entity = data.entity as string
-          if (entity) {
-            const item = compileEntities.value.find(e => e.entity === entity)
-            if (item) {
-              item.status = data.status === 'error' ? 'error'
-                : data.status === 'skipped' ? 'skipped'
-                : 'done'
-              item.done_at = Date.now()
-              if (data.error || data.llm_error) {
-                item.error = data.error || data.llm_error
-              }
-            }
-          }
-          // 更新步骤详情
-          if (compileSteps.value[runningIdx].name === 'compile') {
-            const done = compileEntities.value.filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length
-            const total = compileEntities.value.length
-            compileSteps.value[runningIdx].details = `正在编译：${done}/${total} 个实体完成`
-          }
+        }
+
+        // 步骤详情更新
+        if (stepName === 'compile' && targetList) {
+          const done = targetList.filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length
+          const total = targetList.length
+          runningStep.details = `正在编译：${done}/${total} 个实体完成`
+        } else if (stepName === 'extract' && targetList) {
+          const done = targetList.filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length
+          const total = targetList.length
+          runningStep.details = `抽取进度：${done}/${total} 个实体完成`
         }
       } else if (evt.type === 'progress') {
         const data = evt.data
@@ -766,6 +798,7 @@ function resetAll() {
   compileResult.value = null
   traceData.value = null
   sectionNodes.value = []
+  extractEntities.value = []
   compileEntities.value = []
   compileStepStartTime.value = 0
   resetSteps()
@@ -1089,28 +1122,28 @@ watch(sourceTab, (val) => {
                 </span>
               </template>
 
-              <!-- ── LLM 编译 Wiki：实体编译实时进度卡片 ── -->
-              <template v-if="step.name === 'compile' && compileEntities.length > 0">
+              <!-- ── 实体/章节进度卡片（知识抽取 + LLM 编译 Wiki 通用） ── -->
+              <template v-if="(step.name === 'extract' && extractEntities.length > 0) || (step.name === 'compile' && compileEntities.length > 0)">
                 <div class="compile-entities-panel">
                   <!-- 进度条 -->
                   <div class="compile-entities-progress">
                     <NProgress
                       :percentage="Math.round(
-                        (compileEntities.filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length / compileEntities.length) * 100
+                        (getStepEntityList(step).filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length / getStepEntityList(step).length) * 100
                       )"
                       :height="6"
                       :border-radius="3"
-                      :color="compileEntities.some(e => e.status === 'error') ? '#f0a020' : '#18a058'"
+                      :color="getStepEntityList(step).some(e => e.status === 'error') ? '#f0a020' : '#18a058'"
                     />
                     <span class="meta-text" style="font-size: 11px; margin-top: 2px">
-                      {{ compileEntities.filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length }}/{{ compileEntities.length }} 个实体
+                      {{ getStepEntityList(step).filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length }}/{{ getStepEntityList(step).length }} {{ step.name === 'extract' ? '个实体' : '个页面' }}
                     </span>
                   </div>
-                  <!-- 实体列表 -->
+                  <!-- 实体/章节列表 -->
                   <div class="compile-entities-list">
                     <div
-                      v-for="item in compileEntities"
-                      :key="item.entity"
+                      v-for="item in getStepEntityList(step)"
+                      :key="item.name"
                       class="compile-entity-item"
                       :class="{
                         'entity-running': item.status === 'running',
@@ -1137,8 +1170,19 @@ watch(sourceTab, (val) => {
                           <span class="entity-pending">&#9679;</span>
                         </template>
                       </span>
-                      <!-- 实体名 -->
-                      <span class="entity-name" :title="item.entity">{{ item.entity }}</span>
+                      <!-- 名称 -->
+                      <span class="entity-name" :title="item.name">{{ item.name }}</span>
+                      <!-- 章节标签（抽取环节） -->
+                      <span v-if="item.extra?.section && step.name === 'extract'" class="entity-section-tag">
+                        {{ item.extra.section }}
+                      </span>
+                      <!-- 附加信息（抽取环节：置信度 + 类型） -->
+                      <span v-if="item.extra?.confidence" class="entity-extra meta-text" :title="`置信度: ${item.extra.confidence.toFixed(2)}`">
+                        {{ item.extra.confidence.toFixed(2) }}
+                      </span>
+                      <span v-if="item.extra?.entity_type" class="entity-type-tag">
+                        {{ item.extra.entity_type }}
+                      </span>
                       <!-- 耗时 -->
                       <span v-if="item.status === 'done' && item.started_at && item.done_at" class="entity-time meta-text">
                         {{ ((item.done_at - item.started_at) / 1000).toFixed(1) }}s
@@ -1705,6 +1749,36 @@ watch(sourceTab, (val) => {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+.entity-extra {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--opskg-color-primary) 8%, transparent);
+}
+.entity-type-tag {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--opskg-color-primary) 12%, transparent);
+  color: var(--opskg-color-primary);
+  font-weight: 500;
+}
+.entity-section-tag {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--opskg-color-warning, #f0a020) 12%, transparent);
+  color: var(--opskg-color-warning, #f0a020);
+  font-weight: 400;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .entity-time {
   flex-shrink: 0;

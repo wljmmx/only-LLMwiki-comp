@@ -633,7 +633,6 @@ class WikiCompiler:
                     # 传递进度回调到 extract()，实现抽取过程中的实时进度
                     def _extract_progress(etype: str, data: dict) -> None:
                         try:
-                            # extract 内部的 progress 事件直接透传
                             if etype == "progress":
                                 _emit(ProgressEventType.PROGRESS, data)
                         except Exception:
@@ -641,23 +640,61 @@ class WikiCompiler:
 
                     extraction = await self.extractor.extract(doc, on_progress=_extract_progress)
                     total_entities = len(extraction.auto_accepted_entities) + len(extraction.review_entities)
-                    # 发送抽取进度事件
+
+                    # ── 按章节分组实体，发送 per-section 进度事件 ──
+                    # 收集所有实体并建立"章节→实体"映射
+                    all_entities = list(extraction.auto_accepted_entities) + list(extraction.review_entities)
+                    section_map: dict[str, list[ExtractedEntity]] = {}
+                    # 从文档的 heading_tree 提取章节名
+                    section_names: list[str] = []
+                    for node in doc.heading_tree:
+                        section_names.append(node.title)
+                    # 也收集元素中出现的 section
+                    for el in doc.elements:
+                        if el.section and el.section not in section_names:
+                            section_names.append(el.section)
+                    if not section_names:
+                        section_names = ["(全文)"]
+
+                    # 基于 evidence_span 将实体映射到章节
+                    for ent in all_entities:
+                        matched_section = self._match_entity_to_section(ent, doc, section_names)
+                        if matched_section not in section_map:
+                            section_map[matched_section] = []
+                        section_map[matched_section].append(ent)
+
+                    # 为每个实体发送 PAGE_START（带章节信息）+ PAGE_DONE
+                    sec_idx = 0
+                    for sec_name in section_names:
+                        if sec_name not in section_map:
+                            continue
+                        sec_entities = section_map[sec_name]
+                        sec_idx += 1
+                        for ent in sec_entities:
+                            _emit(ProgressEventType.PAGE_START, {
+                                "entity": ent.name,
+                                "section": sec_name,
+                                "index": sec_idx,
+                                "total": len(section_map),
+                                "confidence": ent.confidence,
+                                "entity_type": ent.entity_type,
+                            })
+                            _emit(ProgressEventType.PAGE_DONE, {
+                                "entity": ent.name,
+                                "section": sec_name,
+                                "index": sec_idx,
+                                "total": len(section_map),
+                                "status": "done",
+                                "confidence": ent.confidence,
+                                "entity_type": ent.entity_type,
+                            })
+
                     _emit(ProgressEventType.PROGRESS, {
                         "percent": 100,
                         "current": total_entities,
                         "total": total_entities,
                         "message": f"抽取完成：{total_entities} 个实体",
                     })
-                    # 为每个实体发送独立事件，供前端增量展示
-                    all_entities = list(extraction.auto_accepted_entities) + list(extraction.review_entities)
-                    for i, ent in enumerate(all_entities):
-                        _emit(ProgressEventType.PAGE_START, {
-                            "entity": ent.name,
-                            "index": i + 1,
-                            "total": total_entities,
-                            "confidence": ent.confidence,
-                            "entity_type": ent.entity_type,
-                        })
                 except Exception as e:
                     result.errors.append(f"抽取失败: {e}")
                     _emit(ProgressEventType.STEP_DONE, {"step": "extract", "error": str(e)})
@@ -2297,6 +2334,57 @@ H{level}
         sections.append("## 来源\n\n" + self._build_source_section(properties))
 
         return "\n\n".join(sections)
+
+    @staticmethod
+    def _match_entity_to_section(
+        ent: "ExtractedEntity",
+        doc: "ParsedDocument",
+        section_names: list[str],
+    ) -> str:
+        """将抽取的实体匹配到文档中的章节
+
+        策略：基于实体的 evidence_span 或 name 与章节内容进行模糊匹配。
+        如果无法匹配，归入第一个章节或"(未分类)"。
+        """
+        evidence = ent.evidence_span or ""
+        ent_name = ent.name or ""
+
+        # 收集每个章节的内容摘要（用于匹配）
+        section_content: dict[str, str] = {}
+        for node in doc.heading_tree:
+            section_content[node.title] = "\n".join(
+                e.content for e in node.elements if e.content
+            )
+        for el in doc.elements:
+            if el.section:
+                content = section_content.get(el.section, "")
+                if el.content:
+                    section_content[el.section] = content + "\n" + el.content
+
+        best_section = ""
+        best_score = 0
+
+        for sec_name in section_names:
+            sec_content = section_content.get(sec_name, "")
+            if not sec_content:
+                continue
+            # 评分：evidence_span 在章节内容中的匹配度
+            score = 0
+            if evidence and evidence in sec_content:
+                score += len(evidence)  # 精确匹配给高分
+            if ent_name and ent_name in sec_content:
+                score += len(ent_name) * 0.5  # 实体名匹配给中等分
+            # 子章节名匹配
+            if sec_name in evidence or sec_name in ent_name:
+                score += len(sec_name) * 0.3
+
+            if score > best_score:
+                best_score = score
+                best_section = sec_name
+
+        if best_section:
+            return best_section
+        return section_names[0] if section_names else "(未分类)"
 
     def _extract_overview(
         self, name: str, content: str, classifications: list[dict] | None = None
