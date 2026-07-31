@@ -128,6 +128,7 @@ class CompiledKnowledgeExtractor:
         # 从元素提取关键词实体
         elements = getattr(doc, 'elements', []) or []
         code_blocks = []
+        table_headers: set[str] = set()  # 去重：同一表格只提取一次
         for elem in elements:
             # 兼容 ParsedElement 对象和 dict
             elem_dict = elem if isinstance(elem, dict) else {
@@ -142,15 +143,19 @@ class CompiledKnowledgeExtractor:
             if etype == 'code':
                 code_blocks.append(content)
             elif etype == 'table':
-                entities.append(ExtractedEntity(
-                    name=f'配置表: {content[:50]}',
-                    slug=self._slugify(f'table-{content[:30]}'),
-                    entity_type='Parameter',
-                    definition='文档中的配置/参数表格',
-                    source_section_id='',
-                    source_doc_id=getattr(doc, 'doc_id', ''),
-                    confidence=0.65,
-                ))
+                # 提取表格的表头行作为唯一实体（去重），避免每行生成一个重复实体
+                header = self._extract_table_header(content)
+                if header and header not in table_headers:
+                    table_headers.add(header)
+                    entities.append(ExtractedEntity(
+                        name=header,
+                        slug=self._slugify(f'table-{header[:30]}'),
+                        entity_type='Parameter',
+                        definition=f'配置参数表: {header}',
+                        source_section_id='',
+                        source_doc_id=getattr(doc, 'doc_id', ''),
+                        confidence=0.65,
+                    ))
 
         # 从代码块提取命令
         for code in code_blocks:
@@ -401,6 +406,34 @@ JSON 数组:
             ]
         except Exception:
             return self._simple_resolve(new_entities, [])
+
+    @staticmethod
+    def _extract_table_header(content: str) -> str:
+        """从表格内容中提取表头行作为实体名
+
+        Markdown 表格格式:
+        | 任务 ID | 任务内容 | 关键点 | 依赖 | 工期 |
+        |---|---|---|---|---|
+        | 1.1 | ... | ... | ... | ... |
+
+        提取第一行（表头）作为表格标识，去重合并。
+        """
+        content = content.strip()
+        if not content.startswith('|'):
+            return content[:50]  # 非标准表格，截断取前 50 字符
+
+        # 按 | 分割，取表头行（第一个非分隔符行）
+        rows = [r.strip() for r in content.split('\n') if r.strip()]
+        for row in rows:
+            # 跳过分隔行（如 |---|---|---|）
+            cleaned = row.strip('|').strip()
+            if all(c in '-:| ' for c in cleaned):
+                continue
+            # 提取表头列名
+            headers = [h.strip() for h in cleaned.split('|') if h.strip()]
+            if headers:
+                return ' | '.join(headers[:5])  # 最多取 5 列
+        return content[:50]
 
     @staticmethod
     def _slugify(name: str) -> str:
