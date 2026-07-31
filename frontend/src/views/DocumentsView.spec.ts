@@ -60,7 +60,7 @@ describe('DocumentsView.vue', () => {
   }
 
   it('初始状态：onMounted 触发后 loading true、documents 空、分页初始值', () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     const wrapper = mountView()
     const vm = wrapper.vm as any
     // onMounted 已触发 fetchDocuments，loading 为 true（异步加载中）
@@ -73,8 +73,7 @@ describe('DocumentsView.vue', () => {
 
   it('onMounted 调用 fetchDocuments', async () => {
     ;(listDocuments as any).mockResolvedValue({
-      documents: [sampleDoc],
-      stats: { total: 1 },
+      data: { items: [sampleDoc], total: 1 },
     })
     const wrapper = mountView()
     await flushPromises()
@@ -86,7 +85,7 @@ describe('DocumentsView.vue', () => {
   })
 
   it('fetchDocuments 带 format/status 过滤参数', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     const wrapper = mountView()
     const vm = wrapper.vm as any
     vm.formatFilter = 'md'
@@ -107,7 +106,7 @@ describe('DocumentsView.vue', () => {
   })
 
   it('handleView 打开抽屉并加载内容', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     ;(getDocumentContent as any).mockResolvedValue({ content: '# Hello', format: 'md' })
     const wrapper = mountView()
     await flushPromises()
@@ -120,7 +119,7 @@ describe('DocumentsView.vue', () => {
   })
 
   it('handleDelete 成功调用 deleteDocument 并刷新列表', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     ;(deleteDocument as any).mockResolvedValue({ deleted: true })
     // P1-13: 确认逻辑已移至 NPopconfirm UI 层，handleDelete 直接执行删除
     const wrapper = mountView()
@@ -134,7 +133,7 @@ describe('DocumentsView.vue', () => {
   })
 
   it('handleDelete 成功后清空该行在 checkedRowKeys 中的项', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     ;(deleteDocument as any).mockResolvedValue({ deleted: true })
     const wrapper = mountView()
     await flushPromises()
@@ -145,7 +144,7 @@ describe('DocumentsView.vue', () => {
   })
 
   it('handleDelete 失败时 message.error', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     ;(deleteDocument as any).mockRejectedValue(new Error('forbidden'))
     const wrapper = mountView()
     await flushPromises()
@@ -155,7 +154,7 @@ describe('DocumentsView.vue', () => {
   })
 
   it('P1-14: handleBatchDelete 批量删除并清空选中', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     ;(deleteDocument as any).mockResolvedValue({ deleted: true })
     const wrapper = mountView()
     await flushPromises()
@@ -173,7 +172,7 @@ describe('DocumentsView.vue', () => {
   })
 
   it('P1-14: handleBatchDelete 部分失败时给出 warning', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     ;(deleteDocument as any)
       .mockResolvedValueOnce({ deleted: true })
       .mockRejectedValueOnce(new Error('fail'))
@@ -188,7 +187,7 @@ describe('DocumentsView.vue', () => {
   })
 
   it('P1-14: handleBatchCompile 批量调用 compileToWiki 并清空选中', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     ;(compileToWiki as any).mockResolvedValue({ pages_created: 1 })
     const wrapper = mountView()
     await flushPromises()
@@ -205,7 +204,7 @@ describe('DocumentsView.vue', () => {
   })
 
   it('P1-14: handleClearSelection 清空选中', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -216,7 +215,7 @@ describe('DocumentsView.vue', () => {
 
   it('P2-11：handleSearchInput 非空时防抖后调用 searchDocuments 服务端搜索', async () => {
     vi.useFakeTimers()
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     ;(searchDocuments as any).mockResolvedValue({
       query: 'nginx',
       results: [{ ...sampleDoc, filename: 'nginx-502.md' }],
@@ -244,7 +243,7 @@ describe('DocumentsView.vue', () => {
 
   it('P2-11：handleSearchInput 空值时回到分页列表（fetchDocuments）', async () => {
     vi.useFakeTimers()
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -261,7 +260,7 @@ describe('DocumentsView.vue', () => {
   })
 
   it('P2-11：doSearch 失败时 message.error', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     ;(searchDocuments as any).mockRejectedValue(new Error('network'))
     const wrapper = mountView()
     const vm = wrapper.vm as any

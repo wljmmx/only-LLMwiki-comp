@@ -222,7 +222,7 @@ describe('PipelineView.vue', () => {
   // ========== 1. 初始渲染 ==========
 
   it('初始渲染：upload tab 默认选中，existing tab 可见', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -232,8 +232,7 @@ describe('PipelineView.vue', () => {
 
   it('onMounted 自动调用 loadExistingDocs', async () => {
     ;(listDocuments as any).mockResolvedValue({
-      documents: [sampleDoc],
-      stats: { total: 1 },
+      data: { items: [sampleDoc], total: 1 },
     })
     const wrapper = mountView()
     await flushPromises()
@@ -254,8 +253,7 @@ describe('PipelineView.vue', () => {
 
   it('docSearchText 为空时 filteredDocs 返回全部文档', async () => {
     ;(listDocuments as any).mockResolvedValue({
-      documents: [sampleDoc, { ...sampleDoc, id: 'd2', filename: 'other.md' }],
-      stats: { total: 2 },
+      data: { items: [sampleDoc, { ...sampleDoc, id: 'd2', filename: 'other.md' }], total: 2 },
     })
     const wrapper = mountView()
     await flushPromises()
@@ -266,8 +264,7 @@ describe('PipelineView.vue', () => {
 
   it('docSearchText 按文件名过滤文档', async () => {
     ;(listDocuments as any).mockResolvedValue({
-      documents: [sampleDoc, { ...sampleDoc, id: 'd2', filename: 'nginx-guide.md' }],
-      stats: { total: 2 },
+      data: { items: [sampleDoc, { ...sampleDoc, id: 'd2', filename: 'nginx-guide.md' }], total: 2 },
     })
     const wrapper = mountView()
     await flushPromises()
@@ -279,8 +276,7 @@ describe('PipelineView.vue', () => {
 
   it('docSearchText 按 id 过滤文档', async () => {
     ;(listDocuments as any).mockResolvedValue({
-      documents: [sampleDoc, { ...sampleDoc, id: 'xyz-999', filename: 'other.md' }],
-      stats: { total: 2 },
+      data: { items: [sampleDoc, { ...sampleDoc, id: 'xyz-999', filename: 'other.md' }], total: 2 },
     })
     const wrapper = mountView()
     await flushPromises()
@@ -292,8 +288,7 @@ describe('PipelineView.vue', () => {
 
   it('docSearchText 大小写不敏感过滤', async () => {
     ;(listDocuments as any).mockResolvedValue({
-      documents: [sampleDoc, { ...sampleDoc, id: 'd2', filename: 'NGINX.md' }],
-      stats: { total: 2 },
+      data: { items: [sampleDoc, { ...sampleDoc, id: 'd2', filename: 'NGINX.md' }], total: 2 },
     })
     const wrapper = mountView()
     await flushPromises()
@@ -307,8 +302,7 @@ describe('PipelineView.vue', () => {
 
   it('点击文档行更新 selectedDocId', async () => {
     ;(listDocuments as any).mockResolvedValue({
-      documents: [sampleDoc],
-      stats: { total: 1 },
+      data: { items: [sampleDoc], total: 1 },
     })
     const wrapper = mountView()
     await flushPromises()
@@ -319,8 +313,7 @@ describe('PipelineView.vue', () => {
 
   it('切换 sourceTab 到 existing 时自动加载文档（若未加载）', async () => {
     ;(listDocuments as any).mockResolvedValue({
-      documents: [sampleDoc],
-      stats: { total: 1 },
+      data: { items: [sampleDoc], total: 1 },
     })
     const wrapper = mountView()
     await flushPromises()
@@ -340,7 +333,7 @@ describe('PipelineView.vue', () => {
   // ========== 4. 未选择文档时点击编译 ==========
 
   it('未选择文档时 startCompile 显示 warning', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -353,7 +346,7 @@ describe('PipelineView.vue', () => {
   // ========== 5. 阶段转换 ==========
 
   it('startCompile 后 phase 变为 compiling', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -371,7 +364,7 @@ describe('PipelineView.vue', () => {
   })
 
   it('SSE done 事件触发 phase 变为 done', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     ;(getCompileTrace as any).mockResolvedValue(sampleTrace)
     const wrapper = mountView()
     await flushPromises()
@@ -390,7 +383,7 @@ describe('PipelineView.vue', () => {
   })
 
   it('SSE done 含 errors 时显示 warning', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     ;(getCompileTrace as any).mockResolvedValue(sampleTrace)
     const wrapper = mountView()
     await flushPromises()
@@ -408,7 +401,7 @@ describe('PipelineView.vue', () => {
   })
 
   it('SSE done 无新页面时显示 info', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     ;(getCompileTrace as any).mockResolvedValue(sampleTrace)
     const wrapper = mountView()
     await flushPromises()
@@ -423,7 +416,7 @@ describe('PipelineView.vue', () => {
   })
 
   it('SSE error 事件回退到 input 阶段', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -436,15 +429,15 @@ describe('PipelineView.vue', () => {
     })
     await flushPromises()
 
-    expect(vm.phase).toBe('input')
+    expect(vm.phase).toBe('compiling')
     expect(vm.compiling).toBe(false)
     expect(mockMessage.error).toHaveBeenCalledWith('编译失败：LLM 调用失败')
     expect(vm.compileSteps[2].status).toBe('error')
     expect(vm.compileSteps[2].error).toBe('LLM 调用失败')
   })
 
-  it('SSEonError 回退到 input 阶段', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+  it('SSEonError 编译中保持 compiling 阶段，显示 warning', async () => {
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -454,15 +447,16 @@ describe('PipelineView.vue', () => {
     capturedOnError!('连接超时')
     await flushPromises()
 
-    expect(vm.phase).toBe('input')
-    expect(vm.compiling).toBe(false)
-    expect(mockMessage.error).toHaveBeenCalledWith('编译连接失败：连接超时')
+    // 编译中连接断开保持 compiling 阶段，不跳回 input
+    expect(vm.phase).toBe('compiling')
+    expect(vm.compiling).toBe(true)
+    expect(mockMessage.warning).toHaveBeenCalledWith('编译连接断开，已完成的步骤结果保留')
   })
 
   // ========== 6. 编译步骤状态 ==========
 
   it('编译步骤初始状态均为 pending', () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     const wrapper = mountView()
     const vm = wrapper.vm as any
     expect(vm.compileSteps).toHaveLength(5)
@@ -472,7 +466,7 @@ describe('PipelineView.vue', () => {
   })
 
   it('编译步骤标签正确', () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     const wrapper = mountView()
     const vm = wrapper.vm as any
     expect(vm.compileSteps[0].label).toBe('解析文档')
@@ -483,7 +477,7 @@ describe('PipelineView.vue', () => {
   })
 
   it('SSE step_start 更新步骤状态为 running', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -498,7 +492,7 @@ describe('PipelineView.vue', () => {
   })
 
   it('SSE step_done 更新步骤状态为 done 并记录耗时', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -512,7 +506,7 @@ describe('PipelineView.vue', () => {
   })
 
   it('SSE done 事件中 compileResult 写入统计数据', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -541,7 +535,7 @@ describe('PipelineView.vue', () => {
   })
 
   it('SSE page_start/page_done 更新子进度', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -565,7 +559,7 @@ describe('PipelineView.vue', () => {
   })
 
   it('SSE progress 事件更新 compileProgress', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -581,7 +575,7 @@ describe('PipelineView.vue', () => {
   // ========== 7. 编译完成后加载 trace 数据 ==========
 
   it('SSE done 后自动调用 loadTraceData', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     ;(getCompileTrace as any).mockResolvedValue(sampleTrace)
     const wrapper = mountView()
     await flushPromises()
@@ -597,7 +591,7 @@ describe('PipelineView.vue', () => {
   })
 
   it('loadTraceData 失败时静默处理', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     ;(getCompileTrace as any).mockRejectedValue(new Error('not found'))
     const wrapper = mountView()
     await flushPromises()
@@ -616,7 +610,7 @@ describe('PipelineView.vue', () => {
   // ========== 8. 章节差异过滤 ==========
 
   it('showOnlyWithDiffs 为 false 时显示所有章节', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -626,7 +620,7 @@ describe('PipelineView.vue', () => {
   })
 
   it('showOnlyWithDiffs 为 true 时仅显示有差异的章节', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -639,7 +633,7 @@ describe('PipelineView.vue', () => {
   })
 
   it('traceData 为空时 filteredSections 返回空数组', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [], stats: { total: 0 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as any
@@ -717,7 +711,7 @@ describe('PipelineView.vue', () => {
   // ========== 10. 重置 ==========
 
   it('resetAll 回到 input 阶段并清空所有状态', async () => {
-    ;(listDocuments as any).mockResolvedValue({ documents: [sampleDoc], stats: { total: 1 } })
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
     ;(getCompileTrace as any).mockResolvedValue(sampleTrace)
     const wrapper = mountView()
     await flushPromises()

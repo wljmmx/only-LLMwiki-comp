@@ -62,6 +62,7 @@ from app.storage.version_control import get_version_control  # noqa: E402
 def _reset_db():
     """重置版本库与 backlink 表，确保测试间隔离"""
     import sqlite3
+
     from app.storage.connection import ConnectionPool
     # 关闭所有连接池，避免删除文件后旧连接指向已删除 inode
     ConnectionPool.close_all_pools()

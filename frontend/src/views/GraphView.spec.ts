@@ -321,7 +321,7 @@ describe('GraphView.vue', () => {
     expect(edges).toHaveLength(2)
     expect(edges[0].animated).toBe(true) // RELATED_TO
     expect(edges[1].animated).toBe(false) // USES
-    expect(edges[0].style.stroke).toBe('#607d8b') // RELATED_TO color
+    expect(edges[0].style.stroke).toBe('var(--opskg-relation-related-to)') // RELATED_TO color
     expect(edges[1].style.stroke).toBe('#18a058') // USES color
   })
 

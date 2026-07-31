@@ -72,20 +72,20 @@ describe('DashboardView.vue', () => {
       numpy_enabled: true,
     })
     ;(listDocuments as any).mockResolvedValue({
-      documents: [
-        {
-          id: 'd1',
-          doc_id: 'd1',
-          filename: 'test.md',
-          format: 'md',
-          size: 1024,
-          status: 'parsed',
-          created_at: '2026-07-01T00:00:00Z',
-        },
-      ],
-      stats: { total: 1, total_size_mb: 0.0, by_format: [], by_status: [] },
-      limit: 5,
-      offset: 0,
+      data: {
+        items: [
+          {
+            id: 'd1',
+            doc_id: 'd1',
+            filename: 'test.md',
+            format: 'md',
+            size: 1024,
+            status: 'parsed',
+            created_at: '2026-07-01T00:00:00Z',
+          },
+        ],
+        total: 1,
+      },
     })
     ;(getReviewQueue as any).mockResolvedValue({
       items: [

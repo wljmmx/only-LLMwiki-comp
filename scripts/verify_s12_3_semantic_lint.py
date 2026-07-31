@@ -55,6 +55,7 @@ from app.knowledge.wiki_lint import (  # noqa: E402
     lint_all,
     lint_all_async,
 )
+
 # _llm_detect_conflicts 已重构合并到 _check_contradictions_semantic（批量调用）
 # 保留兼容导入：缺失时跳过相关测试
 try:
