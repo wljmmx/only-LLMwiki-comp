@@ -200,24 +200,32 @@ setup_tracing(app)
 # 顺序：CORS → metrics → tracing → 限流 → 审计
 # 限流与审计中间件均在 app 路由之前生效，跳过 /health、/metrics 等基础设施路径
 from app.middleware.audit_log import AuditLogMiddleware  # noqa: E402
-from app.middleware.rate_limit import configure_rate_limit  # noqa: E402
 
-configure_rate_limit(app)
+try:
+    from app.middleware.rate_limit import configure_rate_limit  # noqa: E402
+    configure_rate_limit(app)
+except Exception as _e:  # noqa: BLE001
+    logger.warning(f"rate_limit 加载失败（限流已禁用）: {_e}")
+    # 不阻断启动，限流失败时仅跳过
 app.add_middleware(AuditLogMiddleware)
 
 # 安全响应头（CSP, X-Content-Type-Options, X-Frame-Options 等）
-from app.core.security.headers import SecurityHeadersMiddleware  # noqa: E402
-
-app.add_middleware(SecurityHeadersMiddleware)
+try:
+    from app.core.security.headers import SecurityHeadersMiddleware  # noqa: E402
+    app.add_middleware(SecurityHeadersMiddleware)
+except Exception as _e:  # noqa: BLE001
+    logger.warning(f"SecurityHeadersMiddleware 加载失败: {_e}")
 
 # API 版本废弃中间件（当前无废弃端点，预留）
-from app.middleware.deprecation import DeprecationMiddleware  # noqa: E402
-
-app.add_middleware(
-    DeprecationMiddleware,
-    deprecated_paths={},
-    migration_map={},
-)
+try:
+    from app.middleware.deprecation import DeprecationMiddleware  # noqa: E402
+    app.add_middleware(
+        DeprecationMiddleware,
+        deprecated_paths={},
+        migration_map={},
+    )
+except Exception as _e:  # noqa: BLE001
+    logger.warning(f"DeprecationMiddleware 加载失败: {_e}")
 
 
 @app.get("/health")

@@ -94,7 +94,8 @@ COPY --from=frontend-builder /build/dist /usr/share/nginx/html
 COPY deploy/docker/nginx.conf /etc/nginx/nginx.conf
 COPY deploy/docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY deploy/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+COPY deploy/docker/start-uvicorn.sh /usr/local/bin/start-uvicorn.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/start-uvicorn.sh
 
 # 创建非 root 用户运行（P1-2: 安全最佳实践）
 # nginx 监听 8080（非特权端口），supervisord + nginx + uvicorn 全部以 opskg 用户运行
