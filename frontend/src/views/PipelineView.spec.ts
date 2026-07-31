@@ -459,7 +459,7 @@ describe('PipelineView.vue', () => {
     ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     const wrapper = mountView()
     const vm = wrapper.vm as any
-    expect(vm.compileSteps).toHaveLength(5)
+    expect(vm.compileSteps).toHaveLength(6)
     vm.compileSteps.forEach((step: any) => {
       expect(step.status).toBe('pending')
     })
@@ -473,7 +473,8 @@ describe('PipelineView.vue', () => {
     expect(vm.compileSteps[1].label).toBe('知识抽取')
     expect(vm.compileSteps[2].label).toBe('LLM 编译 Wiki')
     expect(vm.compileSteps[3].label).toBe('结构编译（章节处理）')
-    expect(vm.compileSteps[4].label).toBe('重建索引')
+    expect(vm.compileSteps[4].label).toBe('编译后实体抽取')
+    expect(vm.compileSteps[5].label).toBe('重建索引')
   })
 
   it('SSE step_start 更新步骤状态为 running', async () => {

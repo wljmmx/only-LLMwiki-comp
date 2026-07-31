@@ -222,6 +222,23 @@ const compileSteps = ref<PipelineStep[]>([
 // 章节级节点列表（独立展示每个章节的处理状态）
 const sectionNodes = ref<SectionNode[]>([])
 
+// ── 实体编译实时进度（LLM 编译 Wiki 环节）──
+interface EntityCompileItem {
+  entity: string       // 实体名/slug
+  status: 'pending' | 'running' | 'done' | 'error' | 'skipped'
+  error?: string
+  started_at?: number  // Date.now()
+  done_at?: number     // Date.now()
+}
+const compileEntities = ref<EntityCompileItem[]>([])
+const compileStepStartTime = ref<number>(0)  // 当前步骤开始时间
+
+// 当前正在编译的实体名（用于醒目标识）
+const currentCompileEntity = computed(() => {
+  const running = compileEntities.value.find(e => e.status === 'running')
+  return running?.entity ?? ''
+})
+
 const compileResult = ref<{
   pages_created?: number
   pages_updated?: number
@@ -340,6 +357,12 @@ function startCompile() {
         if (step in stepIndex) {
           compileSteps.value[idx].status = 'running'
           compileProgress.value = (idx / 6) * 100
+          // 步骤开始时记录时间并清空子状态
+          compileStepStartTime.value = Date.now()
+          if (step === 'compile') {
+            compileEntities.value = []
+            compileSteps.value[idx].details = '正在连接 LLM 服务，准备编译 Wiki 页面...'
+          }
         }
       } else if (evt.type === 'step_done') {
         const step = evt.data.step as string
@@ -451,6 +474,33 @@ function startCompile() {
             total: data.total ?? 0,
             currentEntity: data.entity ?? '',
           }
+          // 更新步骤详情文本
+          const stepName = compileSteps.value[runningIdx].name
+          if (stepName === 'compile') {
+            compileSteps.value[runningIdx].details = `正在编译：${data.entity ?? '...'} (${(data.index ?? 0) + 1}/${data.total ?? '?'})`
+          }
+        }
+        // ── 实体编译实时追踪 ──
+        const entity = data.entity as string | undefined
+        if (entity && (data.index ?? 0) === 0 && compileEntities.value.length === 0) {
+          // 第一次 page_start：预填充所有实体（如果已知 total）
+          if (data.total) {
+            // 预填充占位，后续 page_start 会更新
+          }
+        }
+        if (entity) {
+          // 更新或添加实体项
+          const existing = compileEntities.value.find(e => e.entity === entity)
+          if (existing) {
+            existing.status = 'running'
+            existing.started_at = Date.now()
+          } else {
+            compileEntities.value.push({
+              entity,
+              status: 'running',
+              started_at: Date.now(),
+            })
+          }
         }
       } else if (evt.type === 'page_done') {
         const data = evt.data
@@ -479,6 +529,26 @@ function startCompile() {
               error: data.error || data.llm_error,
               status: data.status || 'llm_warning',
             })
+          }
+          // ── 更新实体编译列表 ──
+          const entity = data.entity as string
+          if (entity) {
+            const item = compileEntities.value.find(e => e.entity === entity)
+            if (item) {
+              item.status = data.status === 'error' ? 'error'
+                : data.status === 'skipped' ? 'skipped'
+                : 'done'
+              item.done_at = Date.now()
+              if (data.error || data.llm_error) {
+                item.error = data.error || data.llm_error
+              }
+            }
+          }
+          // 更新步骤详情
+          if (compileSteps.value[runningIdx].name === 'compile') {
+            const done = compileEntities.value.filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length
+            const total = compileEntities.value.length
+            compileSteps.value[runningIdx].details = `正在编译：${done}/${total} 个实体完成`
           }
         }
       } else if (evt.type === 'progress') {
@@ -696,6 +766,8 @@ function resetAll() {
   compileResult.value = null
   traceData.value = null
   sectionNodes.value = []
+  compileEntities.value = []
+  compileStepStartTime.value = 0
   resetSteps()
 }
 
@@ -1015,6 +1087,72 @@ watch(sourceTab, (val) => {
                     — {{ step.subProgress.currentEntity }}
                   </span>
                 </span>
+              </template>
+
+              <!-- ── LLM 编译 Wiki：实体编译实时进度卡片 ── -->
+              <template v-if="step.name === 'compile' && compileEntities.length > 0">
+                <div class="compile-entities-panel">
+                  <!-- 进度条 -->
+                  <div class="compile-entities-progress">
+                    <NProgress
+                      :percentage="Math.round(
+                        (compileEntities.filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length / compileEntities.length) * 100
+                      )"
+                      :height="6"
+                      :border-radius="3"
+                      :color="compileEntities.some(e => e.status === 'error') ? '#f0a020' : '#18a058'"
+                    />
+                    <span class="meta-text" style="font-size: 11px; margin-top: 2px">
+                      {{ compileEntities.filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length }}/{{ compileEntities.length }} 个实体
+                    </span>
+                  </div>
+                  <!-- 实体列表 -->
+                  <div class="compile-entities-list">
+                    <div
+                      v-for="item in compileEntities"
+                      :key="item.entity"
+                      class="compile-entity-item"
+                      :class="{
+                        'entity-running': item.status === 'running',
+                        'entity-done': item.status === 'done',
+                        'entity-error': item.status === 'error',
+                        'entity-skipped': item.status === 'skipped',
+                      }"
+                    >
+                      <!-- 状态图标 -->
+                      <span class="entity-status-icon">
+                        <template v-if="item.status === 'running'">
+                          <span class="entity-spinner" />
+                        </template>
+                        <template v-else-if="item.status === 'done'">
+                          <span class="entity-check">&#10003;</span>
+                        </template>
+                        <template v-else-if="item.status === 'error'">
+                          <span class="entity-cross">&#10007;</span>
+                        </template>
+                        <template v-else-if="item.status === 'skipped'">
+                          <span class="entity-skip">&#8645;</span>
+                        </template>
+                        <template v-else>
+                          <span class="entity-pending">&#9679;</span>
+                        </template>
+                      </span>
+                      <!-- 实体名 -->
+                      <span class="entity-name" :title="item.entity">{{ item.entity }}</span>
+                      <!-- 耗时 -->
+                      <span v-if="item.status === 'done' && item.started_at && item.done_at" class="entity-time meta-text">
+                        {{ ((item.done_at - item.started_at) / 1000).toFixed(1) }}s
+                      </span>
+                      <span v-else-if="item.status === 'running' && item.started_at" class="entity-time meta-text">
+                        {{ ((Date.now() - item.started_at) / 1000).toFixed(0) }}s...
+                      </span>
+                      <!-- 错误信息 -->
+                      <span v-if="item.error" class="entity-error-text danger-text" :title="item.error">
+                        {{ item.error.substring(0, 60) }}{{ item.error.length > 60 ? '...' : '' }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </template>
 
               <!-- 环节产出详情 -->
@@ -1505,4 +1643,95 @@ watch(sourceTab, (val) => {
 .border-light { border-bottom: 1px solid var(--opskg-border-color); }
 .error-box { background: color-mix(in srgb, var(--opskg-color-danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--opskg-color-danger) 20%, transparent); border-radius: 4px; }
 .error-bg { background: color-mix(in srgb, var(--opskg-color-danger) 8%, transparent); border-radius: 4px; }
+
+/* ── 实体编译实时进度卡片 ── */
+.compile-entities-panel {
+  margin-top: 8px;
+  padding: 10px;
+  background: var(--opskg-body-color);
+  border: 1px solid var(--opskg-border-color);
+  border-radius: 6px;
+}
+.compile-entities-progress {
+  margin-bottom: 8px;
+}
+.compile-entities-list {
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.compile-entity-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  transition: background 0.2s;
+}
+.compile-entity-item.entity-running {
+  background: color-mix(in srgb, var(--opskg-color-primary) 6%, transparent);
+  font-weight: 500;
+}
+.compile-entity-item.entity-done {
+  color: var(--opskg-text-2);
+}
+.compile-entity-item.entity-error {
+  background: color-mix(in srgb, var(--opskg-color-danger) 6%, transparent);
+}
+.compile-entity-item.entity-skipped {
+  color: var(--opskg-text-3);
+  text-decoration: line-through;
+}
+
+.entity-status-icon {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.entity-check { color: var(--opskg-color-success); font-size: 14px; }
+.entity-cross { color: var(--opskg-color-danger); font-size: 14px; }
+.entity-skip { color: var(--opskg-text-3); font-size: 14px; }
+.entity-pending { color: var(--opskg-text-4); font-size: 8px; }
+
+.entity-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.entity-time {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  min-width: 36px;
+  text-align: right;
+}
+.entity-error-text {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+  flex-shrink: 1;
+}
+
+/* 旋转动画 */
+.entity-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--opskg-border-color);
+  border-top-color: var(--opskg-color-primary);
+  border-radius: 50%;
+  animation: entity-spin 0.8s linear infinite;
+}
+@keyframes entity-spin {
+  to { transform: rotate(360deg); }
+}
 </style>
