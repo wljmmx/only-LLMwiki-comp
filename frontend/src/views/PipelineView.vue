@@ -1244,26 +1244,26 @@ watch(sourceTab, (val) => {
                       >
                         {{ item.showCompare ? '收起' : '对比' }}
                       </NButton>
-                    </div>
-                    <!-- 对比视图：原文 vs LLM 输出 -->
-                    <div
-                      v-if="item.showCompare && step.name === 'compile'"
-                      class="compare-panel"
-                    >
-                      <div class="compare-column">
-                        <div class="compare-header">📋 原始内容</div>
-                        <div class="compare-body">{{ item.raw_content || '无原始内容' }}</div>
-                      </div>
-                      <div class="compare-arrow">→</div>
-                      <div class="compare-column">
-                        <div class="compare-header">
-                          ✨ LLM 编译输出
-                          <span v-if="item.status === 'running'" class="streaming-indicator">● 流式输出中</span>
+                      <!-- 对比视图：原文 vs LLM 输出 -->
+                      <div
+                        v-if="item.showCompare && step.name === 'compile'"
+                        class="compare-panel"
+                      >
+                        <div class="compare-column">
+                          <div class="compare-header">📋 原始内容</div>
+                          <div class="compare-body">{{ item.raw_content || '无原始内容' }}</div>
                         </div>
-                        <div
-                          class="compare-body compiled-body"
-                          :class="{ 'is-streaming': item.status === 'running' }"
-                        >{{ item.compiled_content || '等待 LLM 输出...' }}</div>
+                        <div class="compare-arrow">→</div>
+                        <div class="compare-column">
+                          <div class="compare-header">
+                            ✨ LLM 编译输出
+                            <span v-if="item.status === 'running'" class="streaming-indicator">● 流式输出中</span>
+                          </div>
+                          <div
+                            class="compare-body compiled-body"
+                            :class="{ 'is-streaming': item.status === 'running' }"
+                          >{{ item.compiled_content || '等待 LLM 输出...' }}</div>
+                        </div>
                       </div>
                     </div>
                   </div>
