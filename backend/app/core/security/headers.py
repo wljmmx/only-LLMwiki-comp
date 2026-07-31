@@ -49,7 +49,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "frame-src 'self'; "
                 "object-src 'none'; "
                 "base-uri 'self'; "
-                "form-action 'self'; "
+                "form-action 'self'"
             )
 
         # 防 MIME 类型嗅探
