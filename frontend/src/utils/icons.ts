@@ -69,6 +69,8 @@ export const iconRegistry = {
   mcp: CubeOutline,
   users: PeopleOutline,
   system: SettingsOutline,
+  settings: SettingsOutline,
+  query: ChatbubblesOutline,
   // 操作
   add: AddOutline,
   refresh: RefreshOutline,

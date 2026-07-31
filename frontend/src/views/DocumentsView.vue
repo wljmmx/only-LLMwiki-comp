@@ -141,9 +141,11 @@ async function fetchDocuments() {
     const res = await listDocuments(params)
     documents.value = res.data.items
     total.value = res.data.total
-  } catch (err) {
-    error.value = '获取文档列表失败'
-    console.error(err)
+  } catch (err: any) {
+    const detail = err?.response?.data?.detail || err?.message || '未知错误'
+    const status = err?.response?.status
+    error.value = `获取文档列表失败${status ? `（${status}）` : ''}：${detail}`
+    console.error('fetchDocuments error:', err)
   } finally {
     loading.value = false
   }
