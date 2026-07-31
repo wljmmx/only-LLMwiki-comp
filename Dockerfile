@@ -5,7 +5,7 @@
 #
 # 镜像层级：
 #   Stage 1: frontend-builder  构建 Vue 前端 → /build/dist
-#   Stage 2: runtime           python:3.14-slim + nginx + supervisor + 后端代码 + 前端 dist
+#   Stage 2: runtime           python:3.12-slim + nginx + supervisor + 后端代码 + 前端 dist
 #
 # 设计要点：
 #   - 前端构建与运行时分离，最终镜像不含 node_modules（节省 ~500MB）
@@ -43,7 +43,7 @@ COPY frontend/ ./
 RUN npm run typecheck && npm run build
 
 # ────────── Stage 2: 运行时 ──────────
-FROM python:3.14-slim AS runtime
+FROM python:3.12-slim AS runtime
 
 ARG OPSKG_VERSION
 ARG OPSKG_IMAGE_REF
@@ -70,6 +70,8 @@ WORKDIR /app
 #   - curl：健康检查 + 调试
 #   - gosu：entrypoint 以 root 初始化后降权到 opskg（标准非 root 部署模式）
 #   - libxml2 / libxmlsec1：python3-saml 依赖（SAML SSO）
+#   - build-essential / python3-dev / cargo：pip 编译 C/Rust 扩展所需
+#     （bcrypt/cryptography/cffi 等包在无预编译 wheel 时需从源码构建）
 # 注：--no-install-recommends 避免安装推荐包，保持镜像精简
 RUN apt-get update && apt-get install -y --no-install-recommends \
         nginx \
@@ -80,12 +82,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxmlsec1 \
         libxmlsec1-openssl \
         pkg-config \
+        build-essential \
+        python3-dev \
+        cargo \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir --upgrade pip
 
-# 安装 Python 依赖
+# 安装 Python 依赖（--only-binary :all: 强制使用预编译 wheel，避免源码编译 segfault）
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN pip install --no-cache-dir --only-binary :all: -r /tmp/requirements.txt 2>/dev/null || \
+    pip install --no-cache-dir -r /tmp/requirements.txt
 
 # 复制后端应用代码
 COPY backend/ /app/
