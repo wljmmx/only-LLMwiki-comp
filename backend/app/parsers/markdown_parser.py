@@ -8,6 +8,7 @@
 - 支持父级章节引用
 - 生成层级化 Slug 候选
 - 支持编号标题识别（如 "1.1 章节标题"）
+- P1: 章节重构（基于内容语义重新划分，而非直接使用原始标题）
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import re
 
 from app.parsers.base import ElementType, HeadingNode, ParsedDocument, ParsedElement
 from app.parsers.text_cleaner import CleanedDocument, TextCleaner
+from app.parsers.section_reconstructor import ReconstructedDocument, SectionReconstructor
 
 
 class MarkdownParser:
@@ -25,8 +27,10 @@ class MarkdownParser:
     def __init__(self) -> None:
         # P0: 文本清洗器，在解析前预处理混乱格式文档
         self.cleaner = TextCleaner()
+        # P1: 章节重构器，基于内容语义重新划分章节
+        self.reconstructor = SectionReconstructor()
 
-    def parse(self, path: str, doc_id: str, clean_text: bool = True) -> ParsedDocument:
+    def parse(self, path: str, doc_id: str, clean_text: bool = True, reconstruct_sections: bool = True) -> ParsedDocument:
         with open(path, encoding="utf-8") as f:
             raw = f.read()
 
@@ -38,12 +42,20 @@ class MarkdownParser:
         else:
             text = raw
 
-        # P0: 当清洗器推断出标题，注入推断标题（补充显式标题不足的情况）
-        if cleaned and cleaned.inferred_headings:
-            text = self._inject_inferred_headings(
-                text, cleaned.paragraphs, cleaned.inferred_headings,
-                existing_headings=cleaned.detected_headings,
+        # P1: 章节重构 — 基于内容语义重新划分章节，而非直接使用原始标题
+        reconstructed: ReconstructedDocument | None = None
+        if reconstruct_sections and cleaned is not None:
+            reconstructed = self.reconstructor.reconstruct(
+                cleaned, original_headings=cleaned.detected_headings,
             )
+            text = reconstructed.reconstructed_text
+        else:
+            # P0: 当清洗器推断出标题，注入推断标题（补充显式标题不足的情况）
+            if cleaned and cleaned.inferred_headings:
+                text = self._inject_inferred_headings(
+                    text, cleaned.paragraphs, cleaned.inferred_headings,
+                    existing_headings=cleaned.detected_headings,
+                )
 
         checksum = hashlib.sha256(text.encode()).hexdigest()
         title = self._extract_title(text)
@@ -66,6 +78,21 @@ class MarkdownParser:
             if cleaned.paragraph_classes:
                 for elem in elements:
                     elem.metadata.setdefault('paragraph_classes', cleaned.paragraph_classes)
+
+        # P1: 将章节重构统计信息添加到第一个元素的 metadata
+        if reconstructed is not None and elements:
+            first_elem = elements[0]
+            if first_elem.metadata is None:
+                first_elem.metadata = {}
+            first_elem.metadata['section_reconstruction'] = reconstructed.stats
+            # 标记重构章节数量
+            first_elem.metadata['reconstructed_sections'] = len(reconstructed.sections)
+            # 保存原始章节与重构章节的映射（用于追踪）
+            if reconstructed.sections:
+                first_elem.metadata['section_titles'] = [
+                    {'title': s.title, 'level': s.level, 'original_title': s.original_title}
+                    for s in reconstructed.sections[:10]  # 最多保存前 10 个
+                ]
 
         return ParsedDocument(
             doc_id=doc_id,

@@ -244,13 +244,36 @@ class KnowledgeExtractor:
                 pass
 
         # 调用 LLM 抽取
+        logger.info("extraction_llm_call_start", doc_id=doc.doc_id, context_len=len(context))
         raw_entities, raw_relations, llm_error = await self._call_llm(context)
+        logger.info(
+            "extraction_llm_call_done",
+            doc_id=doc.doc_id,
+            entities=len(raw_entities),
+            relations=len(raw_relations),
+            error=llm_error,
+        )
 
-        if on_progress:
+        # 记录处理路径：LLM 主路径还是 fallback
+        processing_path = "llm"
+        
+        if llm_error:
+            if on_progress:
+                try:
+                    on_progress("progress", {
+                        "percent": 65,
+                        "message": f"⚠️ LLM 抽取失败: {llm_error[:50]}",
+                        "path": "llm_error",
+                        "error": llm_error,
+                    })
+                except Exception:
+                    pass
+        elif on_progress:
             try:
                 on_progress("progress", {
                     "percent": 70,
-                    "message": f"LLM 返回 {len(raw_entities)} 实体、{len(raw_relations)} 关系",
+                    "message": f"✅ LLM 返回 {len(raw_entities)} 实体、{len(raw_relations)} 关系",
+                    "path": "llm_success",
                 })
             except Exception:
                 pass
@@ -259,15 +282,51 @@ class KnowledgeExtractor:
         entities = [self._parse_entity(e, doc.doc_id) for e in raw_entities]
         relations = [self._parse_relation(r, doc.doc_id) for r in raw_relations]
 
+        # 关键修复：对主路径 LLM 返回的实体也进行实体名清理
+        # 问题：LLM 可能返回原始标题作为实体名（如"啥是IP地址"），需要二次清理
+        entity_cleanup_path = "none"  # 记录实体名清理路径
+        if entities:
+            logger.info(
+                "extraction_llm_entity_name_cleanup",
+                doc_id=doc.doc_id,
+                entity_count=len(entities),
+                sample_names=[e.name[:30] for e in entities[:5]],
+            )
+            entities, cleanup_used_llm = await self._llm_clean_fallback_entity_names(
+                entities, doc.title or "", on_progress=on_progress,
+            )
+            entity_cleanup_path = "llm" if cleanup_used_llm else "rule"
+            if on_progress:
+                try:
+                    path_msg = "LLM 二次清理" if cleanup_used_llm else "规则兜底清理"
+                    on_progress("progress", {
+                        "percent": 75,
+                        "message": f"📝 实体名{path_msg}完成",
+                        "cleanup_path": entity_cleanup_path,
+                    })
+                except Exception:
+                    pass
+            logger.info(
+                "extraction_llm_entity_name_cleanup_done",
+                doc_id=doc.doc_id,
+                cleaned_count=len(entities),
+                cleanup_path=entity_cleanup_path,
+            )
+
         # LLM 抽取为空时启用编译抽取兜底
         # 修复：旧版条件 `if not entities and not relations` 只在 LLM 返回空列表时触发，
         # 但若 LLM 返回了实体却全部因 confidence 低于 review 阈值被门控丢弃，
         # 旧逻辑不会触发 fallback，导致 0 产出。这里在门控后再做一次判定。
         if not entities and not relations:
+            processing_path = "fallback"
             logger.info("extraction_fallback_to_compiled", doc_id=doc.doc_id, reason="llm_empty")
             if on_progress:
                 try:
-                    on_progress("progress", {"percent": 80, "message": "LLM 抽取为空，启用规则兜底抽取..."})
+                    on_progress("progress", {
+                        "percent": 80,
+                        "message": "🔄 LLM 抽取为空，启用规则兜底抽取...",
+                        "path": "fallback_start",
+                    })
                 except Exception:
                     pass
             try:
@@ -276,12 +335,33 @@ class KnowledgeExtractor:
                 relations = compiled_result.relations or []
                 # LLM 清理 fallback 实体名 — 用 LLM 总结生成简洁规范的实体名
                 if entities:
-                    entities = await self._llm_clean_fallback_entity_names(
-                        entities, doc.title or ""
+                    entities, fallback_used_llm = await self._llm_clean_fallback_entity_names(
+                        entities, doc.title or "", on_progress=on_progress,
                     )
+                    entity_cleanup_path = "llm_fallback" if fallback_used_llm else "rule_fallback"
+                    if on_progress:
+                        try:
+                            path_msg = "LLM 清理" if fallback_used_llm else "规则清理"
+                            on_progress("progress", {
+                                "percent": 85,
+                                "message": f"📝 Fallback 实体名{path_msg}完成",
+                                "cleanup_path": entity_cleanup_path,
+                            })
+                        except Exception:
+                            pass
             except Exception as e:  # noqa: BLE001
                 # fallback 自身失败不应中断 extract()
                 logger.error("extraction_fallback_failed", doc_id=doc.doc_id, error=str(e))
+                if on_progress:
+                    try:
+                        on_progress("progress", {
+                            "percent": 85,
+                            "message": f"❌ Fallback 抽取失败: {str(e)[:50]}",
+                            "path": "fallback_error",
+                            "error": str(e),
+                        })
+                    except Exception:
+                        pass
                 entities, relations = [], []
 
         # 置信度门控
@@ -302,7 +382,11 @@ class KnowledgeExtractor:
             )
             if on_progress:
                 try:
-                    on_progress("progress", {"percent": 85, "message": "LLM 实体全部被门控丢弃，启用规则兜底..."})
+                    on_progress("progress", {
+                        "percent": 85,
+                        "message": "🔄 LLM 实体全部被门控丢弃，启用规则兜底...",
+                        "path": "fallback_gating",
+                    })
                 except Exception:
                     pass
             try:
@@ -311,19 +395,40 @@ class KnowledgeExtractor:
                 fallback_relations = compiled_result.relations or []
                 # LLM 清理 fallback 实体名
                 if fallback_entities:
-                    fallback_entities = await self._llm_clean_fallback_entity_names(
-                        fallback_entities, doc.title or ""
+                    fallback_entities, gating_used_llm = await self._llm_clean_fallback_entity_names(
+                        fallback_entities, doc.title or "", on_progress=on_progress,
                     )
+                    entity_cleanup_path = "llm_fallback_gating" if gating_used_llm else "rule_fallback_gating"
                 # 合并 fallback 结果到 result（不覆盖原 entities 统计）
                 self._apply_gating(fallback_entities, fallback_relations, result)
             except Exception as e:  # noqa: BLE001
                 logger.error("extraction_fallback_failed", doc_id=doc.doc_id, error=str(e))
+                if on_progress:
+                    try:
+                        on_progress("progress", {
+                            "percent": 86,
+                            "message": f"❌ Fallback 抽取失败: {str(e)[:40]}",
+                            "path": "fallback_error",
+                            "error": str(e),
+                        })
+                    except Exception:
+                        pass
+
+        # 设置处理路径信息
+        result.processing_path = processing_path
+        result.entity_cleanup_path = entity_cleanup_path
+        result.llm_error = llm_error
 
         if on_progress:
             try:
+                path_emoji = "✅" if processing_path == "llm" else "🔄"
+                cleanup_msg = f"，实体名清理: {entity_cleanup_path}" if entity_cleanup_path != "none" else ""
                 on_progress("progress", {
                     "percent": 100,
-                    "message": f"抽取完成：{len(result.auto_accepted_entities)} 自动 + {len(result.review_entities)} 审查",
+                    "message": f"{path_emoji} 抽取完成：{len(result.auto_accepted_entities)} 自动 + {len(result.review_entities)} 审查{cleanup_msg}",
+                    "path": processing_path,
+                    "cleanup_path": entity_cleanup_path,
+                    "llm_error": llm_error,
                 })
             except Exception:
                 pass
@@ -335,7 +440,9 @@ class KnowledgeExtractor:
             auto=len(result.auto_accepted_entities),
             review=len(result.review_entities),
             discarded=result.discarded_count,
-            source="llm" if raw_entities or raw_relations else "rules",
+            processing_path=processing_path,
+            entity_cleanup_path=entity_cleanup_path,
+            llm_error=llm_error,
         )
         return result
 
@@ -466,19 +573,27 @@ class KnowledgeExtractor:
 [{{"index": 0, "cleaned_name": "清理后的标准名称"}}]"""
 
     async def _llm_clean_fallback_entity_names(
-        self, entities: list, doc_title: str = "",
-    ) -> list:
-        """对 fallback 路径提取的实体名进行 LLM 清理
+        self, entities: list, doc_title: str = "", on_progress=None,
+    ) -> tuple[list, bool]:
+        """对实体名进行 LLM 清理（确保实体名简洁规范）
 
         Args:
-            entities: fallback 提取的实体列表（compiled_extractor.ExtractedEntity）
+            entities: 实体列表（支持 ExtractedEntity 或 compiled_extractor.ExtractedEntity）
             doc_title: 文档标题
+            on_progress: 进度回调
 
         Returns:
-            清理后的实体列表
+            (清理后的实体列表, 是否使用了 LLM 清理)
         """
         if not entities:
-            return entities
+            return entities, False
+
+        logger.info(
+            "entity_name_clean_start",
+            doc_title=doc_title,
+            entity_count=len(entities),
+            original_names=[e.name[:40] for e in entities[:5]],
+        )
 
         # 构建 LLM 输入 — 传入原始名称和上下文
         input_items = [
@@ -499,12 +614,24 @@ class KnowledgeExtractor:
 
 ## 要求
 为每个实体生成简洁规范的标准名称。
-示例：原始名"子网掩码（这个很重要，划重点！！！）" → 清理为"子网掩码""
+示例：原始名"子网掩码（这个很重要，划重点！！！）" → 清理为"子网掩码"
+示例：原始名"啥是IP地址" → 清理为"IP地址"
+示例：原始名"Nginx 配置详解（必看！！！）" → 清理为"Nginx 配置"
 
 请直接输出 JSON 数组。"""
 
         call_timeout = getattr(self.settings, 'llm_call_timeout', 60)
         try:
+            if on_progress:
+                try:
+                    on_progress("progress", {
+                        "percent": 72,
+                        "message": "🤖 调用 LLM 清理实体名...",
+                        "cleanup_path": "llm_calling",
+                    })
+                except Exception:
+                    pass
+            
             resp = await asyncio.wait_for(
                 self.llm.chat(
                     messages=[
@@ -517,20 +644,100 @@ class KnowledgeExtractor:
                 timeout=call_timeout,
             )
             data = self._parse_json(resp.text)
+            
             if not isinstance(data, list):
-                return entities
+                logger.warning("entity_name_clean_invalid_response", response_type=type(data).__name__)
+                # LLM 返回无效格式，使用规则清理兜底
+                if on_progress:
+                    try:
+                        on_progress("progress", {
+                            "percent": 73,
+                            "message": "⚠️ LLM 返回无效格式，使用规则清理",
+                            "cleanup_path": "llm_invalid_fallback_rule",
+                        })
+                    except Exception:
+                        pass
+                return self._rule_clean_entity_names(entities), False
 
             # 应用清理结果
+            cleaned_count = 0
             for item in data:
                 idx = item.get("index", -1)
                 cleaned = item.get("cleaned_name", "")
                 if 0 <= idx < len(entities) and cleaned:
-                    entities[idx].name = cleaned
+                    # 验证清理后的名称是否合理
+                    if len(cleaned) > 0 and len(cleaned) <= 50:
+                        entities[idx].name = cleaned
+                        cleaned_count += 1
 
-            return entities
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.warning("fallback_entity_clean_failed", error=str(e), count=len(entities))
-            return entities
+            logger.info(
+                "entity_name_clean_done",
+                cleaned_count=cleaned_count,
+                total_count=len(entities),
+                cleaned_names=[e.name[:40] for e in entities[:5]],
+                used_llm=True,
+            )
+            return entities, True
+            
+        except asyncio.TimeoutError:
+            logger.warning("entity_name_clean_timeout", timeout=call_timeout)
+            if on_progress:
+                try:
+                    on_progress("progress", {
+                        "percent": 73,
+                        "message": f"⏱️ LLM 清理超时（{call_timeout}s），使用规则清理",
+                        "cleanup_path": "llm_timeout_fallback_rule",
+                    })
+                except Exception:
+                    pass
+            # 超时，使用规则清理兜底
+            return self._rule_clean_entity_names(entities), False
+        except Exception as e:
+            logger.warning("entity_name_clean_failed", error=str(e), count=len(entities))
+            if on_progress:
+                try:
+                    on_progress("progress", {
+                        "percent": 73,
+                        "message": f"❌ LLM 清理失败: {str(e)[:40]}，使用规则清理",
+                        "cleanup_path": "llm_error_fallback_rule",
+                        "error": str(e),
+                    })
+                except Exception:
+                    pass
+            # 其他错误，使用规则清理兜底
+            return self._rule_clean_entity_names(entities), False
+
+    def _rule_clean_entity_names(self, entities: list) -> list:
+        """规则清理实体名（作为 LLM 清理的兜底）
+
+        使用正则去除装饰性文字：
+        - 括号内容：（xxx）、(xxx)
+        - 感叹号、强调标记
+        - 开头的疑问词：什么是、啥是、如何、怎么
+        """
+        import re
+
+        logger.info("entity_name_rule_clean_start", count=len(entities))
+        
+        for e in entities:
+            name = e.name
+            # 1. 去除括号及括号内内容
+            name = re.sub(r'[（(][^)）]*[)）]', '', name)
+            # 2. 去除感叹号和强调标记
+            name = re.sub(r'[！!]+', '', name)
+            # 3. 去除开头的疑问词（保留核心术语）
+            name = re.sub(r'^(什么是|啥是|何谓|如何理解|谈谈)', '', name)
+            # 4. 去除尾部的强调词
+            name = re.sub(r'(划重点|必看|重要|必读|详解|介绍)$', '', name)
+            # 5. 清理多余空白
+            name = name.strip()
+            # 6. 如果清理后为空，保留原名
+            if not name:
+                name = e.name
+            e.name = name
+
+        logger.info("entity_name_rule_clean_done", cleaned_names=[e.name[:40] for e in entities[:5]])
+        return entities
 
     def _parse_relation(self, raw: dict, doc_id: str) -> ExtractedRelation:
         return ExtractedRelation(

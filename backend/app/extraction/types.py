@@ -75,6 +75,10 @@ class ExtractionResult:
     auto_accepted_relations: list[ExtractedRelation] = field(default_factory=list)
     review_relations: list[ExtractedRelation] = field(default_factory=list)
     discarded_count: int = 0
+    # 处理路径信息（用于追踪和日志）
+    processing_path: str = "llm"  # llm | fallback
+    entity_cleanup_path: str = "none"  # none | llm | rule | llm_fallback | rule_fallback
+    llm_error: str | None = None  # LLM 调用失败时的错误信息
 
 
 @dataclass

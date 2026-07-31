@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/patch-vue-types.cjs",
     "dev": "vite",
     "build": "vite build",
     "typecheck": "vue-tsc -b",
