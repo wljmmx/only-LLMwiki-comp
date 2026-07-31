@@ -129,9 +129,8 @@ ENV ENV=production \
     OPSKG_VERSION=${OPSKG_VERSION}
 
 # P1-2: 容器以 root 启动（entrypoint 需修复挂载卷权限 + 修改 supervisord.conf），
-# entrypoint.sh 完成初始化后用 gosu 降权到 opskg 运行 supervisord。
-# 这是 Docker 非 root 部署的标准模式（参考 nginx 官方镜像）。
-# 实际服务进程（nginx/uvicorn）仍以 opskg 非 root 运行。
+# entrypoint.sh 完成初始化后以 root 启动 supervisord。
+# 实际服务进程（nginx/uvicorn）通过 supervisord.conf 中 user=opskg 降权运行。
 
-# 入口：root 初始化（目录/权限/workers）→ gosu 降权 → supervisord
+# 入口：root 初始化（目录/权限/workers）→ supervisord（子进程 user=opskg 降权）
 ENTRYPOINT ["entrypoint.sh"]

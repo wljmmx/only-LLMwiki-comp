@@ -6,11 +6,12 @@
 #   2. 创建必要的运行时目录
 #   3. 根据 OPSKG_UVICORN_WORKERS 环境变量动态调整 uvicorn worker 数
 #   4. 验证关键文件权限（防止 EACCES 类错误）
-#   5. 用 gosu 降权到 opskg 用户启动 supervisord（非 root 运行服务）
+#   5. 以 root 启动 supervisord，子进程通过 user=opskg 降权
 #
 # 设计：容器以 root 启动（Dockerfile 不设 USER），entrypoint 完成初始化后
-#       用 gosu 降权。这是 Docker 非 root 部署的标准模式（参考 nginx 官方镜像）。
-#       实际服务进程（nginx/uvicorn）仍以 opskg 非 root 运行。
+#       直接以 root 启动 supervisord。nginx/uvicorn 子进程通过 supervisord.conf
+#       中的 user=opskg 配置降权运行。这是解决 nginx EACCES 问题的标准模式：
+#       supervisord 以 root 运行拥有完整权限，实际服务进程以非 root 运行保证安全。
 set -e
 
 # ── 1. 以 root 准备运行时目录 + 修复挂载卷权限 ──
@@ -113,11 +114,11 @@ OpsKG 单镜像启动
   nginx           : 监听 8080（非特权端口）
   后端内部端口    : 8000（仅 nginx 访问）
   数据目录        : /app/data（建议挂载 PVC）
-  运行用户        : opskg（非 root，gosu 降权）
+  运行用户        : opskg（非 root，supervisord 子进程降权）
   配置来源        : 环境变量（参考 .env.example / deploy/k8s/configmap.yaml）
 ============================================================
 EOF
 
-# ── 5. gosu 降权到 opskg 启动 supervisord ──
-echo "[entrypoint] 以 opskg 用户启动 supervisord..."
-exec gosu opskg /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
+# ── 5. 以 root 启动 supervisord（子进程通过 user=opskg 降权）──
+echo "[entrypoint] 以 root 用户启动 supervisord..."
+exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
