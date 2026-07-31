@@ -89,13 +89,16 @@ COPY backend/ /app/
 
 # 复制前端构建产物到 nginx 服务目录
 COPY --from=frontend-builder /build/dist /usr/share/nginx/html
+# 确保非 root 用户（opskg）可读前端静态文件
+RUN chmod -R a+rX /usr/share/nginx/html
 
 # 复制 nginx + supervisor 配置
 COPY deploy/docker/nginx.conf /etc/nginx/nginx.conf
 COPY deploy/docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY deploy/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY deploy/docker/start-nginx.sh /usr/local/bin/start-nginx.sh
 COPY deploy/docker/start-uvicorn.sh /usr/local/bin/start-uvicorn.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/start-uvicorn.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/start-nginx.sh /usr/local/bin/start-uvicorn.sh
 
 # 创建非 root 用户运行（P1-2: 安全最佳实践）
 # nginx 监听 8080（非特权端口），supervisord + nginx + uvicorn 全部以 opskg 用户运行
@@ -103,6 +106,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/start-uvicorn.sh
 RUN groupadd -r opskg && useradd -r -g opskg -d /app -s /sbin/nologin opskg \
     && mkdir -p /app/data /var/log/nginx /var/log/supervisor \
                 /var/lib/nginx/body /var/lib/nginx/proxy /var/lib/nginx/fastcgi \
+                /var/lib/nginx/uwsgi /var/lib/nginx/scgi \
                 /var/cache/nginx /run \
     && chown -R opskg:opskg /app /var/log/nginx /var/log/supervisor \
                 /var/lib/nginx /var/cache/nginx /run

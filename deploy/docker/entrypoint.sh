@@ -16,11 +16,16 @@ set -e
 # ── 1. 以 root 准备运行时目录 + 修复挂载卷权限 ──
 # /app/data 是 VOLUME 挂载点，PVC 场景下卷属主默认是 root，opskg 用户无法写入。
 # 这里 chown 确保挂载后仍归 opskg 所有（仅 root 能 chown）。
+# nginx 需要的所有临时目录（非 root 运行时必须预创建 + 可写）
 mkdir -p /app/data /var/log/nginx /var/log/supervisor \
          /var/lib/nginx/body /var/lib/nginx/proxy /var/lib/nginx/fastcgi \
-         /var/cache/nginx /run
+         /var/lib/nginx/uwsgi /var/lib/nginx/scgi \
+         /var/cache/nginx /run /tmp
 chown -R opskg:opskg /app/data /var/log/nginx /var/log/supervisor \
-                    /var/lib/nginx /var/cache/nginx /run
+                    /var/lib/nginx /var/cache/nginx /run /tmp
+# 设置 nginx 目录权限为可写（确保 opskg 可创建临时文件）
+chmod 755 /var/lib/nginx /var/lib/nginx/* /var/cache/nginx /run
+chmod 775 /var/log/nginx /var/log/supervisor
 
 # ── 2. 验证关键文件权限（防止 EACCES）──
 echo "[entrypoint] 验证文件权限..."
