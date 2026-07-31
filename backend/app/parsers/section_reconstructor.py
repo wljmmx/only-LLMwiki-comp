@@ -219,10 +219,20 @@ class SectionReconstructor:
                 return True, len(m.group(1))
 
         # 规则 2: 编号标题（如 "1. 概述"）
-        m = re.match(r'^(\d+(?:\.\d+)*)\s+', stripped)
+        # 修复：必须有点号分隔，排除纯数字开头的行（如网线颜色编码）
+        # 格式要求：数字 + 点号 + 空格 + 文本（非纯颜色/数字）
+        m = re.match(r'^(\d+(?:\.\d+)*)\.\s+(.+)$', stripped)
         if m:
-            depth = len(m.group(1).split('.'))
-            return True, min(depth, 6)
+            number_part = m.group(1)
+            title_part = m.group(2).strip()
+            # 排除：纯颜色名、纯数字、过短的标题
+            color_names = ['白橙', '橙', '白绿', '绿', '白蓝', '蓝', '白棕', '棕',
+                          'white-orange', 'orange', 'white-green', 'green',
+                          'white-blue', 'blue', 'white-brown', 'brown']
+            if title_part.lower() not in [c.lower() for c in color_names]:
+                if len(title_part) > 2:  # 标题至少 3 个字符
+                    depth = len(number_part.split('.'))
+                    return True, min(depth, 6)
 
         # 规则 3: 语义类别变化（从 general 到非 general）
         if prev_class == 'general' and curr_class != 'general':
@@ -235,7 +245,11 @@ class SectionReconstructor:
             return True, 2
 
         # 规则 4: 短文本 + 无句末标点（可能是标题）
+        # 修复：排除纯数字开头的行（如 "1 白橙"、"2 橙"）
         if len(stripped) < 60 and not stripped.endswith(('.', '。', '!', '！', '?', '？')):
+            # 排除：数字 + 空格 + 短文本（可能是颜色编码/列表项）
+            if re.match(r'^\d+\s+\S{1,10}$', stripped):
+                return False, 0
             # 检查是否含有关键词
             for level, keywords in self.SECTION_START_KEYWORDS.items():
                 for kw in keywords:
@@ -258,31 +272,65 @@ class SectionReconstructor:
         """合并相邻的小边界
 
         如果两个边界之间的内容太短（< MIN_SECTION_LEN），合并到前一个章节。
+
+        改进：连续多个短章节会被合并，避免产生大量碎片化章节。
         """
         if len(boundaries) <= 1:
             return boundaries
 
+        # 第一遍：计算每个边界对应的内容长度
+        section_lens: list[int] = []
+        for i, (start_idx, level) in enumerate(boundaries):
+            if i + 1 < len(boundaries):
+                next_idx = boundaries[i + 1][0]
+            else:
+                next_idx = len(paragraphs)
+            content_len = sum(
+                len(paragraphs[j].strip())
+                for j in range(start_idx, next_idx)
+                if j < len(paragraphs)
+            )
+            section_lens.append(content_len)
+
+        # 第二遍：合并连续的短章节
         merged: list[tuple[int, int]] = []
         i = 0
+        short_run_start = -1  # 当前短章节连续段的起始索引
 
         while i < len(boundaries):
             start_idx, level = boundaries[i]
+            content_len = section_lens[i]
 
-            # 计算到下一个边界的距离
-            if i + 1 < len(boundaries):
-                next_idx = boundaries[i + 1][0]
-                content_len = sum(
-                    len(paragraphs[j].strip())
-                    for j in range(start_idx, next_idx)
-                    if j < len(paragraphs)
-                )
-                # 如果内容太短，跳过当前边界
-                if content_len < self.MIN_SECTION_LEN and i > 0:
-                    i += 1
-                    continue
+            is_short = content_len < self.MIN_SECTION_LEN
 
-            merged.append((start_idx, level))
-            i += 1
+            if is_short and i > 0:  # 第一个章节不合并（保留文档标题）
+                # 标记短章节连续段的开始
+                if short_run_start < 0:
+                    short_run_start = i
+                i += 1
+                continue
+            else:
+                # 当前章节足够长，或者已经是最后一个
+                if short_run_start >= 0:
+                    # 有待合并的短章节连续段
+                    # 保留连续段之前的那个章节（作为合并目标）
+                    if merged:
+                        # 跳过所有短章节，只保留最后一个短章节的起始位置（如果有）
+                        # 实际上是将所有短章节合并到前一个章节
+                        pass
+                    short_run_start = -1
+
+                merged.append((start_idx, level))
+                i += 1
+
+        # 处理末尾的短章节连续段
+        if short_run_start >= 0 and merged:
+            # 末尾的短章节合并到前一个章节，不添加新边界
+            pass
+
+        # 如果合并后只剩一个章节（整个文档都被合并了），保持原样
+        if not merged:
+            return boundaries[:1]  # 只保留第一个章节
 
         return merged
 
