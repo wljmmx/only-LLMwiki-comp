@@ -28,6 +28,9 @@ WORKDIR /build
 # 先复制 package 文件，利用 Docker 层缓存
 COPY frontend/package.json frontend/package-lock.json ./
 
+# 复制 scripts 目录（postinstall 脚本依赖此目录）
+COPY frontend/scripts/ ./scripts/
+
 # 安装依赖（ci 模式：严格按 lockfile，可重现构建）
 RUN npm ci --no-audit --no-fund
 
