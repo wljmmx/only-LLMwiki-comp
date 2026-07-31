@@ -23,6 +23,10 @@ mkdir -p /app/data /var/log/nginx /var/log/supervisor \
          /var/cache/nginx /run /tmp
 chown -R opskg:opskg /app/data /var/log/nginx /var/log/supervisor \
                     /var/lib/nginx /var/cache/nginx /run /tmp
+# 确保 nginx 日志文件属主为 opskg（Debian 包预创建的日志文件属主可能是 root）
+rm -f /var/log/nginx/access.log /var/log/nginx/error.log
+touch /var/log/nginx/access.log /var/log/nginx/error.log
+chown opskg:opskg /var/log/nginx/access.log /var/log/nginx/error.log
 # 设置 nginx 目录权限为可写（确保 opskg 可创建临时文件）
 chmod 755 /var/lib/nginx /var/lib/nginx/* /var/cache/nginx /run
 chmod 775 /var/log/nginx /var/log/supervisor
