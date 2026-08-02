@@ -1330,7 +1330,7 @@ watch(sourceTab, (val) => {
                         class="section-compare-row"
                       >
                         <div class="section-compare-header">
-                          <NSpace align="center" size="4">
+                          <NSpace align="center" :size="4">
                             <NTag
                               size="tiny"
                               :bordered="false"
