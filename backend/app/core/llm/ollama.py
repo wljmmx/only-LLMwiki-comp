@@ -73,6 +73,23 @@ class OllamaClient:
         # 带单位字符串 → 原样返回
         return s
 
+    def _prepare_messages(self, messages: list[ChatMessage]) -> list[dict]:
+        """将 ChatMessage 列表转为 Ollama API 格式，并注入 /no_think 指令。
+
+        当 think=False 时，在最后一条 user 消息末尾追加 /no_think，
+        这是 Qwen3 模型原生的思考模式开关，不依赖 Ollama 版本支持 think 参数。
+        """
+        result = []
+        for m in messages:
+            result.append({"role": m.role, "content": m.content})
+        if not self._think and result:
+            # 在最后一条 user 消息追加 /no_think 指令
+            for i in range(len(result) - 1, -1, -1):
+                if result[i]["role"] == "user":
+                    result[i]["content"] = result[i]["content"].rstrip() + " /no_think"
+                    break
+        return result
+
     async def chat(
         self,
         messages: list[ChatMessage],
@@ -83,7 +100,7 @@ class OllamaClient:
     ) -> LLMResponse:
         payload = {
             "model": self._model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": self._prepare_messages(messages),
             "stream": False,
             "keep_alive": self._keep_alive,  # 模型驻留内存，避免反复加载
             "think": self._think,  # 控制思考模式（Qwen3/DeepSeek-R1）
@@ -224,7 +241,7 @@ class OllamaClient:
     ) -> AsyncIterator[str]:
         payload = {
             "model": self._model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": self._prepare_messages(messages),
             "stream": True,
             "keep_alive": self._keep_alive,  # 模型驻留内存，避免反复加载
             "think": self._think,  # 控制思考模式（Qwen3/DeepSeek-R1）

@@ -104,13 +104,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         async def _warmup_ollama() -> None:
             try:
                 from app.core.llm.ollama import OllamaClient
+                from app.core.llm.base import ChatMessage
 
                 client = OllamaClient(settings)
-                # 发送一个空请求触发模型加载，keep_alive 参数确保模型驻留
+                # 发送一条简单消息触发模型加载，keep_alive 参数确保模型驻留
+                # 不能用空 messages=[]，Ollama 需要至少一条消息才能正常响应
                 warmup_resp = await _asyncio.wait_for(
                     client.chat(
-                        messages=[],
-                        max_tokens=1,
+                        messages=[ChatMessage(role="user", content="hi")],
+                        max_tokens=16,
                     ),
                     timeout=300.0,  # 预热最多等 5 分钟
                 )
