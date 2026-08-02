@@ -119,11 +119,16 @@ class KnowledgeExtractor:
         self.settings = get_settings()
         self.compiled_extractor = CompiledKnowledgeExtractor()
 
-    async def classify_paragraphs(self, doc: ParsedDocument) -> list[dict]:
+    async def classify_paragraphs(
+        self,
+        doc: ParsedDocument,
+        on_progress: Any = None,
+    ) -> list[dict]:
         """段落级 LLM 归类 — 为每段内容生成层级标签、摘要、结构化正文
 
         Args:
             doc: ParsedDocument（含 elements）
+            on_progress: 可选的进度回调 callback(batch_idx, total_batches, batch_count)
 
         Returns:
             段落归类结果列表，每个元素包含：index, label, summary, structured_content, confidence
@@ -147,10 +152,25 @@ class KnowledgeExtractor:
         results = []
         batch_size = 20  # P1: E1 — 5→20 减少 LLM 调用次数
         doc_title = doc.title or ""
+        total_batches = (len(paragraphs) + batch_size - 1) // batch_size
         for i in range(0, len(paragraphs), batch_size):
+            batch_idx = i // batch_size
             batch = paragraphs[i:i + batch_size]
+            logger.info(
+                "paragraph_classification_batch_start",
+                doc_id=doc.doc_id,
+                batch_idx=batch_idx + 1,
+                total_batches=total_batches,
+                batch_size=len(batch),
+            )
             batch_results = await self._classify_batch(batch, doc_title)
             results.extend(batch_results)
+            # 发送批次进度
+            if on_progress:
+                try:
+                    on_progress(batch_idx + 1, total_batches, len(results))
+                except Exception:
+                    pass
 
         logger.info(
             "paragraph_classification_done",

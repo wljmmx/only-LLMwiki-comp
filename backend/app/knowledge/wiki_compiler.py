@@ -785,7 +785,17 @@ class WikiCompiler:
             _emit(ProgressEventType.STEP_START, {"step": "classify", "message": "段落分类中..."})
             paragraph_classifications: list[dict] = []
             try:
-                paragraph_classifications = await self.extractor.classify_paragraphs(doc)
+                def _classify_progress(batch_idx: int, total_batches: int, done_count: int):
+                    _emit(ProgressEventType.PROGRESS, {
+                        "step": "classify",
+                        "message": f"段落分类批次 {batch_idx}/{total_batches}（已分类 {done_count} 段）",
+                        "current": batch_idx,
+                        "total": total_batches,
+                    })
+
+                paragraph_classifications = await self.extractor.classify_paragraphs(
+                    doc, on_progress=_classify_progress,
+                )
                 result.paragraph_count = len(paragraph_classifications)
                 _emit(ProgressEventType.STEP_DONE, {
                     "step": "classify",
