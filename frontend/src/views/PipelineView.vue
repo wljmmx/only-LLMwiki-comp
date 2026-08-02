@@ -1318,60 +1318,170 @@ watch(sourceTab, (val) => {
                         </div>
                       </template>
                     </div>
-                    <!-- LLM 编译步骤：章节对比面板（集成在编译环节内） -->
-                    <div v-else-if="step.name === 'compile' && traceData?.available && filteredSections.length > 0">
-                      <NDivider style="margin: 12px 0" />
-                      <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px">
-                        📖 章节处理对比（共 {{ filteredSections.length }} 个章节）
-                      </div>
-                      <div
-                        v-for="(section, sIdx) in filteredSections.slice(0, 5)"
-                        :key="section.slug || sIdx"
-                        class="section-compare-row"
-                      >
-                        <div class="section-compare-header">
-                          <NSpace align="center" :size="4">
-                            <NTag
-                              size="tiny"
-                              :bordered="false"
-                              :type="getLevelType(section.level)"
-                            >
-                              H{{ section.level }}
-                            </NTag>
-                            <span style="font-weight: 500; font-size: 12px">{{ section.title }}</span>
-                            <NTag
-                              v-if="section.llm_success"
-                              size="tiny"
-                              :bordered="false"
-                              type="success"
-                            >成功</NTag>
-                            <NTag
-                              v-else
-                              size="tiny"
-                              :bordered="false"
-                              type="error"
-                            >失败</NTag>
-                          </NSpace>
+                    <!-- LLM 编译步骤：统计 + 章节对比（集成在编译环节内） -->
+                    <div v-else-if="step.name === 'compile'">
+                      <!-- 编译结果统计（编译完成后显示） -->
+                      <template v-if="compileResult && step.status === 'done'">
+                        <NDivider style="margin: 12px 0" />
+                        <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px">
+                          📊 编译结果统计
                         </div>
-                        <NGrid :cols="2" :x-gap="8" responsive="screen">
+                        <NGrid :cols="4" :x-gap="8" responsive="screen">
                           <NGi>
-                            <div class="compare-sub-header">📋 原始</div>
-                            <div class="compare-sub-body">{{ (section.raw_content || '').substring(0, 150) }}{{ (section.raw_content || '').length > 150 ? '...' : '' }}</div>
+                            <div class="stat-item">
+                              <div class="stat-value">{{ compileResult.pages_created ?? 0 }}</div>
+                              <div class="stat-label">新建页面</div>
+                            </div>
                           </NGi>
                           <NGi>
-                            <div class="compare-sub-header">✨ LLM 输出</div>
-                            <div class="compare-sub-body">{{ (section.compiled_content || '').substring(0, 150) }}{{ (section.compiled_content || '').length > 150 ? '...' : '' }}</div>
+                            <div class="stat-item">
+                              <div class="stat-value">{{ compileResult.pages_updated ?? 0 }}</div>
+                              <div class="stat-label">更新页面</div>
+                            </div>
+                          </NGi>
+                          <NGi>
+                            <div class="stat-item">
+                              <div class="stat-value">{{ compileResult.pages_unchanged ?? 0 }}</div>
+                              <div class="stat-label">未变页面</div>
+                            </div>
+                          </NGi>
+                          <NGi>
+                            <div class="stat-item">
+                              <div class="stat-value">{{ compileResult.paragraph_count ?? 0 }}</div>
+                              <div class="stat-label">段落数</div>
+                            </div>
                           </NGi>
                         </NGrid>
-                      </div>
-                      <NButton
-                        v-if="filteredSections.length > 5"
-                        size="tiny"
-                        quaternary
-                        @click="scrollToSectionCompare"
-                      >
-                        查看全部 {{ filteredSections.length }} 个章节 →
-                      </NButton>
+                      </template>
+
+                      <!-- 管道追踪统计（编译完成后显示） -->
+                      <template v-if="traceData?.available && traceData.summary && step.status === 'done'">
+                        <NDivider style="margin: 12px 0" />
+                        <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px">
+                          📈 管道追踪统计
+                        </div>
+                        <NGrid :cols="4" :x-gap="8" responsive="screen">
+                          <NGi>
+                            <div class="stat-item">
+                              <div class="stat-value">{{ traceData.summary!.total_sections }}</div>
+                              <div class="stat-label">拆分章节</div>
+                            </div>
+                          </NGi>
+                          <NGi>
+                            <div class="stat-item">
+                              <div class="stat-value">{{ traceData.summary!.llm_success_count }}</div>
+                              <div class="stat-label">LLM 成功</div>
+                            </div>
+                          </NGi>
+                          <NGi>
+                            <div class="stat-item">
+                              <div class="stat-value">{{ traceData.summary!.llm_fail_count }}</div>
+                              <div class="stat-label">LLM 失败</div>
+                            </div>
+                          </NGi>
+                          <NGi>
+                            <div class="stat-item">
+                              <div class="stat-value">{{ formatMs(traceData.summary!.duration_ms) }}</div>
+                              <div class="stat-label">总耗时</div>
+                            </div>
+                          </NGi>
+                        </NGrid>
+                      </template>
+
+                      <!-- 章节对比（有数据时显示） -->
+                      <template v-if="traceData?.available && filteredSections.length > 0">
+                        <NDivider style="margin: 12px 0" />
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px">
+                          <span style="font-weight: 600; font-size: 13px">
+                            📖 章节处理对比（共 {{ filteredSections.length }} 个章节）
+                          </span>
+                          <NSpace :size="4">
+                            <NCheckbox v-model:checked="showOnlyWithDiffs">
+                              仅显示有差异
+                            </NCheckbox>
+                          </NSpace>
+                        </div>
+                        <div
+                          v-for="(section, sIdx) in filteredSections.slice(0, 5)"
+                          :key="section.slug || sIdx"
+                          class="section-compare-row"
+                        >
+                          <div class="section-compare-header">
+                            <NSpace align="center" :size="4">
+                              <NTag
+                                size="tiny"
+                                :bordered="false"
+                                :type="getLevelType(section.level)"
+                              >
+                                H{{ section.level }}
+                              </NTag>
+                              <span style="font-weight: 500; font-size: 12px">{{ section.title }}</span>
+                              <NTag
+                                v-if="section.llm_success"
+                                size="tiny"
+                                :bordered="false"
+                                type="success"
+                              >成功</NTag>
+                              <NTag
+                                v-else
+                                size="tiny"
+                                :bordered="false"
+                                type="error"
+                              >失败</NTag>
+                              <span class="meta-text" style="font-size: 11px">
+                                {{ section.raw_chars }} → {{ section.compiled_chars }}
+                              </span>
+                            </NSpace>
+                          </div>
+                          <NGrid :cols="2" :x-gap="8" responsive="screen">
+                            <NGi>
+                              <div class="compare-sub-header">📋 原始内容</div>
+                              <div class="compare-sub-body">{{ (section.raw_content || '').substring(0, 200) }}{{ (section.raw_content || '').length > 200 ? '...' : '' }}</div>
+                            </NGi>
+                            <NGi>
+                              <div class="compare-sub-header">✨ LLM 编译输出</div>
+                              <div class="compare-sub-body">{{ (section.compiled_content || '').substring(0, 200) }}{{ (section.compiled_content || '').length > 200 ? '...' : '' }}</div>
+                            </NGi>
+                          </NGrid>
+                        </div>
+                        <NButton
+                          v-if="filteredSections.length > 5"
+                          size="tiny"
+                          quaternary
+                          @click="scrollToSectionCompare"
+                        >
+                          查看全部 {{ filteredSections.length }} 个章节 →
+                        </NButton>
+                      </template>
+
+                      <!-- 生成的 Wiki 页面列表 -->
+                      <template v-if="compileResult?.slugs?.length && step.status === 'done'">
+                        <NDivider style="margin: 12px 0" />
+                        <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px">
+                          📄 生成的 Wiki 页面
+                        </div>
+                        <NSpace :size="4" wrap>
+                          <NTag
+                            v-for="slug in compileResult.slugs.slice(0, 20)"
+                            :key="slug"
+                            size="tiny"
+                            :bordered="false"
+                            type="info"
+                            style="cursor: pointer"
+                            @click="viewWikiPage(slug)"
+                          >
+                            {{ slug }}
+                          </NTag>
+                          <NTag
+                            v-if="compileResult.slugs.length > 20"
+                            size="tiny"
+                            :bordered="false"
+                            type="warning"
+                          >
+                            +{{ compileResult.slugs.length - 20 }} 更多
+                          </NTag>
+                        </NSpace>
+                      </template>
                     </div>
                     <div v-else-if="step.name === 'struct_compile'">
                       <div class="secondary-text" style="font-size: 12px">
@@ -2007,6 +2117,25 @@ watch(sourceTab, (val) => {
   color: var(--opskg-color-text-3, #999);
   padding: 0 4px;
   flex-shrink: 0;
+}
+
+/* ── 编译结果统计项样式 ── */
+.stat-item {
+  text-align: center;
+  padding: 8px 4px;
+  background: var(--opskg-color-layout-2, #f5f5f7);
+  border-radius: 6px;
+}
+.stat-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--opskg-color-primary, #18a058);
+  line-height: 1.2;
+}
+.stat-label {
+  font-size: 11px;
+  color: var(--opskg-color-text-3, #999);
+  margin-top: 2px;
 }
 
 /* ── 章节对比行样式（集成在 LLM 编译环节内） ── */
