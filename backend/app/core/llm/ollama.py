@@ -46,8 +46,29 @@ class OllamaClient:
         self._default_temperature = settings.llm_temperature
         self._default_max_tokens = settings.llm_max_tokens
         # keep_alive：模型驻留内存时间，避免反复加载导致超时
-        # 默认 "-1"（永久驻留），可通过 OLLAMA_KEEP_ALIVE 环境变量调整
-        self._keep_alive = getattr(settings, "ollama_keep_alive", "-1")
+        # 默认 -1（永久驻留），可通过 OLLAMA_KEEP_ALIVE 环境变量调整
+        # Ollama API 要求：纯数字作为 int 发送（秒），带单位字符串如 "30m" 作为 str 发送
+        self._keep_alive = self._parse_keep_alive(getattr(settings, "ollama_keep_alive", "-1"))
+
+    @staticmethod
+    def _parse_keep_alive(value: str) -> int | str:
+        """将 keep_alive 配置值转为 Ollama API 要求的类型。
+
+        Ollama API 对 keep_alive 的要求：
+        - 纯数字（如 "3600"、"−1"）→ 必须作为 int 发送（秒数，-1=永久驻留）
+        - 带单位字符串（如 "30m"、"1h"、"10s"）→ 作为 str 发送
+
+        如果传入字符串 "−1"，Ollama 会尝试解析为 duration 并报错
+        "time: missing unit in duration"。
+        """
+        s = str(value).strip()
+        # 纯整数（含负数）→ 转为 int
+        try:
+            return int(s)
+        except ValueError:
+            pass
+        # 带单位字符串 → 原样返回
+        return s
 
     async def chat(
         self,
