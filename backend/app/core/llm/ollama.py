@@ -65,17 +65,62 @@ class OllamaClient:
                 "num_predict": max_tokens or self._default_max_tokens,
             },
         }
+        logger.info(
+            "ollama_chat_request",
+            base_url=self._base_url,
+            model=self._model,
+            timeout=self._timeout,
+            msg_count=len(messages),
+        )
         # P1: 使用模块级连接池单例，超时时间使用 settings.llm_timeout
         client = _get_client()
-        resp = await client.post(
-            f"{self._base_url}/api/chat",
-            json=payload,
-            timeout=httpx.Timeout(self._timeout, connect=10.0),
-        )
-        resp.raise_for_status()
+        try:
+            resp = await client.post(
+                f"{self._base_url}/api/chat",
+                json=payload,
+                timeout=httpx.Timeout(self._timeout, connect=10.0),
+            )
+            resp.raise_for_status()
+        except httpx.TimeoutException as e:
+            logger.error(
+                "ollama_chat_timeout",
+                base_url=self._base_url,
+                model=self._model,
+                timeout=self._timeout,
+                error_type=type(e).__name__,
+                error_str=str(e) or "(empty)",
+            )
+            raise
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "ollama_chat_http_error",
+                base_url=self._base_url,
+                model=self._model,
+                status_code=e.response.status_code,
+                response_body=e.response.text[:500],
+            )
+            raise
+        except Exception as e:
+            logger.error(
+                "ollama_chat_error",
+                base_url=self._base_url,
+                model=self._model,
+                error_type=type(e).__name__,
+                error_str=str(e),
+            )
+            raise
+
         data = resp.json()
+        content = data.get("message", {}).get("content", "")
+        logger.info(
+            "ollama_chat_response",
+            model=data.get("model", self._model),
+            content_len=len(content),
+            content_preview=content[:200] if content else "(empty)",
+            done=data.get("done"),
+        )
         return LLMResponse(
-            text=data.get("message", {}).get("content", ""),
+            text=content,
             model=data.get("model", self._model),
             prompt_tokens=data.get("prompt_eval_count", 0),
             completion_tokens=data.get("eval_count", 0),

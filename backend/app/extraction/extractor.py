@@ -494,10 +494,23 @@ class KnowledgeExtractor:
                 ),
                 timeout=call_timeout,
             )
+            # 记录 LLM 返回内容（用于排查空结果问题）
+            logger.info(
+                "extraction_llm_response",
+                text_len=len(resp.text),
+                text_preview=resp.text[:300] if resp.text else "(empty)",
+                model=resp.model,
+            )
             # 解析 JSON
             data = self._parse_json(resp.text)
             entities = [d for d in data if "entity_type" in d]
             relations = [d for d in data if "relation_type" in d]
+            if not entities and not relations:
+                logger.warning(
+                    "extraction_llm_empty_result",
+                    text_len=len(resp.text),
+                    text_preview=resp.text[:500] if resp.text else "(empty)",
+                )
             return entities, relations, None
         except asyncio.TimeoutError:
             error_msg = f"LLM 抽取超时（{call_timeout}s）"
@@ -505,7 +518,7 @@ class KnowledgeExtractor:
             return [], [], error_msg
         except Exception as e:
             error_msg = f"LLM 抽取失败: {e}"
-            logger.error("extraction_llm_failed", error=str(e))
+            logger.error("extraction_llm_failed", error_type=type(e).__name__, error_str=str(e))
             return [], [], error_msg
 
     def _parse_json(self, text: str) -> list[dict]:

@@ -311,7 +311,8 @@ class ResilientLLMClient:
                     attempt=attempt + 1,
                     max_retries=self._max_retries,
                     delay=delay,
-                    error=str(classified),
+                    error=str(classified) or f"{type(classified).__name__} (no message)",
+                    error_type=type(classified).__name__,
                 )
                 await asyncio.sleep(delay)
 
