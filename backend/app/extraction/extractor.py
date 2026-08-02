@@ -714,13 +714,32 @@ class KnowledgeExtractor:
         - 括号内容：（xxx）、(xxx)
         - 感叹号、强调标记
         - 开头的疑问词：什么是、啥是、如何、怎么
+        - 数字前缀：如 "1 白橙" → "白橙"（颜色编码等列表项）
         """
         import re
 
         logger.info("entity_name_rule_clean_start", count=len(entities))
-        
+
+        # 不应作为实体的名称模式（颜色编码、纯数字等）
+        invalid_patterns = [
+            re.compile(r'^\d+\s+\S{1,10}$'),  # "1 白橙" 等颜色编码
+            re.compile(r'^\d+$'),              # 纯数字
+            re.compile(r'^[#\-*=]{2,}$'),      # markdown 分隔线
+        ]
+
+        valid_entities = []
         for e in entities:
             name = e.name
+            # 0. 检查是否是无效实体名（颜色编码等），直接跳过
+            is_invalid = False
+            for pattern in invalid_patterns:
+                if pattern.match(name.strip()):
+                    is_invalid = True
+                    logger.info("entity_name_rule_clean_skip", original=name, reason="invalid_pattern")
+                    break
+            if is_invalid:
+                continue
+
             # 1. 去除括号及括号内内容
             name = re.sub(r'[（(][^)）]*[)）]', '', name)
             # 2. 去除感叹号和强调标记
@@ -729,15 +748,19 @@ class KnowledgeExtractor:
             name = re.sub(r'^(什么是|啥是|何谓|如何理解|谈谈)', '', name)
             # 4. 去除尾部的强调词
             name = re.sub(r'(划重点|必看|重要|必读|详解|介绍)$', '', name)
-            # 5. 清理多余空白
+            # 5. 去除开头的数字编号前缀（如 "1. 概述" → "概述"）
+            name = re.sub(r'^\d+(?:\.\d+)*[.、\s]+', '', name)
+            # 6. 清理多余空白
             name = name.strip()
-            # 6. 如果清理后为空，保留原名
-            if not name:
-                name = e.name
+            # 7. 如果清理后为空或过短，跳过
+            if not name or len(name) < 2:
+                logger.info("entity_name_rule_clean_skip", original=e.name, reason="too_short_after_clean")
+                continue
             e.name = name
+            valid_entities.append(e)
 
-        logger.info("entity_name_rule_clean_done", cleaned_names=[e.name[:40] for e in entities[:5]])
-        return entities
+        logger.info("entity_name_rule_clean_done", cleaned_names=[e.name[:40] for e in valid_entities[:5]], skipped=len(entities) - len(valid_entities))
+        return valid_entities
 
     def _parse_relation(self, raw: dict, doc_id: str) -> ExtractedRelation:
         return ExtractedRelation(
