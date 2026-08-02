@@ -192,7 +192,7 @@ interface PipelineStep {
   errors?: Array<{ entity: string; error: string; status: string }>
 }
 
-// 章节节点（独立管道节点）
+// 章节节点
 interface SectionNode {
   slug: string
   title: string
@@ -207,6 +207,7 @@ interface SectionNode {
   error?: string
   raw_content?: string
   compiled_content?: string
+  showCompare?: boolean
 }
 
 const compiling = ref(false)
@@ -845,13 +846,14 @@ function startCompile() {
           status: 'running',
           children_count: data.children_count as number ?? 0,
         })
-        compileSteps.value[3].status = 'running'
-        compileSteps.value[3].subProgress = {
+        // struct_compile 是第5步（index=4）
+        compileSteps.value[4].status = 'running'
+        compileSteps.value[4].subProgress = {
           current: data.index as number ?? 0,
           total: data.total as number ?? 0,
           currentEntity: `处理章节: ${data.title}`,
         }
-        compileProgress.value = ((3 * 100) + (data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 100) / 7
+        compileProgress.value = ((4 * 100) + (data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 100) / 7
       } else if (evt.type === 'section_done') {
         // 更新章节节点状态
         const data = evt.data
@@ -865,27 +867,30 @@ function startCompile() {
           node.processing_time_ms = data.processing_time_ms as number
           node.error = data.error as string | undefined
         }
-        if (compileSteps.value[3].subProgress) {
-          compileSteps.value[3].subProgress.current = data.index as number ?? 0
-          compileSteps.value[3].subProgress.currentEntity = `完成章节: ${data.title}`
+        // struct_compile 是第5步（index=4）
+        if (compileSteps.value[4].subProgress) {
+          compileSteps.value[4].subProgress.current = data.index as number ?? 0
+          compileSteps.value[4].subProgress.currentEntity = `完成章节: ${data.title}`
         }
-        // struct_compile 进度：第4步（index=3），占 3/7 到 4/7
-        compileProgress.value = ((3 * 100) + (data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 100) / 7
+        // struct_compile 进度：第5步（index=4），占 4/7 到 5/7
+        compileProgress.value = ((4 * 100) + (data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 100) / 7
       } else if (evt.type === 'section_progress') {
         // 兼容旧版 section_progress 事件
         const data = evt.data
-        compileSteps.value[3].subProgress = {
+        // struct_compile 是第5步（index=4）
+        compileSteps.value[4].subProgress = {
           current: data.current as number ?? 0,
           total: data.total as number ?? 0,
           currentEntity: data.status === 'processing' ? `处理章节: ${data.title}` : `完成章节: ${data.title}`,
         }
-        compileProgress.value = ((3 * 100) + (data.percent as number ?? 0)) / 7
+        compileProgress.value = ((4 * 100) + (data.percent as number ?? 0)) / 7
       } else if (evt.type === 'done') {
         compileProgress.value = 100
         compiling.value = false
         isPaused.value = false
         compileSteps.value[2].subProgress = null
         compileSteps.value[3].subProgress = null
+        compileSteps.value[4].subProgress = null
         const indexIdx = stepIndex['index']
         if (indexIdx !== undefined) {
           compileSteps.value[indexIdx].status = 'done'
@@ -1717,6 +1722,139 @@ watch(sourceTab, (val) => {
                         </NSpace>
                       </template>
                     </div>
+                    <div v-else-if="step.name === 'struct_compile' && sectionNodes.length > 0">
+                      <!-- 章节统计摘要 -->
+                      <NSpace :size="12" style="margin-bottom: 8px">
+                        <NTag size="small" type="info" :bordered="false">
+                          总计 {{ sectionStats.total }}
+                        </NTag>
+                        <NTag size="small" type="success" :bordered="false">
+                          完成 {{ sectionStats.done }}
+                        </NTag>
+                        <NTag v-if="sectionStats.error > 0" size="small" type="error" :bordered="false">
+                          失败 {{ sectionStats.error }}
+                        </NTag>
+                        <NTag v-if="sectionStats.running > 0" size="small" type="warning" :bordered="false">
+                          处理中 {{ sectionStats.running }}
+                        </NTag>
+                      </NSpace>
+
+                      <!-- 章节节点列表 -->
+                      <div
+                        v-for="node in sectionNodes"
+                        :key="node.slug"
+                        class="border-light" style="display: flex; align-items: center; padding: 8px 12px; gap: 8px; margin-bottom: 4px"
+                      >
+                        <!-- 状态图标 -->
+                        <NSpin v-if="node.status === 'running'" :size="16" />
+                        <span v-else-if="node.status === 'done'" class="success-text" style="font-size: 16px">✅</span>
+                        <span v-else-if="node.status === 'error'" class="danger-text" style="font-size: 16px">❌</span>
+                        <span v-else class="muted-text" style="font-size: 16px">⏳</span>
+
+                        <!-- 层级标签 -->
+                        <NTag
+                          :bordered="false"
+                          size="tiny"
+                          :type="getLevelType(node.level)"
+                          style="font-weight: 600; min-width: 32px; text-align: center"
+                        >
+                          {{ getLevelLabel(node.level) }}
+                        </NTag>
+
+                        <!-- 标题 -->
+                        <span style="font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+                          {{ node.title }}
+                        </span>
+
+                        <!-- slug -->
+                        <NTag size="tiny" :bordered="false" style="max-width: 160px; overflow: hidden; text-overflow: ellipsis">
+                          {{ node.slug }}
+                        </NTag>
+
+                        <!-- 处理时间 -->
+                        <span v-if="node.processing_time_ms" class="meta-text" style="font-size: 12px; white-space: nowrap">
+                          {{ formatMs(node.processing_time_ms) }}
+                        </span>
+
+                        <!-- 字符变化 -->
+                        <span v-if="node.raw_chars !== undefined && node.compiled_chars !== undefined" class="meta-text" style="font-size: 12px; white-space: nowrap">
+                          {{ node.raw_chars }} → {{ node.compiled_chars }}
+                        </span>
+
+                        <!-- LLM 状态 -->
+                        <NTag v-if="node.status === 'done'" size="tiny" :bordered="false" :type="node.llm_success ? 'success' : 'error'">
+                          {{ node.llm_success ? 'LLM 成功' : 'LLM 失败' }}
+                        </NTag>
+
+                        <!-- 操作按钮 -->
+                        <template v-if="node.status === 'done' || node.status === 'error'">
+                          <NTooltip>
+                            <template #trigger>
+                              <NButton
+                                size="tiny"
+                                quaternary
+                                @click="viewWikiPage(node.slug)"
+                              >
+                                查看
+                              </NButton>
+                            </template>
+                            查看 Wiki 页面
+                          </NTooltip>
+                          <NTooltip>
+                            <template #trigger>
+                              <NButton
+                                size="tiny"
+                                quaternary
+                                :loading="recompilingSlug === node.slug"
+                                @click="openRecompileDialog(node.slug, node.title)"
+                              >
+                                重处理
+                              </NButton>
+                            </template>
+                            重新生成此章节
+                          </NTooltip>
+                          <NTooltip>
+                            <template #trigger>
+                              <NButton
+                                size="tiny"
+                                quaternary
+                                :type="editingSlug === node.slug ? 'warning' : 'default'"
+                                @click="editingSlug === node.slug ? cancelEdit() : startEdit(node.slug, node.compiled_content || '')"
+                              >
+                                {{ editingSlug === node.slug ? '取消' : '编辑' }}
+                              </NButton>
+                            </template>
+                            编辑此章节内容
+                          </NTooltip>
+                        </template>
+
+                        <!-- 对比视图按钮和面板 -->
+                        <NButton
+                          v-if="(node.status === 'done' || node.status === 'error') && (node.raw_content || node.compiled_content)"
+                          size="tiny"
+                          quaternary
+                          type="primary"
+                          @click="node.showCompare = !node.showCompare"
+                        >
+                          {{ node.showCompare ? '收起' : '对比' }}
+                        </NButton>
+                      </div>
+
+                      <!-- 对比视图：每个章节的原文 vs LLM 输出 -->
+                      <template v-for="node in sectionNodes.filter(n => n.showCompare)" :key="'cmp-'+node.slug">
+                        <div class="compare-panel" style="margin-bottom: 8px">
+                          <div class="compare-column">
+                            <div class="compare-header">📋 原始内容</div>
+                            <div class="compare-body">{{ node.raw_content || '无原始内容' }}</div>
+                          </div>
+                          <div class="compare-arrow">→</div>
+                          <div class="compare-column">
+                            <div class="compare-header">✨ LLM 编译输出</div>
+                            <div class="compare-body">{{ node.compiled_content || '等待 LLM 输出...' }}</div>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
                     <div v-else-if="step.name === 'struct_compile'">
                       <div class="secondary-text" style="font-size: 12px">
                         处理章节数：{{ step.output.sections ?? 0 }}，创建：{{ step.output.pages_created ?? 0 }}，更新：{{ step.output.pages_updated ?? 0 }}
@@ -1780,122 +1918,6 @@ watch(sourceTab, (val) => {
           </NTag>
         </div>
       </template>
-    </NCard>
-
-    <!-- ==================== 章节节点（独立管道节点） ==================== -->
-    <NCard
-      v-if="sectionNodes.length > 0"
-      title="章节处理节点"
-      size="small"
-      style="margin-bottom: 16px"
-    >
-      <template #header-extra>
-        <NSpace :size="12">
-          <NTag size="small" type="info" :bordered="false">
-            总计 {{ sectionStats.total }}
-          </NTag>
-          <NTag size="small" type="success" :bordered="false">
-            完成 {{ sectionStats.done }}
-          </NTag>
-          <NTag v-if="sectionStats.error > 0" size="small" type="error" :bordered="false">
-            失败 {{ sectionStats.error }}
-          </NTag>
-          <NTag v-if="sectionStats.running > 0" size="small" type="warning" :bordered="false">
-            处理中 {{ sectionStats.running }}
-          </NTag>
-        </NSpace>
-      </template>
-
-      <div
-        v-for="node in sectionNodes"
-        :key="node.slug"
-        class="border-light" style="display: flex; align-items: center; padding: 8px 12px; gap: 8px"
-      >
-        <!-- 状态图标 -->
-        <NSpin v-if="node.status === 'running'" :size="16" />
-        <span v-else-if="node.status === 'done'" class="success-text" style="font-size: 16px">✅</span>
-        <span v-else-if="node.status === 'error'" class="danger-text" style="font-size: 16px">❌</span>
-        <span v-else class="muted-text" style="font-size: 16px">⏳</span>
-
-        <!-- 层级标签 -->
-        <NTag
-          :bordered="false"
-          size="tiny"
-          :type="getLevelType(node.level)"
-          style="font-weight: 600; min-width: 32px; text-align: center"
-        >
-          {{ getLevelLabel(node.level) }}
-        </NTag>
-
-        <!-- 标题 -->
-        <span style="font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
-          {{ node.title }}
-        </span>
-
-        <!-- slug -->
-        <NTag size="tiny" :bordered="false" style="max-width: 160px; overflow: hidden; text-overflow: ellipsis">
-          {{ node.slug }}
-        </NTag>
-
-        <!-- 处理时间 -->
-        <span v-if="node.processing_time_ms" class="meta-text" style="font-size: 12px; white-space: nowrap">
-          {{ formatMs(node.processing_time_ms) }}
-        </span>
-
-        <!-- 字符变化 -->
-        <span v-if="node.raw_chars !== undefined && node.compiled_chars !== undefined" class="meta-text" style="font-size: 12px; white-space: nowrap">
-          {{ node.raw_chars }} → {{ node.compiled_chars }}
-        </span>
-
-        <!-- LLM 状态 -->
-        <NTag v-if="node.status === 'done'" size="tiny" :bordered="false" :type="node.llm_success ? 'success' : 'error'">
-          {{ node.llm_success ? 'LLM 成功' : 'LLM 失败' }}
-        </NTag>
-
-        <!-- 操作按钮 -->
-        <template v-if="node.status === 'done' || node.status === 'error'">
-          <NTooltip>
-            <template #trigger>
-              <NButton
-                size="tiny"
-                quaternary
-                @click="viewWikiPage(node.slug)"
-              >
-                查看
-              </NButton>
-            </template>
-            查看 Wiki 页面
-          </NTooltip>
-          <NTooltip>
-            <template #trigger>
-              <NButton
-                size="tiny"
-                quaternary
-                :loading="recompilingSlug === node.slug"
-                @click="openRecompileDialog(node.slug, node.title)"
-              >
-                重处理
-              </NButton>
-            </template>
-            重新生成此章节
-          </NTooltip>
-          <NTooltip>
-            <template #trigger>
-              <NButton
-                size="tiny"
-                quaternary
-                :type="editingSlug === node.slug ? 'warning' : 'default'"
-                @click="editingSlug === node.slug ? cancelEdit() : startEdit(node.slug, node.compiled_content || '')"
-              >
-                {{ editingSlug === node.slug ? '取消' : '编辑' }}
-              </NButton>
-            </template>
-            编辑此章节内容
-          </NTooltip>
-        </template>
-      </div>
-
-      <NEmpty v-if="sectionNodes.length === 0" description="暂无章节节点" size="small" />
     </NCard>
 
     <!-- 章节编辑内联区域 -->
