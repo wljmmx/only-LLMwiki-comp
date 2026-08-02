@@ -459,12 +459,21 @@ function startCompile() {
           } else if (step === 'classify') {
             const paragraphs = evt.data.paragraphs ?? 0
             const error = evt.data.error
+            const labelCount = evt.data.label_count ?? 0
+            const topLabels = evt.data.top_labels ?? []
+            const sampleParagraphs = evt.data.sample_paragraphs ?? []
             if (error) {
               compileSteps.value[idx].details = `段落分类失败：${error}`
             } else {
-              compileSteps.value[idx].details = `段落分类完成：${paragraphs} 个段落`
+              compileSteps.value[idx].details = `段落分类完成：${paragraphs} 个段落，${labelCount} 个分类标签`
             }
-            compileSteps.value[idx].output = { paragraphs }
+            compileSteps.value[idx].output = {
+              paragraphs,
+              label_count: labelCount,
+              top_labels: topLabels,
+              sample_paragraphs: sampleParagraphs,
+              error,
+            }
           } else if (step === 'compile') {
             const pages = evt.data.pages ?? 0
             const slugs = evt.data.slugs ?? []
@@ -1536,6 +1545,52 @@ watch(sourceTab, (val) => {
                         </NTag>
                       </NSpace>
                       <NEmpty v-if="!step.output.entity_names.length" description="无实体" size="small" />
+                    </div>
+                    <div v-else-if="step.name === 'classify'" style="max-height: 300px; overflow-y: auto">
+                      <!-- 分类统计摘要 -->
+                      <div class="secondary-text" style="font-size: 12px; margin-bottom: 8px">
+                        段落分类统计：{{ step.output.paragraphs ?? 0 }} 个段落，{{ step.output.label_count ?? 0 }} 个分类标签
+                      </div>
+                      <div v-if="step.output.error" class="danger-text" style="font-size: 12px; margin-bottom: 8px">
+                        ⚠️ {{ step.output.error }}
+                      </div>
+                      <!-- 分类标签分布 -->
+                      <template v-if="step.output.top_labels && step.output.top_labels.length > 0">
+                        <div class="secondary-text" style="font-size: 12px; margin-bottom: 4px; font-weight: 600">
+                          📂 分类标签分布（前 {{ step.output.top_labels.length }} 个）：
+                        </div>
+                        <div v-for="(item, i) in step.output.top_labels" :key="i" style="display: flex; align-items: center; padding: 2px 0; font-size: 12px; line-height: 20px">
+                          <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+                            <NTag size="tiny" :bordered="false" type="info" style="margin-right: 4px">{{ item.count }}</NTag>
+                            {{ item.label }}
+                          </span>
+                        </div>
+                      </template>
+                      <!-- 段落分类示例 -->
+                      <template v-if="step.output.sample_paragraphs && step.output.sample_paragraphs.length > 0">
+                        <NDivider style="margin: 8px 0" />
+                        <div class="secondary-text" style="font-size: 12px; margin-bottom: 4px; font-weight: 600">
+                          📝 段落分类示例（前 {{ step.output.sample_paragraphs.length }} 个）：
+                        </div>
+                        <div
+                          v-for="(p, i) in step.output.sample_paragraphs"
+                          :key="i"
+                          class="border-light"
+                          style="padding: 6px 8px; margin-bottom: 4px; font-size: 12px; line-height: 18px"
+                        >
+                          <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 2px">
+                            <NTag size="tiny" :bordered="false" style="min-width: 28px">P{{ p.index }}</NTag>
+                            <NTag size="tiny" :bordered="false" type="warning">{{ (p.confidence * 100).toFixed(0) }}%</NTag>
+                            <span style="font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-color-3)">
+                              {{ p.label }}
+                            </span>
+                          </div>
+                          <div class="secondary-text" style="padding-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+                            {{ p.summary || '(无摘要)' }}
+                          </div>
+                        </div>
+                      </template>
+                      <NEmpty v-if="(!step.output.top_labels || step.output.top_labels.length === 0) && (!step.output.sample_paragraphs || step.output.sample_paragraphs.length === 0)" description="无分类数据" size="small" />
                     </div>
                     <div v-else-if="step.name === 'compile' && step.output.slugs" style="max-height: 200px; overflow-y: auto">
                       <div class="secondary-text" style="font-size: 12px; margin-bottom: 4px">生成 Wiki 页面：</div>

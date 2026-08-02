@@ -797,10 +797,33 @@ class WikiCompiler:
                     doc, on_progress=_classify_progress,
                 )
                 result.paragraph_count = len(paragraph_classifications)
+
+                # 统计段落分类信息供前端展示
+                label_counts: dict[str, int] = {}
+                top_labels: list[dict] = []
+                sample_paragraphs: list[dict] = []
+                for pc in paragraph_classifications:
+                    label = pc.get("label", "未分类")
+                    label_counts[label] = label_counts.get(label, 0) + 1
+                # 取前 20 个标签按数量降序
+                sorted_labels = sorted(label_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+                top_labels = [{"label": lb, "count": ct} for lb, ct in sorted_labels]
+                # 取前 10 个段落作为示例
+                for pc in paragraph_classifications[:10]:
+                    sample_paragraphs.append({
+                        "index": pc.get("index", 0),
+                        "label": pc.get("label", "未分类"),
+                        "summary": (pc.get("summary") or "")[:120],
+                        "confidence": pc.get("confidence", 0),
+                    })
+
                 _emit(ProgressEventType.STEP_DONE, {
                     "step": "classify",
                     "paragraphs": len(paragraph_classifications),
-                    "message": f"段落分类完成：{len(paragraph_classifications)} 个段落",
+                    "label_count": len(label_counts),
+                    "top_labels": top_labels,
+                    "sample_paragraphs": sample_paragraphs,
+                    "message": f"段落分类完成：{len(paragraph_classifications)} 个段落，{len(label_counts)} 个分类标签",
                 })
                 logger.info(
                     "paragraph_classification_integrated",
