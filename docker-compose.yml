@@ -69,6 +69,8 @@ services:
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:7b}
       # 模型驻留内存时间（-1=永久驻留，避免反复加载导致超时）
       - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:--1}
+      # 思考模式（false=关闭，避免 Qwen3 思考耗尽 token 导致空回复）
+      - OLLAMA_THINK=${OLLAMA_THINK:-false}
       # vLLM（LLM_BACKEND=vllm 时使用）
       - VLLM_BASE_URL=${VLLM_BASE_URL:-http://host.docker.internal:8000}
       - VLLM_MODEL=${VLLM_MODEL:-Qwen2.5-14B-Instruct}

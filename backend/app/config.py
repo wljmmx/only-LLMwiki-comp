@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     # "1h" = 1 小时（字符串，Ollama 支持的格式）
     # 默认 -1（永久驻留），避免模型反复加载导致超时
     ollama_keep_alive: str = "-1"
+    # Ollama 思考模式（Qwen3/DeepSeek-R1 等模型支持）
+    # True = 开启思考模式（思考内容在 message.thinking 字段，消耗 num_predict 预算）
+    # False = 关闭思考模式（推荐运维知识库场景，避免思考耗尽 token 导致空回复）
+    ollama_think: bool = False
 
     # vLLM
     vllm_base_url: str = "http://localhost:8000"

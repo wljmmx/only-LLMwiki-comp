@@ -49,6 +49,9 @@ class OllamaClient:
         # 默认 -1（永久驻留），可通过 OLLAMA_KEEP_ALIVE 环境变量调整
         # Ollama API 要求：纯数字作为 int 发送（秒），带单位字符串如 "30m" 作为 str 发送
         self._keep_alive = self._parse_keep_alive(getattr(settings, "ollama_keep_alive", "-1"))
+        # 思考模式：Qwen3/DeepSeek-R1 等模型默认开启思考模式，思考内容消耗 num_predict 预算
+        # 运维知识库场景（实体抽取、段落分类、Wiki编译）不需要深度思考，关闭可避免空回复
+        self._think = getattr(settings, "ollama_think", False)
 
     @staticmethod
     def _parse_keep_alive(value: str) -> int | str:
@@ -83,6 +86,7 @@ class OllamaClient:
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "stream": False,
             "keep_alive": self._keep_alive,  # 模型驻留内存，避免反复加载
+            "think": self._think,  # 控制思考模式（Qwen3/DeepSeek-R1）
             "options": {
                 "temperature": temperature
                 if temperature is not None
@@ -97,6 +101,7 @@ class OllamaClient:
             timeout=self._timeout,
             msg_count=len(messages),
             keep_alive=self._keep_alive,
+            think=self._think,
         )
         # P1: 使用模块级连接池单例，超时时间使用 settings.llm_timeout
         client = _get_client()
@@ -137,11 +142,33 @@ class OllamaClient:
             raise
 
         data = resp.json()
-        content = data.get("message", {}).get("content", "")
+        msg = data.get("message", {})
+        content = msg.get("content", "")
+        thinking = msg.get("thinking", "")
         done = data.get("done", False)
 
-        # Ollama 返回 done=True 但 content 为空 — 模型可能不存在或未 pull
+        # Ollama 返回 done=True 但 content 为空
         if done and not content.strip():
+            # 检查是否是思考模式导致：thinking 有内容但 content 为空
+            # 说明思考耗尽了 num_predict 预算，模型未输出实际回复
+            if thinking.strip():
+                logger.warning(
+                    "ollama_chat_thinking_exhausted",
+                    model=self._model,
+                    thinking_len=len(thinking),
+                    thinking_preview=thinking[:200],
+                    num_predict=payload["options"].get("num_predict"),
+                    hint="思考模式耗尽 token 预算，建议增大 num_predict 或设置 ollama_think=false",
+                )
+                raise httpx.HTTPStatusError(
+                    f"Ollama 模型 '{self._model}' 思考模式耗尽了 token 预算（num_predict={payload['options'].get('num_predict')}），"
+                    f"思考内容 {len(thinking)} 字符但实际回复为空。"
+                    f"解决方案：设置 OLLAMA_THINK=false 关闭思考模式，或增大 LLM_MAX_TOKENS。",
+                    request=resp.request,
+                    response=resp,
+                )
+
+            # 非思考模式下的空回复 — 模型可能不存在或未 pull
             available_models = await self._list_available_models_safe(client)
             model_error_msg = (
                 f"Ollama 模型 '{self._model}' 返回空内容。"
@@ -200,6 +227,7 @@ class OllamaClient:
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "stream": True,
             "keep_alive": self._keep_alive,  # 模型驻留内存，避免反复加载
+            "think": self._think,  # 控制思考模式（Qwen3/DeepSeek-R1）
             "options": {
                 "temperature": temperature
                 if temperature is not None
@@ -219,7 +247,9 @@ class OllamaClient:
                 import orjson
 
                 chunk = orjson.loads(line)
-                content = chunk.get("message", {}).get("content", "")
+                msg = chunk.get("message", {})
+                content = msg.get("content", "")
+                # 思考模式的 thinking 内容不输出到流（用户只需最终结果）
                 if content:
                     yield content
 
