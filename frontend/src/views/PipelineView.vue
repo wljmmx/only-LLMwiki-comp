@@ -175,6 +175,10 @@ interface PipelineStep {
     entity_names?: string[]
     // classify
     paragraphs?: number
+    label_count?: number
+    top_labels?: Array<{ label: string; count: number }>
+    sample_paragraphs?: Array<{ index: number; label: string; summary: string; confidence: number }>
+    error?: string
     // compile
     pages?: number
     slugs?: string[]
