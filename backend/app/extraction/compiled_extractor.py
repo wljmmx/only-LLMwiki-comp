@@ -93,6 +93,26 @@ class CompiledKnowledgeExtractor:
     def __init__(self, llm_call: Any | None = None):
         self._llm_call = llm_call
 
+    # 不应作为实体的标题黑名单（颜色编码、纯数字、装饰性文字等）
+    _INVALID_TITLE_PATTERNS = [
+        re.compile(r'^\d+\s+\S{1,10}$'),  # "1 白橙"、"2 橙" 等颜色编码
+        re.compile(r'^\d+$'),              # 纯数字
+        re.compile(r'^[#\-*=]{2,}$'),      # markdown 分隔线
+    ]
+    # 过短或无意义的标题
+    _MIN_TITLE_LEN = 3
+
+    def _is_valid_entity_title(self, title: str) -> bool:
+        """判断标题是否适合作为实体名"""
+        title = title.strip()
+        if not title or len(title) < self._MIN_TITLE_LEN:
+            return False
+        # 检查黑名单模式
+        for pattern in self._INVALID_TITLE_PATTERNS:
+            if pattern.match(title):
+                return False
+        return True
+
     def extract_from_document(self, doc: Any) -> CompiledExtractionResult:
         """从 ParsedDocument 提取实体和关系（兜底方案）
 
@@ -109,11 +129,11 @@ class CompiledKnowledgeExtractor:
         entities: list[ExtractedEntity] = []
         relations: list[ExtractedRelation] = []
 
-        # 从标题树提取实体（直接用标题文本，不做正则清理）
+        # 从标题树提取实体（过滤掉颜色编码等无效标题）
         heading_tree = getattr(doc, 'heading_tree', []) or []
         for node_dict in heading_tree if isinstance(heading_tree, list) else []:
             title = node_dict.get('title', '') if isinstance(node_dict, dict) else getattr(node_dict, 'title', '')
-            if title:
+            if title and self._is_valid_entity_title(title):
                 slug = self._slugify(title)
                 entities.append(ExtractedEntity(
                     name=title,
