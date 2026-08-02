@@ -67,6 +67,8 @@ services:
       # WSL2/Win: Ollama 需设置 OLLAMA_HOST=0.0.0.0:11434 监听所有接口
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:7b}
+      # 模型驻留内存时间（-1=永久驻留，避免反复加载导致超时）
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:--1}
       # vLLM（LLM_BACKEND=vllm 时使用）
       - VLLM_BASE_URL=${VLLM_BASE_URL:-http://host.docker.internal:8000}
       - VLLM_MODEL=${VLLM_MODEL:-Qwen2.5-14B-Instruct}

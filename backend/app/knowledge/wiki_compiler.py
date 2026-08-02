@@ -186,8 +186,8 @@ class WikiCompiler:
             messages.append(ChatMessage(role="system", content=system))
         messages.append(ChatMessage(role="user", content=prompt))
 
-        # 超时配置：优先使用参数，其次用 settings，默认 600s（10分钟）
-        call_timeout = timeout or getattr(self.settings, 'llm_call_timeout', 600)
+        # 超时配置：优先使用参数，其次用 settings，默认 900s（15分钟，本地大模型推理较慢）
+        call_timeout = timeout or getattr(self.settings, 'llm_call_timeout', 900)
 
         # P2-1: LLM 并发控制
         from app.core.llm.concurrency import TaskPriority, get_llm_concurrency_controller

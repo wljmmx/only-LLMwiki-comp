@@ -95,6 +95,40 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         logger.info("auth.bootstrap_ok", admin_user=admin_user)
     except Exception as e:  # noqa: BLE001
         logger.warning("auth.bootstrap_failed", error=str(e))
+
+    # Ollama 模型预热：启动时异步加载模型到内存（keep_alive 驻留）
+    # 避免首次请求时才加载模型导致超时
+    if settings.llm_backend == "ollama":
+        import asyncio as _asyncio
+
+        async def _warmup_ollama() -> None:
+            try:
+                from app.core.llm.ollama import OllamaClient
+
+                client = OllamaClient(settings)
+                # 发送一个空请求触发模型加载，keep_alive 参数确保模型驻留
+                warmup_resp = await _asyncio.wait_for(
+                    client.chat(
+                        messages=[],
+                        max_tokens=1,
+                    ),
+                    timeout=300.0,  # 预热最多等 5 分钟
+                )
+                logger.info(
+                    "ollama.warmup_done",
+                    model=settings.ollama_model,
+                    keep_alive=getattr(client, "_keep_alive", "-1"),
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "ollama.warmup_failed",
+                    model=settings.ollama_model,
+                    error=str(e),
+                )
+
+        # 后台执行预热，不阻塞应用启动
+        _asyncio.create_task(_warmup_ollama())
+
     try:
         yield
     finally:

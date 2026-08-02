@@ -273,7 +273,10 @@ class SectionReconstructor:
 
         如果两个边界之间的内容太短（< MIN_SECTION_LEN），合并到前一个章节。
 
-        改进：连续多个短章节会被合并，避免产生大量碎片化章节。
+        改进：
+        1. 连续短章节会被合并，但不会全部合并成一个
+        2. 只有当连续短章节的总长度仍然过短时才继续合并
+        3. 保留原始章节数量的下限，避免过度合并
         """
         if len(boundaries) <= 1:
             return boundaries
@@ -293,44 +296,56 @@ class SectionReconstructor:
             section_lens.append(content_len)
 
         # 第二遍：合并连续的短章节
+        # 策略：将连续的短章节合并成一个较长的章节
         merged: list[tuple[int, int]] = []
         i = 0
-        short_run_start = -1  # 当前短章节连续段的起始索引
 
         while i < len(boundaries):
             start_idx, level = boundaries[i]
             content_len = section_lens[i]
 
-            is_short = content_len < self.MIN_SECTION_LEN
+            if content_len < self.MIN_SECTION_LEN and i > 0:
+                # 尝试找后续连续短章节一起合并
+                merged_len = content_len
+                j = i
+                while j < len(boundaries) - 1:
+                    next_len = section_lens[j + 1]
+                    merged_len += next_len
+                    if merged_len >= self.MIN_SECTION_LEN:
+                        break
+                    j += 1
 
-            if is_short and i > 0:  # 第一个章节不合并（保留文档标题）
-                # 标记短章节连续段的开始
-                if short_run_start < 0:
-                    short_run_start = i
-                i += 1
-                continue
+                # 合并 i 到 j 的短章节到前一个章节
+                # 不添加新边界，直接跳过这些短章节
+                i = j + 1
             else:
-                # 当前章节足够长，或者已经是最后一个
-                if short_run_start >= 0:
-                    # 有待合并的短章节连续段
-                    # 保留连续段之前的那个章节（作为合并目标）
-                    if merged:
-                        # 跳过所有短章节，只保留最后一个短章节的起始位置（如果有）
-                        # 实际上是将所有短章节合并到前一个章节
-                        pass
-                    short_run_start = -1
-
+                # 当前章节足够长
                 merged.append((start_idx, level))
                 i += 1
 
-        # 处理末尾的短章节连续段
-        if short_run_start >= 0 and merged:
-            # 末尾的短章节合并到前一个章节，不添加新边界
-            pass
-
-        # 如果合并后只剩一个章节（整个文档都被合并了），保持原样
-        if not merged:
-            return boundaries[:1]  # 只保留第一个章节
+        # 如果合并后只有一个章节且原始有多个章节，尝试保留一些结构
+        if len(merged) <= 1 and len(boundaries) > 2:
+            # 找原始边界中较长的章节，保留它们
+            long_sections = [
+                (boundaries[i], section_lens[i])
+                for i in range(len(boundaries))
+                if section_lens[i] >= self.MIN_SECTION_LEN
+            ]
+            if long_sections:
+                # 保留所有较长的章节
+                merged = [b for b, _ in long_sections]
+            else:
+                # 所有章节都很短，按原结构保留（不合并）
+                # 但限制最大章节数，避免碎片化
+                max_sections = min(len(boundaries), max(3, len(paragraphs) // 300))
+                if len(boundaries) > max_sections:
+                    # 均匀采样保留
+                    step = len(boundaries) // max_sections
+                    merged = boundaries[::step][:max_sections]
+                    if boundaries[-1] not in merged:
+                        merged.append(boundaries[-1])
+                else:
+                    merged = list(boundaries)
 
         return merged
 
@@ -404,8 +419,8 @@ class SectionReconstructor:
         if m:
             return m.group(1).strip(), m.group(1).strip()
 
-        # 如果是编号标题，提取标题文本
-        m = re.match(r'^(\d+(?:\.\d+)*)\s+(.+)$', stripped)
+        # 如果是编号标题，提取标题文本（必须有点号分隔）
+        m = re.match(r'^(\d+(?:\.\d+)*)\.\s+(.+)$', stripped)
         if m:
             return m.group(2).strip(), m.group(2).strip()
 
@@ -477,7 +492,7 @@ class SectionReconstructor:
             if content_lines:
                 # 检查第一行是否是标题，如果是则跳过
                 first_line = content_lines[0].strip()
-                if not re.match(r'^#{1,6}\s', first_line) and not re.match(r'^\d+(?:\.\d+)*\s+', first_line):
+                if not re.match(r'^#{1,6}\s', first_line) and not re.match(r'^\d+(?:\.\d+)*\.\s+', first_line):
                     lines.append(content_lines[0])
                 lines.extend(content_lines[1:])
 

@@ -176,7 +176,7 @@ class KnowledgeExtractor:
 # 要求
 按照预设的分类体系对每个段落生成：层级标签、段落摘要、结构化正文。"""
 
-        call_timeout = getattr(self.settings, 'llm_call_timeout', 600)
+        call_timeout = getattr(self.settings, 'llm_call_timeout', 900)
         try:
             resp = await asyncio.wait_for(
                 self.llm.chat(
@@ -481,7 +481,7 @@ class KnowledgeExtractor:
 
         添加 asyncio.wait_for 超时保护，默认 600s。
         """
-        call_timeout = getattr(self.settings, 'llm_call_timeout', 600)
+        call_timeout = getattr(self.settings, 'llm_call_timeout', 900)
         try:
             resp = await asyncio.wait_for(
                 self.llm.chat(
@@ -633,7 +633,7 @@ class KnowledgeExtractor:
 
 请直接输出 JSON 数组。"""
 
-        call_timeout = getattr(self.settings, 'llm_call_timeout', 60)
+        call_timeout = getattr(self.settings, 'llm_call_timeout', 300)
         try:
             if on_progress:
                 try:

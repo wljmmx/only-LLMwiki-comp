@@ -145,10 +145,14 @@ class MarkdownParser:
                 i += 1
                 continue
 
-            numbered_heading_match = re.match(r"^(\d+(?:\.\d+)*)\s+(.+)$", line)
+            numbered_heading_match = re.match(r"^(\d+(?:\.\d+)*)\.\s+(.+)$", line)
             if numbered_heading_match:
                 number_str = numbered_heading_match.group(1)
                 title = numbered_heading_match.group(2).strip()
+                # 过滤：颜色名/过短标题不作为章节
+                if self._is_color_name(title) or len(title) < 3:
+                    i += 1
+                    continue
                 level = len(number_str.split("."))
                 self._process_heading(
                     numbered_heading_match, elements, heading_stack, heading_tree,
@@ -282,7 +286,19 @@ class MarkdownParser:
         heading_stack.append((level, new_node))
 
     def _is_special_line(self, line: str) -> bool:
-        return bool(re.match(r"^(#{1,6}\s|```|[-*+]\s|\d+\.\s|\||\d+(?:\.\d+)*\s)", line))
+        return bool(re.match(r"^(#{1,6}\s|```|[-*+]\s|\d+\.\s|\||\d+(?:\.\d+)*\.\s)", line))
+
+    # 不应作为章节标题的颜色名
+    _COLOR_NAMES = frozenset([
+        '白橙', '橙', '白绿', '绿', '白蓝', '蓝', '白棕', '棕',
+        'white-orange', 'orange', 'white-green', 'green',
+        'white-blue', 'blue', 'white-brown', 'brown',
+    ])
+
+    @classmethod
+    def _is_color_name(cls, title: str) -> bool:
+        """判断标题是否是颜色名（不应作为章节）"""
+        return title.lower() in cls._COLOR_NAMES
 
     def _inject_inferred_headings(
         self, text: str, paragraphs: list[str], inferred: list[dict],

@@ -99,8 +99,8 @@ class CompiledKnowledgeExtractor:
         re.compile(r'^\d+$'),              # 纯数字
         re.compile(r'^[#\-*=]{2,}$'),      # markdown 分隔线
     ]
-    # 过短或无意义的标题
-    _MIN_TITLE_LEN = 3
+    # 过短或无意义的标题（中文 2 字也是有效标题，如"配置"、"概述"）
+    _MIN_TITLE_LEN = 2
 
     def _is_valid_entity_title(self, title: str) -> bool:
         """判断标题是否适合作为实体名"""
@@ -112,6 +112,52 @@ class CompiledKnowledgeExtractor:
             if pattern.match(title):
                 return False
         return True
+
+    def _extract_entities_from_heading_tree(
+        self,
+        heading_tree: list,
+        entities: list,
+        seen_slugs: set,
+        doc_id: str,
+    ) -> None:
+        """递归从标题树提取实体
+
+        Args:
+            heading_tree: 标题树节点列表（HeadingNode 对象或 dict）
+            entities: 输出实体列表
+            seen_slugs: 已见 slug 集合（用于去重）
+            doc_id: 文档 ID
+        """
+        for node in heading_tree:
+            # 兼容 HeadingNode 对象和 dict
+            if isinstance(node, dict):
+                title = node.get('title', '')
+                children = node.get('children', [])
+                level = node.get('level', 0)
+            else:
+                title = getattr(node, 'title', '')
+                children = getattr(node, 'children', [])
+                level = getattr(node, 'level', 0)
+
+            if title and self._is_valid_entity_title(title):
+                slug = self._slugify(title)
+                if slug not in seen_slugs:
+                    seen_slugs.add(slug)
+                    entities.append(ExtractedEntity(
+                        name=title,
+                        slug=slug,
+                        entity_type='Concept',
+                        definition=f'文档章节: {title}',
+                        source_section_id='',
+                        source_doc_id=doc_id,
+                        confidence=0.65,
+                    ))
+
+            # 递归处理子节点
+            if children:
+                self._extract_entities_from_heading_tree(
+                    children, entities, seen_slugs, doc_id
+                )
 
     def extract_from_document(self, doc: Any) -> CompiledExtractionResult:
         """从 ParsedDocument 提取实体和关系（兜底方案）
@@ -128,22 +174,13 @@ class CompiledKnowledgeExtractor:
         """
         entities: list[ExtractedEntity] = []
         relations: list[ExtractedRelation] = []
+        seen_slugs: set[str] = set()  # 去重
 
-        # 从标题树提取实体（过滤掉颜色编码等无效标题）
+        # 从标题树提取实体（递归处理所有层级，过滤掉颜色编码等无效标题）
         heading_tree = getattr(doc, 'heading_tree', []) or []
-        for node_dict in heading_tree if isinstance(heading_tree, list) else []:
-            title = node_dict.get('title', '') if isinstance(node_dict, dict) else getattr(node_dict, 'title', '')
-            if title and self._is_valid_entity_title(title):
-                slug = self._slugify(title)
-                entities.append(ExtractedEntity(
-                    name=title,
-                    slug=slug,
-                    entity_type='Concept',
-                    definition=f'文档章节: {title}',
-                    source_section_id='',
-                    source_doc_id=getattr(doc, 'doc_id', ''),
-                    confidence=0.65,
-                ))
+        self._extract_entities_from_heading_tree(
+            heading_tree, entities, seen_slugs, getattr(doc, 'doc_id', '')
+        )
 
         # 从元素提取关键词实体
         elements = getattr(doc, 'elements', []) or []

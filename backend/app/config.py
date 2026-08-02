@@ -20,12 +20,13 @@ class Settings(BaseSettings):
     # LLM
     llm_backend: Literal["ollama", "vllm", "openai_compat"] = "openai_compat"
     llm_model: str = "deepseek-chat"
-    llm_timeout: int = 600  # HTTP 请求超时（秒），与 asyncio.wait_for 超时配合
+    llm_timeout: int = 900  # HTTP 请求超时（秒），与 asyncio.wait_for 超时配合（本地大模型推理较慢，需更长超时）
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.1
     # P2-1: LLM 调用弹性
     # 重试次数（0=不重试），指数退避 + 抖动
-    llm_max_retries: int = 3
+    # 注：超时时间已调大至 900s，建议将重试次数降低，避免单次调用等待过久
+    llm_max_retries: int = 2
     # 重试基础延迟（秒），实际延迟 = base * 2^attempt + jitter
     llm_retry_base_delay: float = 1.0
     # 重试最大延迟（秒）
@@ -48,13 +49,13 @@ class Settings(BaseSettings):
     # 格式: {"section_compile":3,"wiki_generate":1,"entity_resolve":1,"experience_distill":1}
     # 留空则使用内置默认值
     llm_stage_concurrency: str = ""
-    # 各阶段超时时间（秒）
-    llm_timeout_section_compile: int = 120
-    llm_timeout_wiki_generate: int = 180
-    llm_timeout_entity_resolve: int = 60
-    llm_timeout_experience_distill: int = 300
-    llm_timeout_index_generate: int = 120
-    llm_timeout_document_generate: int = 240
+    # 各阶段超时时间（秒）— 本地 Ollama 大模型推理较慢，统一调大
+    llm_timeout_section_compile: int = 600
+    llm_timeout_wiki_generate: int = 900
+    llm_timeout_entity_resolve: int = 300
+    llm_timeout_experience_distill: int = 900
+    llm_timeout_index_generate: int = 600
+    llm_timeout_document_generate: int = 900
 
     # LLM 调用缓存（减少重复 API 调用）
     # 设为 False 可关闭缓存
@@ -67,6 +68,12 @@ class Settings(BaseSettings):
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:7b"
+    # Ollama 模型驻留内存时间（keep_alive 参数）
+    # -1 = 永久驻留（推荐运维知识库等频繁调用场景）
+    # 3600 = 1 小时（数字，单位秒）
+    # "1h" = 1 小时（字符串，Ollama 支持的格式）
+    # 默认 -1（永久驻留），避免模型反复加载导致超时
+    ollama_keep_alive: str = "-1"
 
     # vLLM
     vllm_base_url: str = "http://localhost:8000"

@@ -65,8 +65,8 @@ class TextCleaner:
 
     # P0: 非标准标题检测模式（正则, 层级计算函数或固定层级）
     HEADING_PATTERNS = [
-        # 编号标题：1. Title, 1.1 Title, 1.1.1 Title（注意：点号后可能直接跟空格）
-        (re.compile(r'^(\d+(?:\.\d+)*)\.?\s+(.+)$', re.MULTILINE),
+        # 编号标题：1. Title, 1.1 Title, 1.1.1 Title（必须有点号分隔）
+        (re.compile(r'^(\d+(?:\.\d+)*)\.\s+(.+)$', re.MULTILINE),
          lambda m: min(len(m.group(1).split('.')) + 1, 6)),
         # 方括号标题：[Title]
         (re.compile(r'^\[([^\]]+)\]$', re.MULTILINE), 2),
@@ -817,12 +817,12 @@ class TextCleaner:
 
         规则：
         - 以 # 开头的 Markdown 标题
-        - 编号标题（如 "1.1 概述"）
+        - 编号标题（如 "1.1 概述"，必须有点号分隔）
         - 短文本（< 80 字符）且不含标点
         """
         if re.match(r'^#{1,6}\s', text):
             return True
-        if re.match(r'^\d+(?:\.\d+)*\s+\S', text):
+        if re.match(r'^\d+(?:\.\d+)*\.\s+\S', text):
             return True
         if len(text) < 80 and not re.search(r'[.,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f]', text):
             return True
@@ -1022,8 +1022,8 @@ class TextCleaner:
             score += 2
             reasons.append('no sentence end')
 
-        # 编号检测
-        if re.match(r'^\d+(?:\.\d+)*\s', stripped):
+        # 编号检测（必须有点号分隔）
+        if re.match(r'^\d+(?:\.\d+)*\.\s', stripped):
             score += 3
             reasons.append('numbered')
         elif re.match(r'^[\(（]?\d+[\)）\.\、]', stripped):
