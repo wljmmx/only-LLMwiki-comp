@@ -33,6 +33,7 @@ import yaml
 
 from app.config import get_settings
 from app.core.llm import ChatMessage, get_llm_client
+from app.core.llm.concurrency import TaskPriority, get_llm_concurrency_controller
 from app.extraction import KnowledgeExtractor
 from app.extraction.types import ExtractedEntity, ExtractionResult
 from app.knowledge.pipeline_helpers import (
@@ -190,8 +191,6 @@ class WikiCompiler:
         call_timeout = timeout or getattr(self.settings, 'llm_call_timeout', 900)
 
         # P2-1: LLM 并发控制
-        from app.core.llm.concurrency import TaskPriority, get_llm_concurrency_controller
-
         controller = get_llm_concurrency_controller()
         last_error = ""
         for attempt in range(1, _MAX_LLM_RETRIES + 1):

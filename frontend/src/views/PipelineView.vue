@@ -801,6 +801,13 @@ function hasDiff(s: SectionTrace): boolean {
   return s.raw_content.trim() !== s.compiled_content.trim()
 }
 
+function scrollToSectionCompare() {
+  const el = document.getElementById('section-compare-panel')
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
+
 function getLevelLabel(level: number): string {
   return `H${level}`
 }
@@ -1311,6 +1318,61 @@ watch(sourceTab, (val) => {
                         </div>
                       </template>
                     </div>
+                    <!-- LLM 编译步骤：章节对比面板（集成在编译环节内） -->
+                    <div v-else-if="step.name === 'compile' && traceData?.available && filteredSections.length > 0">
+                      <NDivider style="margin: 12px 0" />
+                      <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px">
+                        📖 章节处理对比（共 {{ filteredSections.length }} 个章节）
+                      </div>
+                      <div
+                        v-for="(section, sIdx) in filteredSections.slice(0, 5)"
+                        :key="section.slug || sIdx"
+                        class="section-compare-row"
+                      >
+                        <div class="section-compare-header">
+                          <NSpace align="center" size="4">
+                            <NTag
+                              size="tiny"
+                              :bordered="false"
+                              :type="getLevelType(section.level)"
+                            >
+                              H{{ section.level }}
+                            </NTag>
+                            <span style="font-weight: 500; font-size: 12px">{{ section.title }}</span>
+                            <NTag
+                              v-if="section.llm_success"
+                              size="tiny"
+                              :bordered="false"
+                              type="success"
+                            >成功</NTag>
+                            <NTag
+                              v-else
+                              size="tiny"
+                              :bordered="false"
+                              type="error"
+                            >失败</NTag>
+                          </NSpace>
+                        </div>
+                        <NGrid :cols="2" :x-gap="8" responsive="screen">
+                          <NGi>
+                            <div class="compare-sub-header">📋 原始</div>
+                            <div class="compare-sub-body">{{ (section.raw_content || '').substring(0, 150) }}{{ (section.raw_content || '').length > 150 ? '...' : '' }}</div>
+                          </NGi>
+                          <NGi>
+                            <div class="compare-sub-header">✨ LLM 输出</div>
+                            <div class="compare-sub-body">{{ (section.compiled_content || '').substring(0, 150) }}{{ (section.compiled_content || '').length > 150 ? '...' : '' }}</div>
+                          </NGi>
+                        </NGrid>
+                      </div>
+                      <NButton
+                        v-if="filteredSections.length > 5"
+                        size="tiny"
+                        quaternary
+                        @click="scrollToSectionCompare"
+                      >
+                        查看全部 {{ filteredSections.length }} 个章节 →
+                      </NButton>
+                    </div>
                     <div v-else-if="step.name === 'struct_compile'">
                       <div class="secondary-text" style="font-size: 12px">
                         处理章节数：{{ step.output.sections ?? 0 }}，创建：{{ step.output.pages_created ?? 0 }}，更新：{{ step.output.pages_updated ?? 0 }}
@@ -1553,7 +1615,7 @@ watch(sourceTab, (val) => {
     </NCard>
 
     <!-- 章节对比 -->
-    <NCard v-if="traceData?.available" size="small">
+    <NCard id="section-compare-panel" ref="sectionCompareRef" v-if="traceData?.available" size="small">
       <template #header>
         <NSpace justify="space-between" align="center">
           <span style="font-weight: 600">
@@ -1945,5 +2007,36 @@ watch(sourceTab, (val) => {
   color: var(--opskg-color-text-3, #999);
   padding: 0 4px;
   flex-shrink: 0;
+}
+
+/* ── 章节对比行样式（集成在 LLM 编译环节内） ── */
+.section-compare-row {
+  border: 1px solid var(--opskg-color-border, #e0e0e6);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: var(--opskg-color-background, #fff);
+}
+.section-compare-header {
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px dashed var(--opskg-color-border, #e0e0e6);
+}
+.compare-sub-header {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 3px;
+  color: var(--opskg-color-text-2, #666);
+}
+.compare-sub-body {
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 100px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 4px 6px;
+  background: var(--opskg-color-layout-2, #f5f5f7);
+  border-radius: 4px;
 }
 </style>

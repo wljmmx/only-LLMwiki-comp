@@ -723,11 +723,13 @@ class KnowledgeExtractor:
     def _rule_clean_entity_names(self, entities: list) -> list:
         """规则清理实体名（作为 LLM 清理的兜底）
 
-        使用正则去除装饰性文字：
+        使用正则去除装饰性文字，并提取核心术语：
         - 括号内容：（xxx）、(xxx)
         - 感叹号、强调标记
         - 开头的疑问词：什么是、啥是、如何、怎么
         - 数字前缀：如 "1 白橙" → "白橙"（颜色编码等列表项）
+        - 冒号后长句截断：如 "路由器接口：物理接口分..." → "路由器接口"
+        - 长句截断：超过30字符的名称提取核心短语
         """
         import re
 
@@ -753,6 +755,8 @@ class KnowledgeExtractor:
             if is_invalid:
                 continue
 
+            original_name = name
+
             # 1. 去除括号及括号内内容
             name = re.sub(r'[（(][^)）]*[)）]', '', name)
             # 2. 去除感叹号和强调标记
@@ -760,15 +764,43 @@ class KnowledgeExtractor:
             # 3. 去除开头的疑问词（保留核心术语）
             name = re.sub(r'^(什么是|啥是|何谓|如何理解|谈谈)', '', name)
             # 4. 去除尾部的强调词
-            name = re.sub(r'(划重点|必看|重要|必读|详解|介绍)$', '', name)
+            name = re.sub(r'(划重点|必看|重要|必读|详解|介绍|必看！！！|划重点！！！)$', '', name)
             # 5. 去除开头的数字编号前缀（如 "1. 概述" → "概述"）
             name = re.sub(r'^\d+(?:\.\d+)*[.、\s]+', '', name)
-            # 6. 清理多余空白
+            # 6. 去除数字编号+空格（如 "1 白橙" → "白橙"，但仅限短名称）
+            name = re.sub(r'^\d+\s+(?=[^a-zA-Z])', '', name)
+            # 7. 清理多余空白
             name = name.strip()
-            # 7. 如果清理后为空或过短，跳过
+
+            # 8. 核心术语提取：如果名称过长（>30字符），尝试提取核心术语
+            #    规则：以冒号、破折号、分号、句号为分隔，取第一个短语
+            if len(name) > 30:
+                # 尝试按冒号分割，取冒号前的部分（如 "路由器接口：详细说明..." → "路由器接口"）
+                colon_match = re.match(r'^([^：:;；,，。.]{2,30})[：:;；,，。.]\s*', name)
+                if colon_match:
+                    name = colon_match.group(1).strip()
+                else:
+                    # 尝试按句号分割，取第一句
+                    sentence_match = re.match(r'^([^。！？!?.\n]{2,30})', name)
+                    if sentence_match:
+                        name = sentence_match.group(1).strip()
+
+            # 9. 如果清理后为空或过短，跳过
             if not name or len(name) < 2:
-                logger.info("entity_name_rule_clean_skip", original=e.name, reason="too_short_after_clean")
+                logger.info("entity_name_rule_clean_skip", original=original_name, reason="too_short_after_clean")
                 continue
+
+            # 10. 限制最大长度（防止长句作为实体名）
+            if len(name) > 50:
+                name = name[:50].rsplit('，', 1)[0].rsplit(',', 1)[0].strip()
+                if len(name) < 2:
+                    name = original_name[:30].strip()
+
+            # 11. 如果清理后名称和原始名称差异太大，保留原始名称的核心部分
+            if len(original_name) > 100 and len(name) < 5:
+                # 清理过度，保留前30字符
+                name = original_name[:30].strip().rstrip('，,。.：:;；')
+
             e.name = name
             valid_entities.append(e)
 
