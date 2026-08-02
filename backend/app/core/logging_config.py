@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 
 import structlog
 
@@ -104,18 +105,34 @@ def _bridge_uvicorn_logging() -> None:
 
 
 class _StructlogHandler(logging.Handler):
-    """将 stdlib logging 记录桥接到 structlog 的自定义 Handler"""
+    """将 stdlib logging 记录桥接到 structlog 的自定义 Handler
+
+    防递归说明：
+    structlog 配置使用 stdlib.LoggerFactory，structlog 日志会委托给
+    stdlib logging，而 stdlib 根 logger 的 handler 又是本 Handler，
+    形成 structlog → stdlib → _StructlogHandler → structlog 的循环。
+    使用 threading.local 标志打断递归。
+    """
+
+    _local = threading.local()
 
     def emit(self, record: logging.LogRecord) -> None:
-        # 跳过 structlog 自身的日志（避免死循环）
+        # 防止递归：如果当前线程已经在桥接中，直接返回
+        if getattr(self._local, "handling", False):
+            return
+        # 跳过 structlog 自身的日志
         if record.name.startswith("structlog"):
             return
-        # 映射到 structlog 方法
-        logger = structlog.get_logger(record.name)
-        log_method = getattr(logger, record.levelname.lower(), logger.info)
-        log_method(
-            record.getMessage(),
-            logger_name=record.name,
-            filename=record.filename,
-            lineno=record.lineno,
-        )
+        # 设置处理标志，防止 structlog → stdlib → 本 handler 的递归
+        self._local.handling = True
+        try:
+            logger = structlog.get_logger(record.name)
+            log_method = getattr(logger, record.levelname.lower(), logger.info)
+            log_method(
+                record.getMessage(),
+                logger_name=record.name,
+                filename=record.filename,
+                lineno=record.lineno,
+            )
+        finally:
+            self._local.handling = False
