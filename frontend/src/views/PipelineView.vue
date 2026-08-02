@@ -879,6 +879,8 @@ function startCompile() {
           node.llm_success = data.llm_success as boolean
           node.processing_time_ms = data.processing_time_ms as number
           node.error = data.error as string | undefined
+          node.raw_content = data.raw_content as string | undefined
+          node.compiled_content = data.compiled_content as string | undefined
         }
         // struct_compile 是第5步（index=4）
         if (compileSteps.value[4].subProgress) {

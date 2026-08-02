@@ -2066,6 +2066,8 @@ H{level}
                     "children_count": len(node.get("children", [])),
                     "index": section_idx,
                     "total": total_sections,
+                    "raw_content": raw_content[:2000],
+                    "compiled_content": body_md[:3000],
                 })
             except Exception as e:
                 logger.exception("wiki_compiler_struct_node_failed", slug=slug)
