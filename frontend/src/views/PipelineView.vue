@@ -232,6 +232,7 @@ interface EntityProgressItem {
   error?: string
   started_at?: number
   done_at?: number
+  processing_time_ms?: number
   extra?: Record<string, any>
   // 流式编译输出
   compiled_content?: string      // LLM 编译后的内容（累积）
@@ -246,6 +247,36 @@ const extractEntities = ref<EntityProgressItem[]>([])
 // LLM 编译 Wiki 环节的实体进度（step 3）
 const compileEntities = ref<EntityProgressItem[]>([])
 const compileStepStartTime = ref<number>(0)
+
+// ── 乱序事件缓存：page_done 先到但实体尚未创建时暂存于此 ──
+// key: 步骤名 + 实体名，value: page_done 事件数据 + 接收时间戳
+type PendingDoneKey = string
+interface PendingDoneEntry {
+  data: any
+  receivedAt: number
+}
+const pendingDoneMap = ref<Map<PendingDoneKey, PendingDoneEntry>>(new Map())
+
+// ── 运行中计时刷新触发器：每秒强制更新一次，确保 Vue 重新渲染 Date.now() 计算 ──
+const tickRefresh = ref(0)
+let tickTimer: number | null = null
+function startTickTimer() {
+  if (tickTimer !== null) return
+  tickTimer = window.setInterval(() => {
+    // 只要有任意实体处于 running 状态，才触发刷新，避免空转
+    const hasRunning = extractEntities.value.some(e => e.status === 'running')
+      || compileEntities.value.some(e => e.status === 'running')
+    if (hasRunning) {
+      tickRefresh.value++
+    }
+  }, 1000)
+}
+function stopTickTimer() {
+  if (tickTimer !== null) {
+    window.clearInterval(tickTimer)
+    tickTimer = null
+  }
+}
 
 // 当前正在编译的实体名（用于醒目标识）
 const currentCompileEntity = computed(() => {
@@ -380,13 +411,22 @@ function startCompile() {
           compileSteps.value[idx].status = 'running'
           compileProgress.value = (idx / 7) * 100
           compileStepStartTime.value = Date.now()
-          // 步骤开始时清空对应的实体进度列表
+          // 启动运行中计时刷新定时器
+          startTickTimer()
+          // 步骤开始时清空对应的实体进度列表和乱序缓存
           if (step === 'extract') {
             extractEntities.value = []
             compileSteps.value[idx].details = '正在连接 LLM 服务，构建抽取上下文...'
+            // 清理 extract 相关的 pending done
+            for (const k of pendingDoneMap.value.keys()) {
+              if (k.startsWith('extract:')) pendingDoneMap.value.delete(k)
+            }
           } else if (step === 'compile') {
             compileEntities.value = []
             compileSteps.value[idx].details = '正在连接 LLM 服务，准备编译 Wiki 页面...'
+            for (const k of pendingDoneMap.value.keys()) {
+              if (k.startsWith('compile:')) pendingDoneMap.value.delete(k)
+            }
           }
         }
       } else if (evt.type === 'step_done') {
@@ -528,18 +568,91 @@ function startCompile() {
 
         if (targetList && (data.entity || data.section)) {
           const itemName = data.entity || data.section
+          const pendingKey: PendingDoneKey = `${stepName}:${itemName}`
+          const pendingEntry = pendingDoneMap.value.get(pendingKey)
           const existing = targetList.find(e => e.name === itemName)
+
           if (existing) {
-            existing.status = 'running'
-            existing.started_at = Date.now()
-            existing.extra = { confidence: data.confidence, entity_type: data.entity_type, section: data.section }
+            // 只在非终态（pending/running）时重置 started_at，避免已 done 的实体再次 page_start 时重写
+            if (existing.status !== 'done' && existing.status !== 'error' && existing.status !== 'skipped') {
+              // 关键：如果乱序缓存中已有该实体的 done 事件，直接应用 done 状态
+              if (pendingEntry) {
+                pendingDoneMap.value.delete(pendingKey)
+                const pendingData = pendingEntry.data
+                const nowMs = pendingEntry.receivedAt
+                const startedMs = Date.now()
+                const duration = Math.max(1, nowMs - startedMs)
+                const updated: EntityProgressItem = {
+                  ...existing,
+                  status: pendingData.status === 'error' ? 'error'
+                    : pendingData.status === 'skipped' ? 'skipped'
+                    : 'done',
+                  started_at: startedMs,
+                  done_at: nowMs,
+                  processing_time_ms: (pendingData.processing_time_ms && pendingData.processing_time_ms > 0)
+                    ? pendingData.processing_time_ms
+                    : duration,
+                  extra: { confidence: data.confidence, entity_type: data.entity_type, section: data.section },
+                  // 合并乱序事件带来的对比视图字段
+                  raw_content: pendingData.raw_content || existing.raw_content,
+                  compiled_content: pendingData.compiled_content || existing.compiled_content,
+                  compiled_chars: pendingData.compiled_chars || existing.compiled_chars,
+                  review_status: pendingData.review_status || existing.review_status,
+                }
+                if (pendingData.error || pendingData.llm_error) {
+                  updated.error = pendingData.error || pendingData.llm_error
+                }
+                const idx = targetList.findIndex(e => e.name === itemName)
+                if (idx >= 0) targetList.splice(idx, 1, updated)
+              } else {
+                existing.status = 'running'
+                existing.started_at = Date.now()
+                existing.processing_time_ms = undefined
+                existing.extra = { confidence: data.confidence, entity_type: data.entity_type, section: data.section }
+              }
+            } else {
+              existing.extra = { confidence: data.confidence, entity_type: data.entity_type, section: data.section }
+            }
           } else {
-            targetList.push({
-              name: itemName,
-              status: 'running',
-              started_at: Date.now(),
-              extra: { confidence: data.confidence, entity_type: data.entity_type, section: data.section },
-            })
+            // 实体不存在：先检查乱序缓存中是否已有 done
+            if (pendingEntry) {
+              pendingDoneMap.value.delete(pendingKey)
+              const pendingData = pendingEntry.data
+              const nowMs = pendingEntry.receivedAt
+              const startedMs = Date.now()
+              const duration = Math.max(1, nowMs - startedMs)
+              const newItem: EntityProgressItem = {
+                name: itemName,
+                status: pendingData.status === 'error' ? 'error'
+                  : pendingData.status === 'skipped' ? 'skipped'
+                  : 'done',
+                started_at: startedMs,
+                done_at: nowMs,
+                processing_time_ms: (pendingData.processing_time_ms && pendingData.processing_time_ms > 0)
+                  ? pendingData.processing_time_ms
+                  : duration,
+                extra: { confidence: data.confidence, entity_type: data.entity_type, section: data.section },
+                // 从乱序事件中合并对比视图字段
+                raw_content: pendingData.raw_content,
+                compiled_content: pendingData.compiled_content,
+                compiled_chars: pendingData.compiled_chars,
+                review_status: pendingData.review_status,
+              }
+              if (pendingData.error || pendingData.llm_error) {
+                newItem.error = pendingData.error || pendingData.llm_error
+              }
+              targetList.push(newItem)
+            } else {
+              targetList.push({
+                name: itemName,
+                status: 'running',
+                started_at: Date.now(),
+                processing_time_ms: undefined,
+                extra: { confidence: data.confidence, entity_type: data.entity_type, section: data.section },
+                // 如果 page_start 事件包含了 raw_content 则直接保存
+                raw_content: data.raw_content || undefined,
+              })
+            }
           }
         }
       } else if (evt.type === 'page_done') {
@@ -580,20 +693,52 @@ function startCompile() {
 
         const itemName = data.entity || data.section
         if (targetList && itemName) {
+          const pendingKey: PendingDoneKey = `${stepName}:${itemName}`
           const i = targetList.findIndex(e => e.name === itemName)
           if (i >= 0) {
-            // 用 splice 替换整个对象，确保 Vue 响应性触发视图更新
-            const updated: EntityProgressItem = {
-              ...targetList[i],
-              status: data.status === 'error' ? 'error'
-                : data.status === 'skipped' ? 'skipped'
-                : 'done',
-              done_at: Date.now(),
+            const existing = targetList[i]
+            // 如果实体已经是终态（可能乱序导致已提前结束），不重复覆盖
+            if (existing.status === 'done' || existing.status === 'error' || existing.status === 'skipped') {
+              // 仅补充 processing_time_ms
+              if (data.processing_time_ms && data.processing_time_ms > 0 && !existing.processing_time_ms) {
+                const updated: EntityProgressItem = {
+                  ...existing,
+                  processing_time_ms: data.processing_time_ms,
+                }
+                targetList.splice(i, 1, updated)
+              }
+            } else {
+              const nowMs = Date.now()
+              const startedMs = existing.started_at || nowMs
+              // 计算处理耗时（毫秒），仅从 started_at 到此 page_done，不累积
+              const duration = Math.max(1, nowMs - startedMs)
+              // 用 splice 替换整个对象，确保 Vue 响应性触发视图更新
+              const updated: EntityProgressItem = {
+                ...existing,
+                status: data.status === 'error' ? 'error'
+                  : data.status === 'skipped' ? 'skipped'
+                  : 'done',
+                started_at: startedMs,
+                done_at: nowMs,
+                processing_time_ms: duration,
+              }
+              if (data.error || data.llm_error) {
+                updated.error = data.error || data.llm_error
+              }
+              // 如果后端传回了 processing_time_ms，优先使用后端值
+              if (data.processing_time_ms && data.processing_time_ms > 0) {
+                updated.processing_time_ms = data.processing_time_ms
+              }
+              targetList.splice(i, 1, updated)
             }
-            if (data.error || data.llm_error) {
-              updated.error = data.error || data.llm_error
-            }
-            targetList.splice(i, 1, updated)
+            // 清理可能存在的 pending
+            pendingDoneMap.value.delete(pendingKey)
+          } else {
+            // 找不到实体：page_done 先到，存入乱序缓存，等 page_start 到了再应用
+            pendingDoneMap.value.set(pendingKey, {
+              data,
+              receivedAt: Date.now(),
+            })
           }
         }
 
@@ -644,14 +789,50 @@ function startCompile() {
           const i = compileEntities.value.findIndex(e => e.name === entityName)
           if (i >= 0) {
             const existing = compileEntities.value[i]
+            // 只有当现有 raw_content 为空时，才用 page_complete 传入的覆盖
+            // 避免后续更丰富的内容被空值覆盖
+            const finalRaw = existing.raw_content && existing.raw_content.length > (data.raw_content || '').length
+              ? existing.raw_content
+              : (data.raw_content || existing.raw_content || '')
             const updated: EntityProgressItem = {
               ...existing,
               compiled_content: data.compiled_content || existing.compiled_content || '',
-              raw_content: data.raw_content || '',
-              compiled_chars: data.compiled_chars || 0,
-              review_status: data.review_status,
+              raw_content: finalRaw,
+              compiled_chars: data.compiled_chars || existing.compiled_chars || 0,
+              review_status: data.review_status || existing.review_status,
+            }
+            // 如果后端传回了 processing_time_ms 且前端还未确定，则应用
+            if (data.processing_time_ms && data.processing_time_ms > 0 && !existing.processing_time_ms) {
+              updated.processing_time_ms = data.processing_time_ms
             }
             compileEntities.value.splice(i, 1, updated)
+          } else {
+            // 实体不存在（乱序：page_complete 先到），存入 pending 缓存
+            const pendingKey: PendingDoneKey = `compile:${entityName}`
+            // 将 page_complete 数据合并到可能已有的 page_done pending 条目
+            const existingPending = pendingDoneMap.value.get(pendingKey)
+            if (existingPending) {
+              existingPending.data = {
+                ...existingPending.data,
+                raw_content: data.raw_content,
+                compiled_content: data.compiled_content,
+                compiled_chars: data.compiled_chars,
+                review_status: data.review_status,
+              }
+            } else {
+              pendingDoneMap.value.set(pendingKey, {
+                data: {
+                  entity: entityName,
+                  status: 'done',
+                  raw_content: data.raw_content,
+                  compiled_content: data.compiled_content,
+                  compiled_chars: data.compiled_chars,
+                  review_status: data.review_status,
+                  processing_time_ms: data.processing_time_ms,
+                },
+                receivedAt: Date.now(),
+              })
+            }
           }
         }
       } else if (evt.type === 'section_start') {
@@ -712,6 +893,10 @@ function startCompile() {
         }
         phase.value = 'done'
         compileResult.value = evt.data
+        // 停止计时刷新定时器
+        stopTickTimer()
+        // 清理乱序缓存
+        pendingDoneMap.value.clear()
         const created = evt.data.pages_created ?? 0
         const updated = evt.data.pages_updated ?? 0
         const errors = evt.data.errors ?? []
@@ -760,6 +945,8 @@ function startCompile() {
         if (phase.value === 'done') return
         // 编译过程中出错，保持当前页面状态，不跳回 input
         compiling.value = false
+        // 停止计时刷新定时器
+        stopTickTimer()
         message.error('编译失败：' + (evt.data.message || '未知错误'))
         const step = evt.data.step as string
         const idx = stepIndex[step]
@@ -775,6 +962,8 @@ function startCompile() {
       if (phase.value === 'done') {
         return
       }
+      // 停止计时刷新定时器
+      stopTickTimer()
       // 编译过程中连接丢失，保持当前状态，不跳回 input
       // 用户可以看到当前已完成的步骤和进度
       if (compiling.value) {
@@ -834,6 +1023,38 @@ function formatMs(ms: number): string {
   if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`
   if (ms >= 1) return `${ms.toFixed(0)}ms`
   return '<1ms'
+}
+
+/**
+ * 计算实体的已完成耗时显示
+ * 引用 tickRefresh 确保每秒触发响应式刷新（虽然是 done 时用不到，但保持统一）
+ */
+function getEntityDoneTime(item: EntityProgressItem): string {
+  // 引用 tickRefresh 建立响应式依赖，防止模板中 Date.now 不刷新
+  void tickRefresh.value
+  if (item.processing_time_ms && item.processing_time_ms > 0) {
+    return formatMs(item.processing_time_ms)
+  }
+  if (item.started_at && item.done_at) {
+    return formatMs(item.done_at - item.started_at)
+  }
+  return ''
+}
+
+/**
+ * 计算实体的运行中耗时显示
+ * 关键：引用 tickRefresh.value 建立响应式依赖，每秒 tickRefresh 变化时此函数结果重新计算
+ */
+function getEntityRunningTime(item: EntityProgressItem): string {
+  // 这里是关键：通过访问 tickRefresh.value，让 Vue 建立响应式依赖
+  // 每当 startTickTimer 每秒增加 tickRefresh，此函数会被重新计算
+  void tickRefresh.value
+  if (!item.started_at) return '0s...'
+  const elapsed = Date.now() - item.started_at
+  if (elapsed < 1000) {
+    return `${Math.max(elapsed, 0)}ms...`
+  }
+  return `${(elapsed / 1000).toFixed(0)}s...`
 }
 
 function formatChars(n: number): string {
@@ -1244,11 +1465,11 @@ watch(sourceTab, (val) => {
                         {{ item.extra.entity_type }}
                       </span>
                       <!-- 耗时 -->
-                      <span v-if="item.status === 'done' && item.started_at && item.done_at" class="entity-time meta-text">
-                        {{ ((item.done_at - item.started_at) / 1000).toFixed(1) }}s
+                      <span v-if="(item.status === 'done' || item.status === 'error' || item.status === 'skipped') && getEntityDoneTime(item)" class="entity-time meta-text">
+                        {{ getEntityDoneTime(item) }}
                       </span>
                       <span v-else-if="item.status === 'running' && item.started_at" class="entity-time meta-text">
-                        {{ ((Date.now() - item.started_at) / 1000).toFixed(0) }}s...
+                        {{ getEntityRunningTime(item) }}
                       </span>
                       <!-- 错误信息 -->
                       <span v-if="item.error" class="entity-error-text danger-text" :title="item.error">

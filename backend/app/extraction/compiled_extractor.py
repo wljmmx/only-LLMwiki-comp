@@ -119,6 +119,7 @@ class CompiledKnowledgeExtractor:
         entities: list,
         seen_slugs: set,
         doc_id: str,
+        doc_elements: list | None = None,
     ) -> None:
         """递归从标题树提取实体
 
@@ -127,6 +128,7 @@ class CompiledKnowledgeExtractor:
             entities: 输出实体列表
             seen_slugs: 已见 slug 集合（用于去重）
             doc_id: 文档 ID
+            doc_elements: ParsedDocument.elements，用于查找标题对应章节的原文片段
         """
         for node in heading_tree:
             # 兼容 HeadingNode 对象和 dict
@@ -134,15 +136,41 @@ class CompiledKnowledgeExtractor:
                 title = node.get('title', '')
                 children = node.get('children', [])
                 level = node.get('level', 0)
+                start_idx = node.get('element_start_index')
+                end_idx = node.get('element_end_index')
             else:
                 title = getattr(node, 'title', '')
                 children = getattr(node, 'children', [])
                 level = getattr(node, 'level', 0)
+                start_idx = getattr(node, 'element_start_index', None)
+                end_idx = getattr(node, 'element_end_index', None)
 
             if title and self._is_valid_entity_title(title):
                 slug = self._slugify(title)
                 if slug not in seen_slugs:
                     seen_slugs.add(slug)
+                    # 收集该章节对应的原文片段作为 evidence_span
+                    evidence_span = ""
+                    if doc_elements and start_idx is not None and end_idx is not None:
+                        try:
+                            section_elements = doc_elements[start_idx:end_idx]
+                            contents = []
+                            for el in section_elements:
+                                # 兼容对象和 dict
+                                if isinstance(el, dict):
+                                    c = el.get('content', '')
+                                else:
+                                    c = getattr(el, 'content', '') or ''
+                                if c and len(c) > 0:
+                                    contents.append(c)
+                                if sum(len(x) for x in contents) >= 3000:
+                                    break
+                            evidence_span = "\n".join(contents)[:3000]
+                        except Exception:
+                            evidence_span = title
+                    if not evidence_span:
+                        evidence_span = title
+
                     entities.append(ExtractedEntity(
                         name=title,
                         slug=slug,
@@ -151,12 +179,13 @@ class CompiledKnowledgeExtractor:
                         source_section_id='',
                         source_doc_id=doc_id,
                         confidence=0.65,
+                        evidence_span=evidence_span,
                     ))
 
             # 递归处理子节点
             if children:
                 self._extract_entities_from_heading_tree(
-                    children, entities, seen_slugs, doc_id
+                    children, entities, seen_slugs, doc_id, doc_elements
                 )
 
     def extract_from_document(self, doc: Any) -> CompiledExtractionResult:
@@ -175,18 +204,19 @@ class CompiledKnowledgeExtractor:
         entities: list[ExtractedEntity] = []
         relations: list[ExtractedRelation] = []
         seen_slugs: set[str] = set()  # 去重
+        doc_elements = getattr(doc, 'elements', []) or []
+        doc_id = getattr(doc, 'doc_id', '')
 
         # 从标题树提取实体（递归处理所有层级，过滤掉颜色编码等无效标题）
         heading_tree = getattr(doc, 'heading_tree', []) or []
         self._extract_entities_from_heading_tree(
-            heading_tree, entities, seen_slugs, getattr(doc, 'doc_id', '')
+            heading_tree, entities, seen_slugs, doc_id, doc_elements
         )
 
         # 从元素提取关键词实体
-        elements = getattr(doc, 'elements', []) or []
         code_blocks = []
         table_headers: set[str] = set()  # 去重：同一表格只提取一次
-        for elem in elements:
+        for elem in doc_elements:
             # 兼容 ParsedElement 对象和 dict
             elem_dict = elem if isinstance(elem, dict) else {
                 'type': getattr(elem, 'type', None),
@@ -204,14 +234,16 @@ class CompiledKnowledgeExtractor:
                 header = self._extract_table_header(content)
                 if header and header not in table_headers:
                     table_headers.add(header)
+                    evidence = content[:2000] if content else header
                     entities.append(ExtractedEntity(
                         name=header,
                         slug=self._slugify(f'table-{header[:30]}'),
                         entity_type='Parameter',
                         definition=f'配置参数表: {header}',
                         source_section_id='',
-                        source_doc_id=getattr(doc, 'doc_id', ''),
+                        source_doc_id=doc_id,
                         confidence=0.65,
+                        evidence_span=evidence,
                     ))
 
         # 从代码块提取命令
@@ -221,14 +253,16 @@ class CompiledKnowledgeExtractor:
                 if line.startswith('#') or line.startswith('//') or line.startswith('>'):
                     continue
                 if any(cmd in line for cmd in ['systemctl', 'curl', 'kubectl', 'docker', 'psql', 'redis-cli', 'nginx']):
+                    evidence = line[:1000] if line else code[:1000]
                     entities.append(ExtractedEntity(
                         name=line[:80],
                         slug=self._slugify(f'cmd-{line[:30]}'),
                         entity_type='Command',
                         definition=f'操作命令: {line[:60]}',
                         source_section_id='',
-                        source_doc_id=getattr(doc, 'doc_id', ''),
+                        source_doc_id=doc_id,
                         confidence=0.65,
+                        evidence_span=evidence,
                     ))
 
         return CompiledExtractionResult(

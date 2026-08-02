@@ -895,15 +895,15 @@ class WikiCompiler:
 
                 async def _compile_page_parallel(
                     idx: int, entity: ExtractedEntity,
-                ) -> tuple[int, ExtractedEntity, WikiPage | None, Exception | None]:
+                ) -> tuple[int, ExtractedEntity, WikiPage | None, Exception | None, int]:
                     async with sem:
                         # 暂停检查
                         await _check_paused(pipeline_run_id)
                         if _check_cancel():
-                            return (idx, entity, None, None)
+                            return (idx, entity, None, None, 0)
                         # L1: 断点恢复 — 跳过已处理的实体
                         if task_state is not None and idx <= task_state.get("last_entity_idx", -1):
-                            return (idx, entity, None, None)
+                            return (idx, entity, None, None, 0)
 
                         # 为每个实体创建流式 chunk 回调
                         entity_chunk_buffer = []
@@ -919,7 +919,7 @@ class WikiCompiler:
                             return _cb
 
                         chunk_cb = _make_chunk_cb(entity.name)
-
+                        t_start = time.monotonic()
                         try:
                             _emit(ProgressEventType.PAGE_START, {
                                 "entity": entity.name,
@@ -938,9 +938,13 @@ class WikiCompiler:
                                 relations_map=relations_map,
                                 on_chunk=chunk_cb,
                             )
-                            return (idx, entity, page, None)
+                            t_end = time.monotonic()
+                            processing_ms = int((t_end - t_start) * 1000)
+                            return (idx, entity, page, None, processing_ms)
                         except Exception as e:
-                            return (idx, entity, None, e)
+                            t_end = time.monotonic()
+                            processing_ms = int((t_end - t_start) * 1000)
+                            return (idx, entity, None, e, processing_ms)
 
                 tasks = [_compile_page_parallel(i, entity) for i, entity in enumerate(entities)]
                 results_list = await asyncio.gather(*tasks, return_exceptions=True)
@@ -953,7 +957,7 @@ class WikiCompiler:
                         result.errors.append(f"gather_failed: {item}")
                         continue
 
-                    idx, entity, page, error = item
+                    idx, entity, page, error, processing_time_ms = item
                     if error:
                         logger.exception("wiki_compiler_page_failed", slug=entity.name)
                         result.errors.append(f"{entity.name}: {error}")
@@ -964,6 +968,7 @@ class WikiCompiler:
                             "total": total_entities,
                             "status": "error",
                             "error": str(error),
+                            "processing_time_ms": max(processing_time_ms, 1),
                         })
                         continue
                     if page is None:
@@ -973,6 +978,7 @@ class WikiCompiler:
                             "index": idx + 1,
                             "total": total_entities,
                             "status": "skipped",
+                            "processing_time_ms": max(processing_time_ms, 0),
                         })
                         continue
 
@@ -1020,12 +1026,36 @@ class WikiCompiler:
                                 )
                         if page.review_status == "review_needed":
                             result.review_needed.append(page.slug)
-                        # 发射 PAGE_DONE 事件，包含 LLM 错误信息供前端展示
+
+                        # ── 构造 fallback raw_content（evidence_span 为空时兜底）──
+                        raw_content_fallback = ""
+                        if entity.evidence_span:
+                            raw_content_fallback = entity.evidence_span
+                        else:
+                            # fallback 1: 实体定义
+                            fallback_parts = []
+                            ent_def = getattr(entity, 'definition', '')
+                            if ent_def:
+                                fallback_parts.append(f"定义：{ent_def}")
+                            # fallback 2: 实体属性
+                            ent_props = getattr(entity, 'properties', None) or {}
+                            if ent_props:
+                                for k, v in list(ent_props.items())[:5]:
+                                    fallback_parts.append(f"{k}: {v}")
+                            # fallback 3: 至少包含实体名和类型
+                            fallback_parts.append(f"实体名：{entity.name}")
+                            fallback_parts.append(f"实体类型：{getattr(entity, 'entity_type', 'Concept')}")
+                            raw_content_fallback = "\n".join(fallback_parts)
+
+                        # 发射 PAGE_DONE 事件，包含 LLM 错误信息和后端精确耗时
                         page_done_data = {
                             "entity": entity.name,
                             "slug": page.slug,
+                            "index": idx + 1,
+                            "total": total_entities,
                             "outcome": outcome,
                             "review_status": page.review_status,
+                            "processing_time_ms": max(processing_time_ms, 1),
                         }
                         if page.llm_error:
                             page_done_data["llm_error"] = page.llm_error
@@ -1034,11 +1064,12 @@ class WikiCompiler:
                         _emit(ProgressEventType.PAGE_COMPLETE, {
                             "entity": entity.name,
                             "slug": page.slug,
-                            "raw_content": (entity.evidence_span or "")[:2000],
+                            "raw_content": raw_content_fallback[:2000],
                             "compiled_content": page.body_md[:3000],
                             "compiled_chars": len(page.body_md),
                             "review_status": page.review_status,
                             "llm_error": page.llm_error,
+                            "processing_time_ms": max(processing_time_ms, 1),
                         })
                         # M2: 冲突检测 — 合并后检测语义冲突
                         if outcome == "updated":
@@ -1074,8 +1105,8 @@ class WikiCompiler:
                 for item in results_list:
                     if isinstance(item, Exception):
                         continue
-                    if isinstance(item, tuple) and len(item) == 4:
-                        idx, entity, page, error = item
+                    if isinstance(item, tuple) and len(item) >= 5:
+                        idx, entity, page, error, _pt = item
                         if error:
                             llm_error_entities.append({"entity": entity.name, "error": str(error)})
                         elif page and page.llm_error:
