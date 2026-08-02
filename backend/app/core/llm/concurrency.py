@@ -118,7 +118,7 @@ class LLMConcurrencyController:
         self._worker_task: asyncio.Task | None = None
         self._results: dict[str, LLMTaskResult] = {}
 
-    async def acquire(self, stage: str = "default", priority: TaskPriority = TaskPriority.MEDIUM) -> '_AcquireContext':
+    def acquire(self, stage: str = "default", priority: TaskPriority = TaskPriority.MEDIUM) -> '_AcquireContext':
         """获取 LLM 并发槽位（async context manager）
 
         同时获取全局 + 阶段级 semaphore，确保不超过配置限制。
