@@ -84,6 +84,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
     collab_hub = get_collab_hub()
     await collab_hub.start_cleanup_loop()
+    # KNOW-13：启动 graph→wiki 自动重编译消费者（订阅 graph_event_bus）
+    from app.realtime.graph_wiki_sync import get_graph_wiki_sync
+
+    graph_wiki_sync = get_graph_wiki_sync()
+    await graph_wiki_sync.start()
     # P3-1：引导默认 admin 用户（首次启动）
     try:
         from app.auth.models import get_auth_store
@@ -141,6 +146,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             pass
         # S15-5：停止协作 Hub 心跳清理
         await collab_hub.stop_cleanup_loop()
+        # KNOW-13：停止 graph→wiki 自动重编译消费者
+        await graph_wiki_sync.stop()
         await get_webhook_manager().stop_retry_worker()
         # 关闭所有数据库连接池
         from app.storage.connection import ConnectionPool
