@@ -854,21 +854,16 @@ class KnowledgeExtractor:
         entities: list,
         doc: ParsedDocument,
     ) -> list:
-        """为实体绑定来源段落的完整内容。
+        """为实体绑定来源段落的完整内容和索引。
 
         逐段处理：从 doc.elements 中找到与实体相关的段落，
-        将其完整内容保存到实体的 evidence_span 中。
-
-        查找策略：
-        1. 用实体 evidence_span 的前 30 字符在段落内容中做子串匹配
-        2. 如果没匹配，用实体名做子串匹配
-        3. 如果仍没匹配，保留原 evidence_span
+        将其完整内容保存到实体的 evidence_span 中，
+        同时记录段落索引到 properties['source_paragraph_index']。
         """
         doc_elements = doc.elements or []
         if not doc_elements:
             return entities
 
-        # 构建段落索引：(content, index, section, type)
         paragraphs: list[dict] = []
         for idx, elem in enumerate(doc_elements):
             content = elem.content if hasattr(elem, 'content') else (elem.get('content', '') if isinstance(elem, dict) else '')
@@ -890,18 +885,21 @@ class KnowledgeExtractor:
             original_evidence = (entity.evidence_span or '').strip()
             entity_name = (entity.name or '').strip()
 
-            # 查找匹配的段落
-            matched_content = self._find_matching_paragraph(
+            matched_content, matched_index = self._find_matching_paragraph(
                 entity_name, original_evidence, paragraphs,
             )
 
             if matched_content and len(matched_content) > len(original_evidence):
-                # 用段落内容替换 evidence_span（最多 2000 字符）
                 entity.evidence_span = matched_content[:2000]
-                # 同时记录段落索引到 properties
                 if not hasattr(entity, 'properties') or entity.properties is None:
                     entity.properties = {}
+                entity.properties['source_paragraph_index'] = matched_index
                 entity.properties['source_paragraph_found'] = True
+            else:
+                # 即使没匹配到更长内容，也记录段落索引（如果可能）
+                if not hasattr(entity, 'properties') or entity.properties is None:
+                    entity.properties = {}
+                entity.properties.setdefault('source_paragraph_index', -1)
 
             enriched_entities.append(entity)
 
@@ -921,33 +919,30 @@ class KnowledgeExtractor:
         entity_name: str,
         evidence: str,
         paragraphs: list[dict],
-    ) -> str | None:
-        """在段落列表中找到与实体匹配的段落内容。
+    ) -> tuple[str | None, int]:
+        """在段落列表中找到与实体匹配的段落内容和索引。
 
-        查找优先级：
-        1. 用 evidence 的前 30 字符做子串匹配（精确）
-        2. 用实体名做子串匹配
-        3. 用 evidence 全文做子串匹配
-        4. 用 evidence 中的关键词（分词后）做匹配
+        Returns:
+            (matched_content, paragraph_index) 或 (None, -1)
         """
         # 策略 1: evidence 前 30 字符精确子串匹配
         if evidence and len(evidence) >= 4:
             evidence_prefix = evidence[:30]
             for p in paragraphs:
                 if evidence_prefix in p['content']:
-                    return p['content']
+                    return p['content'], p['index']
 
         # 策略 2: 实体名匹配
         if entity_name and len(entity_name) >= 2:
             for p in paragraphs:
                 if entity_name in p['content']:
-                    return p['content']
+                    return p['content'], p['index']
 
         # 策略 3: evidence 全文匹配
         if evidence and len(evidence) >= 4:
             for p in paragraphs:
                 if evidence in p['content']:
-                    return p['content']
+                    return p['content'], p['index']
 
         # 策略 4: evidence 分词后关键词匹配
         if evidence and len(evidence) >= 2:
@@ -960,9 +955,9 @@ class KnowledgeExtractor:
                 for p in paragraphs:
                     for kw in keywords:
                         if kw in p['content']:
-                            return p['content']
+                            return p['content'], p['index']
 
-        return None
+        return None, -1
 
     def _apply_gating(
         self,

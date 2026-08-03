@@ -889,259 +889,230 @@ class WikiCompiler:
                     except Exception:
                         pass
 
-            # 3. 逐个编译（实体抽取方式）
+            # 3. 逐段编译（正确流程：按段落顺序处理，而非按实体）
             source_entry = {
                 "doc_id": doc_id,
                 "title": meta.get("title") or meta.get("filename", doc_id),
                 "checksum": meta.get("checksum", ""),
             }
 
-            # ── 阶段 3: compile ──
+            # ── 阶段 3: compile — 按段落顺序编译 ──
+            # 构建段落→实体的反向映射
+            para_entities_map: dict[int, list[dict]] = {}
+            for ent in entities:
+                para_idx = -1
+                if ent.properties:
+                    para_idx = ent.properties.get('source_paragraph_index', -1)
+                if para_idx >= 0:
+                    if para_idx not in para_entities_map:
+                        para_entities_map[para_idx] = []
+                    para_entities_map[para_idx].append({
+                        "name": ent.name,
+                        "entity_type": ent.entity_type,
+                        "confidence": ent.confidence,
+                    })
+
+            # 收集所有非空段落（按顺序）
+            all_paragraphs: list[dict] = []
+            for idx, elem in enumerate(doc.elements or []):
+                content = elem.content if hasattr(elem, 'content') else (elem.get('content', '') if isinstance(elem, dict) else '')
+                section = elem.section if hasattr(elem, 'section') else (elem.get('section', '') if isinstance(elem, dict) else '')
+                elem_type = elem.type.value if hasattr(elem, 'type') and hasattr(elem.type, 'value') else str(elem.type) if hasattr(elem, 'type') else 'paragraph'
+                if content and content.strip():
+                    all_paragraphs.append({
+                        'index': idx,
+                        'content': content.strip(),
+                        'section': section or '未分类',
+                        'type': elem_type,
+                    })
+
+            total_paragraphs = len(all_paragraphs)
+
             if start_index <= 2:
-                _emit(ProgressEventType.STEP_START, {"step": "compile", "total": len(entities)})
+                _emit(ProgressEventType.STEP_START, {
+                    "step": "compile",
+                    "total": total_paragraphs,
+                    "message": f"开始按段落编译，共 {total_paragraphs} 个段落（关联 {len(entities)} 个实体）...",
+                })
                 _update_step("compile", "running")
                 _track("compile", "input", {
                     "parsed_doc": serialize_parsed_doc(doc),
                     "extraction_result": serialize_extraction_result(extraction),
                     "paragraph_labels": doc_labels,
                     "source_entry": source_entry,
+                    "total_paragraphs": total_paragraphs,
+                    "total_entities": len(entities),
                 })
-                total_entities = len(entities)
 
-                # P1 (K4): 预取所有实体的图谱关系，避免逐实体查询
-                entity_names = [e.name for e in entities]
-                relations_map = self._fetch_graph_relations_batch(entity_names)
+                # ── Phase 1: 逐段顺序编译 ──
+                compiled_paragraphs: list[dict] = []
+                section_groups: dict[str, list[dict]] = {}
 
-                # P0-1: 实体编译并行化 — Phase 1: 并行执行 LLM 调用（信号量限制并发数）
-                max_concurrency = max(getattr(self.settings, 'compile_concurrency', 3), 1)
-                sem = asyncio.Semaphore(max_concurrency)
-
-                async def _compile_page_parallel(
-                    idx: int, entity: ExtractedEntity,
-                ) -> tuple[int, ExtractedEntity, WikiPage | None, Exception | None, int]:
-                    async with sem:
-                        # 暂停检查
-                        await _check_paused(pipeline_run_id)
-                        if _check_cancel():
-                            return (idx, entity, None, None, 0)
-                        # L1: 断点恢复 — 跳过已处理的实体
-                        if task_state is not None and idx <= task_state.get("last_entity_idx", -1):
-                            return (idx, entity, None, None, 0)
-
-                        # 为每个实体创建流式 chunk 回调
-                        entity_chunk_buffer = []
-
-                        def _make_chunk_cb(ent_name: str):
-                            def _cb(chunk_text: str) -> None:
-                                entity_chunk_buffer.append(chunk_text)
-                                _emit(ProgressEventType.PAGE_CHUNK, {
-                                    "entity": ent_name,
-                                    "chunk": chunk_text,
-                                    "buffer_length": sum(len(c) for c in entity_chunk_buffer),
-                                })
-                            return _cb
-
-                        chunk_cb = _make_chunk_cb(entity.name)
-                        t_start = time.monotonic()
-                        try:
-                            _emit(ProgressEventType.PAGE_START, {
-                                "entity": entity.name,
-                                "index": idx + 1,
-                                "total": total_entities,
-                                "raw_content": (entity.evidence_span or "")[:500],
-                                "entity_type": entity.entity_type,
-                            })
-                            _emit(ProgressEventType.PROGRESS, {
-                                "percent": round((idx + 1) / max(total_entities, 1) * 100),
-                                "current": idx + 1,
-                                "total": total_entities,
-                            })
-                            page = await self._compile_entity_page(
-                                entity, source_entry, para_labels=doc_labels,
-                                relations_map=relations_map,
-                                on_chunk=chunk_cb,
-                            )
-                            t_end = time.monotonic()
-                            processing_ms = int((t_end - t_start) * 1000)
-                            return (idx, entity, page, None, processing_ms)
-                        except Exception as e:
-                            t_end = time.monotonic()
-                            processing_ms = int((t_end - t_start) * 1000)
-                            return (idx, entity, None, e, processing_ms)
-
-                tasks = [_compile_page_parallel(i, entity) for i, entity in enumerate(entities)]
-                results_list = await asyncio.gather(*tasks, return_exceptions=True)
-
-                # P0-1: Phase 2 — 串行保存和后续处理（SQLite 写入安全）
-                for item in results_list:
-                    if item is None:
-                        continue
-                    if isinstance(item, Exception):
-                        result.errors.append(f"gather_failed: {item}")
-                        continue
-
-                    idx, entity, page, error, processing_time_ms = item
-                    if error:
-                        logger.exception("wiki_compiler_page_failed", slug=entity.name)
-                        result.errors.append(f"{entity.name}: {error}")
-                        # 发射 PAGE_DONE 错误事件，供前端展示
-                        _emit(ProgressEventType.PAGE_DONE, {
-                            "entity": entity.name,
-                            "index": idx + 1,
-                            "total": total_entities,
-                            "status": "error",
-                            "error": str(error),
-                            "processing_time_ms": max(processing_time_ms, 1),
-                        })
-                        continue
-                    if page is None:
-                        # page 为 None 通常是因为取消或断点恢复，发射跳过事件
-                        _emit(ProgressEventType.PAGE_DONE, {
-                            "entity": entity.name,
-                            "index": idx + 1,
-                            "total": total_entities,
-                            "status": "skipped",
-                            "processing_time_ms": max(processing_time_ms, 0),
-                        })
-                        continue
-
+                for idx, para in enumerate(all_paragraphs):
                     if _check_cancel():
-                        if task_state is not None:
-                            task_state["last_entity_idx"] = idx
-                            task_state["steps_completed"].append("compile_partial")
-                        _emit(ProgressEventType.STEP_DONE, {"step": "cancelled", "message": f"编译已取消（已完成 {idx}/{total_entities}）"})
+                        _emit(ProgressEventType.STEP_DONE, {
+                            "step": "cancelled",
+                            "message": f"编译已取消（已完成 {idx}/{total_paragraphs}）",
+                        })
                         cancel_pause(pipeline_run_id)
                         _finish_run("cancelled")
                         return result
 
+                    await _check_paused(pipeline_run_id)
+
+                    related_ents = para_entities_map.get(para['index'], [])
+                    display_name = related_ents[0]['name'] if related_ents else f"段落-{idx+1}"
+
+                    para_chunk_buffer: list[str] = []
+
+                    def _make_para_chunk_cb(pi: int):
+                        def _cb(chunk_text: str) -> None:
+                            para_chunk_buffer.append(chunk_text)
+                            _emit(ProgressEventType.PAGE_CHUNK, {
+                                "para_index": pi,
+                                "chunk": chunk_text,
+                                "buffer_length": sum(len(c) for c in para_chunk_buffer),
+                            })
+                        return _cb
+
+                    chunk_cb = _make_para_chunk_cb(para['index'])
+
+                    _emit(ProgressEventType.PAGE_START, {
+                        "entity": display_name,
+                        "index": idx + 1,
+                        "total": total_paragraphs,
+                        "raw_content": para['content'][:500],
+                        "entity_type": para['type'],
+                        "section": para['section'],
+                        "para_index": idx + 1,
+                        "related_entity_count": len(related_ents),
+                    })
+                    _emit(ProgressEventType.PROGRESS, {
+                        "percent": round((idx + 1) / max(total_paragraphs, 1) * 100),
+                        "current": idx + 1,
+                        "total": total_paragraphs,
+                        "step": "compile",
+                    })
+
+                    try:
+                        compiled = await self._compile_paragraph_page(
+                            para_content=para['content'],
+                            para_index=para['index'],
+                            para_section=para['section'],
+                            para_type=para['type'],
+                            source_entry=source_entry,
+                            related_entities=related_ents,
+                            on_chunk=chunk_cb,
+                        )
+                        compiled_paragraphs.append(compiled)
+
+                        section = compiled['section']
+                        if section not in section_groups:
+                            section_groups[section] = []
+                        section_groups[section].append(compiled)
+
+                        _emit(ProgressEventType.PAGE_DONE, {
+                            "entity": display_name,
+                            "index": idx + 1,
+                            "total": total_paragraphs,
+                            "status": "error" if compiled['llm_error'] else "done",
+                            "processing_time_ms": compiled['processing_time_ms'],
+                            "llm_error": compiled['llm_error'],
+                        })
+                        _emit(ProgressEventType.PAGE_COMPLETE, {
+                            "entity": display_name,
+                            "raw_content": compiled['raw_content'],
+                            "compiled_content": compiled['compiled_content'],
+                            "compiled_chars": compiled['compiled_chars'],
+                            "processing_time_ms": compiled['processing_time_ms'],
+                            "llm_error": compiled['llm_error'],
+                            "section": para['section'],
+                            "related_entity_count": len(related_ents),
+                            "para_index": idx + 1,
+                        })
+
+                    except Exception as e:
+                        logger.exception("wiki_compiler_paragraph_failed", para_index=para['index'])
+                        result.errors.append(f"段落 {para['index']} 编译失败: {e}")
+                        _emit(ProgressEventType.PAGE_DONE, {
+                            "entity": display_name,
+                            "index": idx + 1,
+                            "total": total_paragraphs,
+                            "status": "error",
+                            "error": str(e),
+                        })
+
+                # ── Phase 2: 按章节分组生成 Wiki 页面 ──
+                for section, comp_results in section_groups.items():
+                    if not comp_results:
+                        continue
+                    section_content_parts = [cr['compiled_content'] for cr in comp_results]
+                    section_body = "\n\n".join(section_content_parts)
+
+                    section_slug = _slugify(section) or f"section-{hash(section) % 10000}"
+                    if not section_slug:
+                        section_slug = f"section-{len(result.slugs) + 1}"
+
+                    page = WikiPage(
+                        slug=section_slug,
+                        title=section,
+                        type="concept",
+                        tags=["section", _slugify(section)[:20]],
+                        sources=[source_entry],
+                        body_md=section_body,
+                        review_status="auto",
+                        llm_error=None,
+                        source_doc_id=source_entry.get("doc_id", ""),
+                        paragraph_labels=[],
+                    )
                     try:
                         outcome = self._save_page(page, force=force)
-                        # GS-6: 双向同步 — 页面保存后同步更新图谱
                         self._sync_page_to_graph(page)
                         result.slugs.append(page.slug)
                         if outcome == "created":
                             result.pages_created += 1
                         elif outcome == "updated":
                             result.pages_updated += 1
-                            if page.stale_items:
-                                result.stale_marked.append(page.slug)
                         else:
                             result.pages_unchanged += 1
-                        # S2 + L3: 质量校验 — 根据阈值决定状态
-                        if page.review_status != "review_needed":
-                            quality = self._validate_page_quality(page.body_md, page.type)
-                            if not quality["valid"]:
-                                page.review_status = "review_needed"
-                                logger.info(
-                                    "wiki_page_quality_fail",
-                                    slug=page.slug,
-                                    issues=quality["issues"],
-                                    score=quality["score"],
-                                )
-                            # L3: 质量阈值控制
-                            if quality["score"] < _QUALITY_REVIEW_THRESHOLD:
-                                page.review_status = "review_needed"
-                                logger.warning(
-                                    "wiki_page_quality_rejected",
-                                    slug=page.slug,
-                                    score=quality["score"],
-                                    threshold=_QUALITY_REVIEW_THRESHOLD,
-                                )
-                        if page.review_status == "review_needed":
-                            result.review_needed.append(page.slug)
-
-                        # ── 使用实体已绑定的段落内容作为 raw_content ──
-                        raw_content_fallback = entity.evidence_span or ""
-                        if not raw_content_fallback:
-                            # 兜底：实体定义 + 属性 + 实体名
-                            fallback_parts = []
-                            ent_def = getattr(entity, 'definition', '')
-                            if ent_def:
-                                fallback_parts.append(f"定义：{ent_def}")
-                            ent_props = getattr(entity, 'properties', None) or {}
-                            if ent_props:
-                                for k, v in list(ent_props.items())[:5]:
-                                    fallback_parts.append(f"{k}: {v}")
-                            fallback_parts.append(f"实体名：{entity.name}")
-                            fallback_parts.append(f"实体类型：{getattr(entity, 'entity_type', 'Concept')}")
-                            raw_content_fallback = "\n".join(fallback_parts)
-
-                        # 发射 PAGE_DONE 事件，包含 LLM 错误信息和后端精确耗时
-                        page_done_data = {
-                            "entity": entity.name,
-                            "slug": page.slug,
-                            "index": idx + 1,
-                            "total": total_entities,
-                            "outcome": outcome,
-                            "review_status": page.review_status,
-                            "processing_time_ms": max(processing_time_ms, 1),
-                        }
-                        if page.llm_error:
-                            page_done_data["llm_error"] = page.llm_error
-                        _emit(ProgressEventType.PAGE_DONE, page_done_data)
-                        # 发射 PAGE_COMPLETE 事件，包含原文和编译后内容供对比视图
-                        _emit(ProgressEventType.PAGE_COMPLETE, {
-                            "entity": entity.name,
-                            "slug": page.slug,
-                            "raw_content": raw_content_fallback[:2000],
-                            "compiled_content": page.body_md[:3000],
-                            "compiled_chars": len(page.body_md),
-                            "review_status": page.review_status,
-                            "llm_error": page.llm_error,
-                            "processing_time_ms": max(processing_time_ms, 1),
-                        })
-                        # M2: 冲突检测 — 合并后检测语义冲突
-                        if outcome == "updated":
-                            try:
-                                # 获取旧版本内容用于冲突检测
-                                doc_key = _key_from_slug(page.slug)
-                                old_version = self.vc.get_latest(doc_key)
-                                if old_version:
-                                    conflicts = await self._detect_conflicts_with_llm(
-                                        old_version["content"], page.body_md
-                                    )
-                                    if conflicts:
-                                        page.stale_items.extend(conflicts)
-                                        if page.slug not in result.stale_marked:
-                                            result.stale_marked.append(page.slug)
-                                        logger.info(
-                                            "wiki_conflict_detected",
-                                            slug=page.slug,
-                                            conflict_count=len(conflicts),
-                                        )
-                            except Exception as e:
-                                logger.warning(
-                                    "wiki_conflict_detection_failed",
-                                    slug=page.slug,
-                                    error=str(e),
-                                )
                     except Exception as e:
-                        logger.exception("wiki_compiler_page_failed", slug=entity.name)
+                        logger.exception("wiki_compiler_section_save_failed", slug=section_slug)
+                        result.errors.append(f"章节 {section} 保存失败: {e}")
+
+                # ── Phase 3: 保留实体级 Wiki 页面编译（实体浏览入口） ──
+                for entity in entities:
+                    try:
+                        page = await self._compile_entity_page(
+                            entity, source_entry,
+                            para_labels=doc_labels,
+                            relations_map=None,
+                        )
+                        if page:
+                            outcome = self._save_page(page, force=force)
+                            self._sync_page_to_graph(page)
+                            result.slugs.append(page.slug)
+                            if outcome == "created":
+                                result.pages_created += 1
+                            elif outcome == "updated":
+                                result.pages_updated += 1
+                            else:
+                                result.pages_unchanged += 1
+                            if page.review_status == "review_needed":
+                                result.review_needed.append(page.slug)
+                    except Exception as e:
                         result.errors.append(f"{entity.name}: {e}")
 
-                # 实体编译阶段完成，发送 compile step_done，包含错误摘要
-                llm_error_entities = []
-                for item in results_list:
-                    if isinstance(item, Exception):
-                        continue
-                    if isinstance(item, tuple) and len(item) >= 5:
-                        idx, entity, page, error, _pt = item
-                        if error:
-                            llm_error_entities.append({"entity": entity.name, "error": str(error)})
-                        elif page and page.llm_error:
-                            llm_error_entities.append({"entity": entity.name, "error": page.llm_error})
+                _track("compile", "output", serialize_compile_result_summary(result))
+                _update_step("compile", "done")
 
                 _emit(ProgressEventType.STEP_DONE, {
                     "step": "compile",
-                    "pages": len(entities),
-                    "entity_names": entity_names,
-                    "slugs": list(result.slugs),
+                    "paragraphs_processed": total_paragraphs,
+                    "entities_processed": len(entities),
+                    "pages": len(result.slugs),
                     "pages_created": result.pages_created,
                     "pages_updated": result.pages_updated,
-                    "pages_unchanged": result.pages_unchanged,
-                    "llm_error_count": len(llm_error_entities),
-                    "llm_errors": llm_error_entities[:20],  # 最多 20 条
-                    "message": f"实体编译完成：{len(result.slugs)} 个页面（{len(llm_error_entities)} 个 LLM 错误）",
+                    "message": f"段落编译完成：{total_paragraphs} 段落 → {len(result.slugs)} 页面",
                 })
 
                 # 4. 结构编译（基于标题层级树）
@@ -1683,6 +1654,180 @@ H{level}
             source_doc_id=source_entry.get("doc_id", ""),
             paragraph_labels=para_labels or [],
         )
+
+    # ── 单段落编译（正确流程：按段落顺序处理，而非按实体） ──
+
+    async def _compile_paragraph_page(
+        self,
+        para_content: str,
+        para_index: int,
+        para_section: str = "",
+        para_type: str = "paragraph",
+        source_entry: dict | None = None,
+        related_entities: list[dict] | None = None,
+        on_chunk: Any | None = None,
+    ) -> dict:
+        """将单个段落编译为 wiki 结构化内容。
+
+        正确流程：
+        - 逐段处理（doc.elements 顺序），不管段落是否有关联实体
+        - 将段落内容作为原始内容传入 LLM
+        - LLM 生成 wiki 结构化内容（含 [[wikilink]]）
+        - 返回编译结果，用于对比视图和后续 wiki 页面生成
+
+        Returns:
+            dict {
+                "para_index": int,
+                "section": str,
+                "raw_content": str,
+                "compiled_content": str,
+                "llm_error": str | None,
+                "processing_time_ms": int,
+            }
+        """
+        t_start = time.monotonic()
+        llm_error: str | None = None
+
+        # 调用 LLM 将段落内容编译为 wiki 结构
+        try:
+            compiled_content = await self._llm_compile_paragraph(
+                para_content=para_content,
+                para_section=para_section,
+                para_type=para_type,
+                related_entities=related_entities,
+                on_chunk=on_chunk,
+            )
+        except Exception as e:
+            llm_error = str(e)
+            logger.warning("wiki_compiler_paragraph_llm_failed",
+                           para_index=para_index, error=str(e))
+            compiled_content = ""
+
+        # LLM 失败时的兜底：使用段落原文
+        if not compiled_content:
+            compiled_content = self._build_paragraph_fallback(
+                para_content, para_section, para_type,
+            )
+
+        t_end = time.monotonic()
+        return {
+            "para_index": para_index,
+            "section": para_section,
+            "raw_content": para_content[:2000],
+            "compiled_content": compiled_content[:3000],
+            "compiled_chars": len(compiled_content),
+            "llm_error": llm_error,
+            "processing_time_ms": int((t_end - t_start) * 1000),
+        }
+
+    async def _llm_compile_paragraph(
+        self,
+        para_content: str,
+        para_section: str,
+        para_type: str,
+        related_entities: list[dict] | None,
+        on_chunk: Any | None,
+    ) -> str:
+        """调用 LLM 将单段内容编译为 wiki 结构化 Markdown。"""
+        from app.core.llm import ChatMessage
+
+        # 构建实体上下文
+        entity_context = ""
+        if related_entities:
+            entity_lines = []
+            for ent in related_entities[:10]:
+                ent_name = ent.get("name", "")
+                ent_type = ent.get("entity_type", "Concept")
+                if ent_name:
+                    entity_lines.append(f"- {ent_name}（类型：{ent_type}）")
+            if entity_lines:
+                entity_context = "\n\n本段涉及的实体：\n" + "\n".join(entity_lines)
+
+        section_hint = f"（所属章节：{para_section}）" if para_section else ""
+
+        system_prompt = f"""你是 Wiki 编译器。将给定的段落内容编译为结构化 Markdown Wiki 内容。
+
+要求：
+1. 保留原始信息，按 Wiki 结构重新组织
+2. 识别并标注关键实体和概念，使用 [[wikilink]] 语法（如 [[entity-name]]）
+3. 添加适当的小标题和分层
+4. 保持内容的专业性和可读性
+5. 直接输出编译后的 Markdown 内容，不要加前言或解释
+
+段落类型：{para_type}{section_hint}
+{entity_context}"""
+
+        user_message = f"""请将以下段落内容编译为 Wiki 结构化 Markdown：
+
+---段落开始---
+{para_content}
+---段落结束---
+
+编译要求：
+- 保留所有原始信息，不要遗漏
+- 识别并标注关键术语和实体为 [[wikilink]]
+- 添加合适的小节标题
+- 如果内容包含操作步骤，使用有序列表
+- 如果内容包含定义或说明，使用清晰的段落结构"""
+
+        messages = [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=user_message),
+        ]
+
+        response = await self.llm.chat(
+            messages=messages,
+            temperature=0.3,
+            max_tokens=2000,
+        )
+
+        result = response.text.strip()
+
+        # 处理流式回调（模拟 chunk 输出）
+        if on_chunk and result:
+            chunk_size = max(50, len(result) // 5)
+            for i in range(0, len(result), chunk_size):
+                chunk = result[i:i + chunk_size]
+                on_chunk(chunk)
+
+        return result
+
+    def _build_paragraph_fallback(
+        self,
+        para_content: str,
+        para_section: str,
+        para_type: str,
+    ) -> str:
+        """LLM 不可用时的段落编译兜底：使用模板化结构。"""
+        escaped = para_content.replace('```', '`\'\'`')
+
+        # 根据段落类型选择模板
+        if para_type in ('heading', 'header'):
+            level = 2
+            return f"## {para_content}\n\n> 本节内容待 LLM 增强\n\n<!-- LLM fallback: heading -->"
+
+        if '步骤' in para_content or '步骤' in para_section:
+            lines = para_content.split('\n')
+            items = [l.strip() for l in lines if l.strip()]
+            numbered = "\n".join(f"{i+1}. {item}" for i, item in enumerate(items[:20]))
+            return f"### {para_section or '操作步骤'}\n\n{numbered}\n\n<!-- LLM fallback: procedural -->"
+
+        if any(kw in para_content for kw in ['配置', '参数', '命令', '语法']):
+            return f"""### {para_section or '配置说明'}
+
+```
+{escaped}
+```
+
+<!-- LLM fallback: configuration -->"""
+
+        # 默认模板：概念段落
+        section_title = para_section or '内容说明'
+        return f"""### {section_title}
+
+{para_content}
+
+<!-- LLM fallback: paragraph -->"""
 
     async def _extract_from_compiled_pages(
         self,
