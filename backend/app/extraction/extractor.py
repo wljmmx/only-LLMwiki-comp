@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import structlog
 
@@ -384,6 +385,11 @@ class KnowledgeExtractor:
                         pass
                 entities, relations = [], []
 
+        # ── 富化实体 evidence_span：绑定来源段落的完整内容 ──
+        # 逐段处理：从 doc.elements 中找到与实体相关的段落，保存完整内容
+        if entities and doc.elements:
+            entities = self._enrich_entities_with_paragraphs(entities, doc)
+
         # 置信度门控
         self._apply_gating(entities, relations, result)
 
@@ -419,6 +425,11 @@ class KnowledgeExtractor:
                         fallback_entities, doc.title or "", on_progress=on_progress,
                     )
                     entity_cleanup_path = "llm_fallback_gating" if gating_used_llm else "rule_fallback_gating"
+                # 富化 fallback 实体的 evidence_span
+                if fallback_entities and doc.elements:
+                    fallback_entities = self._enrich_entities_with_paragraphs(
+                        fallback_entities, doc,
+                    )
                 # 合并 fallback 结果到 result（不覆盖原 entities 统计）
                 self._apply_gating(fallback_entities, fallback_relations, result)
             except Exception as e:  # noqa: BLE001
@@ -837,6 +848,121 @@ class KnowledgeExtractor:
             evidence_span=raw.get("evidence_span", ""),
             source_doc_id=doc_id,
         )
+
+    def _enrich_entities_with_paragraphs(
+        self,
+        entities: list,
+        doc: ParsedDocument,
+    ) -> list:
+        """为实体绑定来源段落的完整内容。
+
+        逐段处理：从 doc.elements 中找到与实体相关的段落，
+        将其完整内容保存到实体的 evidence_span 中。
+
+        查找策略：
+        1. 用实体 evidence_span 的前 30 字符在段落内容中做子串匹配
+        2. 如果没匹配，用实体名做子串匹配
+        3. 如果仍没匹配，保留原 evidence_span
+        """
+        doc_elements = doc.elements or []
+        if not doc_elements:
+            return entities
+
+        # 构建段落索引：(content, index, section, type)
+        paragraphs: list[dict] = []
+        for idx, elem in enumerate(doc_elements):
+            content = elem.content if hasattr(elem, 'content') else (elem.get('content', '') if isinstance(elem, dict) else '')
+            section = elem.section if hasattr(elem, 'section') else (elem.get('section', '') if isinstance(elem, dict) else '')
+            elem_type = elem.type.value if hasattr(elem, 'type') and hasattr(elem.type, 'value') else str(elem.type) if hasattr(elem, 'type') else ''
+            if content and content.strip():
+                paragraphs.append({
+                    'content': content.strip(),
+                    'index': idx,
+                    'section': section,
+                    'type': elem_type,
+                })
+
+        if not paragraphs:
+            return entities
+
+        enriched_entities = []
+        for entity in entities:
+            original_evidence = (entity.evidence_span or '').strip()
+            entity_name = (entity.name or '').strip()
+
+            # 查找匹配的段落
+            matched_content = self._find_matching_paragraph(
+                entity_name, original_evidence, paragraphs,
+            )
+
+            if matched_content and len(matched_content) > len(original_evidence):
+                # 用段落内容替换 evidence_span（最多 2000 字符）
+                entity.evidence_span = matched_content[:2000]
+                # 同时记录段落索引到 properties
+                if not hasattr(entity, 'properties') or entity.properties is None:
+                    entity.properties = {}
+                entity.properties['source_paragraph_found'] = True
+
+            enriched_entities.append(entity)
+
+        logger.info(
+            "entity_paragraph_enrichment_done",
+            doc_id=doc.doc_id,
+            total_entities=len(enriched_entities),
+            enriched_count=sum(
+                1 for e in enriched_entities
+                if e.properties.get('source_paragraph_found')
+            ),
+        )
+        return enriched_entities
+
+    def _find_matching_paragraph(
+        self,
+        entity_name: str,
+        evidence: str,
+        paragraphs: list[dict],
+    ) -> str | None:
+        """在段落列表中找到与实体匹配的段落内容。
+
+        查找优先级：
+        1. 用 evidence 的前 30 字符做子串匹配（精确）
+        2. 用实体名做子串匹配
+        3. 用 evidence 全文做子串匹配
+        4. 用 evidence 中的关键词（分词后）做匹配
+        """
+        # 策略 1: evidence 前 30 字符精确子串匹配
+        if evidence and len(evidence) >= 4:
+            evidence_prefix = evidence[:30]
+            for p in paragraphs:
+                if evidence_prefix in p['content']:
+                    return p['content']
+
+        # 策略 2: 实体名匹配
+        if entity_name and len(entity_name) >= 2:
+            for p in paragraphs:
+                if entity_name in p['content']:
+                    return p['content']
+
+        # 策略 3: evidence 全文匹配
+        if evidence and len(evidence) >= 4:
+            for p in paragraphs:
+                if evidence in p['content']:
+                    return p['content']
+
+        # 策略 4: evidence 分词后关键词匹配
+        if evidence and len(evidence) >= 2:
+            keywords = set()
+            for token in re.split(r'[\s,，。；;、\(\)（）\[\]【】]+', evidence):
+                token = token.strip()
+                if len(token) >= 2:
+                    keywords.add(token)
+            if keywords:
+                for p in paragraphs:
+                    for kw in keywords:
+                        if kw in p['content']:
+                            return p['content']
+
+        return None
 
     def _apply_gating(
         self,

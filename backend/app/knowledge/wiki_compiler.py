@@ -944,13 +944,11 @@ class WikiCompiler:
                         chunk_cb = _make_chunk_cb(entity.name)
                         t_start = time.monotonic()
                         try:
-                            # 预先获取富化的 raw_content 用于 PAGE_START 和 PAGE_COMPLETE
-                            enriched_raw = self._build_raw_content_for_entity(entity, doc)
                             _emit(ProgressEventType.PAGE_START, {
                                 "entity": entity.name,
                                 "index": idx + 1,
                                 "total": total_entities,
-                                "raw_content": enriched_raw[:500],
+                                "raw_content": (entity.evidence_span or "")[:500],
                                 "entity_type": entity.entity_type,
                             })
                             _emit(ProgressEventType.PROGRESS, {
@@ -1052,10 +1050,21 @@ class WikiCompiler:
                         if page.review_status == "review_needed":
                             result.review_needed.append(page.slug)
 
-                        # ── 构造 raw_content（优先匹配文档段落，其次 evidence_span，最后兜底）──
-                        raw_content_fallback = self._build_raw_content_for_entity(
-                            entity, doc,
-                        )
+                        # ── 使用实体已绑定的段落内容作为 raw_content ──
+                        raw_content_fallback = entity.evidence_span or ""
+                        if not raw_content_fallback:
+                            # 兜底：实体定义 + 属性 + 实体名
+                            fallback_parts = []
+                            ent_def = getattr(entity, 'definition', '')
+                            if ent_def:
+                                fallback_parts.append(f"定义：{ent_def}")
+                            ent_props = getattr(entity, 'properties', None) or {}
+                            if ent_props:
+                                for k, v in list(ent_props.items())[:5]:
+                                    fallback_parts.append(f"{k}: {v}")
+                            fallback_parts.append(f"实体名：{entity.name}")
+                            fallback_parts.append(f"实体类型：{getattr(entity, 'entity_type', 'Concept')}")
+                            raw_content_fallback = "\n".join(fallback_parts)
 
                         # 发射 PAGE_DONE 事件，包含 LLM 错误信息和后端精确耗时
                         page_done_data = {
@@ -2458,91 +2467,7 @@ H{level}
             return "\n".join(lines)
         return t
 
-    # ── 富化 raw_content：从原始文档中找到与实体匹配的段落 ──
-    def _build_raw_content_for_entity(
-        self, entity: ExtractedEntity, doc: Any | None = None,
-    ) -> str:
-        """为实体构建富化的 raw_content。
-
-        优先级：
-        1. 从 doc.elements 中搜索包含实体名的段落，拼接其内容
-        2. 使用 entity.evidence_span（LLM 或 fallback 提取时设置）
-        3. 兜底：实体定义 + 属性 + 实体名
-        """
-        entity_name = entity.name or ""
-        # 从 evidence_span 中提取关键词
-        evidence = (entity.evidence_span or "").strip()
-        if not evidence and entity_name:
-            evidence = entity_name
-
-        # Phase 1: 尝试从文档元素中匹配
-        matched_contents: list[str] = []
-        if doc is not None:
-            doc_elements = getattr(doc, 'elements', []) or []
-            if doc_elements:
-                # 构建搜索关键词列表
-                keywords = set()
-                if entity_name:
-                    # 实体名分词（按中英文标点和空格）
-                    for token in re.split(r'[\s,，。；;、\(\)（）\[\]【】]+', entity_name):
-                        token = token.strip()
-                        if len(token) >= 2:
-                            keywords.add(token)
-                if evidence and len(evidence) <= 100:
-                    keywords.add(evidence)
-
-                # 搜索匹配的段落
-                for elem in doc_elements:
-                    content = ""
-                    if isinstance(elem, dict):
-                        content = elem.get('content', '') or ''
-                    else:
-                        content = getattr(elem, 'content', '') or ''
-                    if not content or not content.strip():
-                        continue
-                    # 检查是否包含任何关键词
-                    matched = False
-                    for kw in keywords:
-                        if kw and kw in content:
-                            matched = True
-                            break
-                    if matched:
-                        matched_contents.append(content.strip())
-                    if sum(len(c) for c in matched_contents) >= 3000:
-                        break
-
-                # 如果没有关键词匹配，使用 evidence_span 的内容作为搜索词
-                if not matched_contents and evidence and evidence != entity_name:
-                    for elem in doc_elements:
-                        content = ""
-                        if isinstance(elem, dict):
-                            content = elem.get('content', '') or ''
-                        else:
-                            content = getattr(elem, 'content', '') or ''
-                        if content and evidence[:30] in content:
-                            matched_contents.append(content.strip())
-                        if sum(len(c) for c in matched_contents) >= 3000:
-                            break
-
-        if matched_contents:
-            return "\n\n".join(matched_contents)[:2000]
-
-        # Phase 2: 使用 evidence_span
-        if entity.evidence_span and len(entity.evidence_span.strip()) > 10:
-            return entity.evidence_span.strip()[:2000]
-
-        # Phase 3: 兜底构建
-        fallback_parts = []
-        ent_def = getattr(entity, 'definition', '')
-        if ent_def:
-            fallback_parts.append(f"定义：{ent_def}")
-        ent_props = getattr(entity, 'properties', None) or {}
-        if ent_props:
-            for k, v in list(ent_props.items())[:5]:
-                fallback_parts.append(f"{k}: {v}")
-        fallback_parts.append(f"实体名：{entity.name}")
-        fallback_parts.append(f"实体类型：{getattr(entity, 'entity_type', 'Concept')}")
-        return "\n".join(fallback_parts)[:2000]
+    # ── 富化 raw_content：直接使用已在抽取阶段绑定的段落内容 ──
 
     # P0: 增强模板兜底 — 当 LLM 不可用时，从源文档提取内容生成结构化 Wiki 页面
     def _build_template_fallback(
