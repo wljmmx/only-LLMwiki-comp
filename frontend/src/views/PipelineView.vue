@@ -191,6 +191,10 @@ interface PipelineStep {
     // index
     index_rebuilt?: boolean
     slugs_count?: number
+    // lint
+    issues_count?: number
+    by_type?: Record<string, number>
+    review_pushed?: number
   } | null
   // 步骤级错误列表（每个实体的错误详情）
   errors?: Array<{ entity: string; error: string; status: string }>
@@ -222,9 +226,10 @@ const compileSteps = ref<PipelineStep[]>([
   { name: 'extract', label: '知识抽取', status: 'pending' },
   { name: 'classify', label: '段落分类', status: 'pending' },
   { name: 'compile', label: 'LLM 编译 Wiki', status: 'pending' },
-  { name: 'struct_compile', label: '结构编译（章节处理）', status: 'pending' },
+  { name: 'struct_compile', label: '结构集成', status: 'pending' },
   { name: 'extract_compiled', label: '编译后实体抽取', status: 'pending' },
   { name: 'index', label: '重建索引', status: 'pending' },
+  { name: 'lint', label: '健康检查（Lint）', status: 'pending' },
 ])
 
 // 章节级节点列表（独立展示每个章节的处理状态）
@@ -305,7 +310,7 @@ const compileResult = ref<{
   paragraph_count?: number
 } | null>(null)
 
-const stepIndex: Record<string, number> = { parse: 0, extract: 1, classify: 2, compile: 3, struct_compile: 4, extract_compiled: 5, index: 6 }
+const stepIndex: Record<string, number> = { parse: 0, extract: 1, classify: 2, compile: 3, struct_compile: 4, extract_compiled: 5, index: 6, lint: 7 }
 
 function resetSteps() {
   compileSteps.value = [
@@ -313,9 +318,10 @@ function resetSteps() {
     { name: 'extract', label: '知识抽取', status: 'pending' },
     { name: 'classify', label: '段落分类', status: 'pending' },
     { name: 'compile', label: 'LLM 编译 Wiki', status: 'pending' },
-    { name: 'struct_compile', label: '结构编译（章节处理）', status: 'pending' },
+    { name: 'struct_compile', label: '结构集成', status: 'pending' },
     { name: 'extract_compiled', label: '编译后实体抽取', status: 'pending' },
     { name: 'index', label: '重建索引', status: 'pending' },
+    { name: 'lint', label: '健康检查（Lint）', status: 'pending' },
   ]
   compileProgress.value = 0
   compileResult.value = null
@@ -387,13 +393,13 @@ function startCompile() {
   if (stage) {
     url += `&start_from_stage=${stage}`
     // 重跑时，前面阶段标记为 skipped
-    const stageOrder = ['parse', 'extract', 'classify', 'compile', 'struct_compile', 'extract_compiled', 'index']
+    const stageOrder = ['parse', 'extract', 'classify', 'compile', 'struct_compile', 'extract_compiled', 'index', 'lint']
     const startIdx = stageOrder.indexOf(stage)
     if (startIdx > 0) {
       for (let i = 0; i < startIdx; i++) {
         compileSteps.value[i].status = 'skipped'
         compileSteps.value[i].details = '跳过（从缓存加载）'
-        compileProgress.value = (i / 7) * 100
+        compileProgress.value = (i / 8) * 100
       }
     }
   }
@@ -414,7 +420,7 @@ function startCompile() {
         const idx = stepIndex[step] ?? 0
         if (step in stepIndex) {
           compileSteps.value[idx].status = 'running'
-          compileProgress.value = (idx / 7) * 100
+          compileProgress.value = (idx / 8) * 100
           compileStepStartTime.value = Date.now()
           // 启动运行中计时刷新定时器
           startTickTimer()
@@ -441,7 +447,7 @@ function startCompile() {
         if (idx !== undefined) {
           compileSteps.value[idx].status = 'done'
           compileSteps.value[idx].duration_ms = evt.data.duration_ms ?? null
-          compileProgress.value = ((idx + 1) / 7) * 100
+          compileProgress.value = ((idx + 1) / 8) * 100
           if (step === 'parse') {
             const elements = evt.data.elements ?? 0
             const headingTreeCount = evt.data.heading_tree_count ?? 0
@@ -507,7 +513,7 @@ function startCompile() {
             const pagesUpdated = evt.data.pages_updated ?? 0
             const error = evt.data.error
             if (error) {
-              compileSteps.value[idx].details = `结构编译失败：${error}`
+              compileSteps.value[idx].details = `结构集成失败：${error}`
             } else {
               compileSteps.value[idx].details = `章节处理完成：${sections} 个章节，${pagesCreated} 创建，${pagesUpdated} 更新`
             }
@@ -537,6 +543,34 @@ function startCompile() {
             compileSteps.value[idx].output = {
               index_rebuilt: indexRebuilt,
               slugs_count: slugsCount,
+            }
+          } else if (step === 'lint') {
+            const issuesCount = evt.data.issues_count ?? 0
+            const byType = evt.data.by_type ?? {}
+            const reviewPushed = evt.data.review_pushed ?? 0
+            const error = evt.data.error
+            const parts: string[] = []
+            if (error) {
+              compileSteps.value[idx].details = `Lint 失败：${error}`
+            } else {
+              if (issuesCount === 0) {
+                parts.push('无问题')
+              } else {
+                parts.push(`发现 ${issuesCount} 个问题`)
+                const typeEntries = Object.entries(byType) as [string, number][]
+                const typeParts = typeEntries
+                  .filter(([, c]) => c > 0)
+                  .map(([t, c]) => `${t}:${c}`)
+                if (typeParts.length > 0) parts.push(`（${typeParts.join(' ')}）`)
+              }
+              if (reviewPushed > 0) parts.push(`${reviewPushed} 项进审查队列`)
+              compileSteps.value[idx].details = `Lint 完成：${parts.join('，')}`
+            }
+            compileSteps.value[idx].output = {
+              issues_count: issuesCount,
+              by_type: byType,
+              review_pushed: reviewPushed,
+              error,
             }
           } else if (step === 'compile_summary') {
             // 最终编译汇总，更新 compile 步骤的 slugs（struct_compile 可能追加了页面）
@@ -782,7 +816,7 @@ function startCompile() {
         }
         if (typeof percent === 'number' && percent > 0 && runningIdx >= 0) {
           // 进度公式：步骤起始百分比 + 步骤内进度
-          compileProgress.value = ((runningIdx * 100 + percent) / 7)
+          compileProgress.value = ((runningIdx * 100 + percent) / 8)
         }
       } else if (evt.type === 'page_chunk') {
         // LLM 流式输出 chunk — 累积到对应实体
@@ -866,7 +900,7 @@ function startCompile() {
           total: data.total as number ?? 0,
           currentEntity: `处理章节: ${data.title}`,
         }
-        compileProgress.value = ((4 * 100) + (data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 100) / 7
+        compileProgress.value = ((4 * 100) + (data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 100) / 8
       } else if (evt.type === 'section_done') {
         // 更新章节节点状态
         const data = evt.data
@@ -888,7 +922,7 @@ function startCompile() {
           compileSteps.value[4].subProgress.currentEntity = `完成章节: ${data.title}`
         }
         // struct_compile 进度：第5步（index=4），占 4/7 到 5/7
-        compileProgress.value = ((4 * 100) + (data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 100) / 7
+        compileProgress.value = ((4 * 100) + (data.index as number ?? 0) / Math.max(data.total as number ?? 1, 1) * 100) / 8
       } else if (evt.type === 'section_progress') {
         // 兼容旧版 section_progress 事件
         const data = evt.data

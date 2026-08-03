@@ -71,10 +71,12 @@ from app.knowledge.wiki_compiler_utils import (
 )
 from app.knowledge.wiki_drift import clear_stale, record_compiled_checksum
 from app.knowledge.wiki_index import _key_from_slug, _parse_frontmatter, list_wiki_pages, rebuild_index
+from app.knowledge.wiki_lint import lint_all_async
 from app.knowledge.wikilink import WIKILINK_RE, update_backlinks
 from app.observability import record_business_histogram, record_business_metric, span
 from app.parsers import get_parser
 from app.parsers.base import ParsedDocument
+from app.sections.store import SectionStore
 from app.storage import get_document_store
 from app.storage.pipeline_tracker import get_pipeline_tracker
 from app.storage.version_control import get_version_control
@@ -159,6 +161,7 @@ class WikiCompiler:
         self.extractor = KnowledgeExtractor()
         self.vc = get_version_control()
         self.store = get_document_store()
+        self.section_store = SectionStore()
         self._llm_cache = WikiCompiler._persistent_llm_cache  # P1: 引用类级别持久化缓存
 
     # ── LLM 包装 ──
@@ -1075,6 +1078,28 @@ class WikiCompiler:
                             result.pages_updated += 1
                         else:
                             result.pages_unchanged += 1
+                        # 记录段落→页面的贡献关系（P1: SectionContribution 持久化）
+                        # 用于反向追溯：给定 wiki 页面，查询其内容由哪些段落贡献
+                        try:
+                            section_id = f"{doc.doc_id}:{section_slug}"
+                            source_doc_id = source_entry.get("doc_id", doc.doc_id)
+                            for cr in comp_results:
+                                para_idx = cr.get("para_index")
+                                if para_idx is not None:
+                                    para_section_id = f"{section_id}:p{para_idx}"
+                                    self.section_store.add_contribution(
+                                        section_id=para_section_id,
+                                        source_doc_id=source_doc_id,
+                                        target_type="wiki_page",
+                                        target_slug=page.slug,
+                                        contribution_type="primary",
+                                        compiled_version=1,
+                                    )
+                        except Exception as contrib_err:  # noqa: BLE001
+                            logger.warning(
+                                "section_contribution_record_failed",
+                                slug=page.slug, error=str(contrib_err),
+                            )
                     except Exception as e:
                         logger.exception("wiki_compiler_section_save_failed", slug=section_slug)
                         result.errors.append(f"章节 {section} 保存失败: {e}")
@@ -1270,6 +1295,67 @@ class WikiCompiler:
                     "step": "index",
                     "index_rebuilt": result.index_rebuilt,
                     "slugs_count": len(result.slugs),
+                })
+
+            # ── 阶段 5: lint（健康检查）──
+            # 流水线末尾自动检测矛盾/stale/orphan/missing concept/deadlink/okf 违规
+            # 与 AGENTS.md §7 Lint Workflow 对齐
+            if start_index <= 3:
+                _update_step("lint", "running")
+                _emit(ProgressEventType.STEP_START, {
+                    "step": "lint",
+                    "message": "开始健康检查（矛盾/过时/孤岛/缺失概念/死链/OKF 合规）...",
+                })
+                _track("lint", "input", {"slugs": list(result.slugs)})
+
+                lint_error: str | None = None
+                lint_issues_count = 0
+                lint_by_type: dict[str, int] = {}
+                lint_review_pushed = 0
+                try:
+                    # 仅运行 regex 检测（include_semantic=False），
+                    # 避免 LLM 语义检测拖慢流水线；语义检测由独立定时任务触发
+                    lint_report = await lint_all_async(
+                        include_stale=True,
+                        include_semantic=False,
+                    )
+                    lint_issues_count = len(lint_report.issues)
+                    for issue in lint_report.issues:
+                        lint_by_type[issue.type] = lint_by_type.get(issue.type, 0) + 1
+                    # 关键问题（矛盾/缺失概念/OKF 违规）计入审查推送数
+                    review_types = {
+                        "contradiction",
+                        "contradiction_semantic",
+                        "missing_concept",
+                        "missing_concept_from_graph",
+                        "okf_violation",
+                    }
+                    lint_review_pushed = sum(
+                        c for t, c in lint_by_type.items() if t in review_types
+                    )
+                    logger.info(
+                        "wiki_lint_done",
+                        doc_id=doc_id,
+                        issues=lint_issues_count,
+                        by_type=lint_by_type,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    lint_error = str(e)
+                    logger.warning("wiki_lint_failed", doc_id=doc_id, error=lint_error)
+
+                _track("lint", "output", {
+                    "issues_count": lint_issues_count,
+                    "by_type": lint_by_type,
+                    "review_pushed": lint_review_pushed,
+                    "error": lint_error,
+                })
+                _update_step("lint", "done")
+                _emit(ProgressEventType.STEP_DONE, {
+                    "step": "lint",
+                    "issues_count": lint_issues_count,
+                    "by_type": lint_by_type,
+                    "review_pushed": lint_review_pushed,
+                    "error": lint_error,
                 })
 
             # 设置 page_count 属性（编译完成后）
@@ -1910,7 +1996,7 @@ H{level}
         # ── Phase 2: 逐页融合 ──
         for idx, slug in enumerate(new_slugs):
             if pipeline_run_id:
-                await self._check_paused(pipeline_run_id)
+                await _check_paused(pipeline_run_id)
 
             # 从版本控制加载新页面
             new_page = self._load_wiki_page_from_storage(slug)
@@ -2202,12 +2288,27 @@ H{level}
                 logger.warning("merge_target_not_found", slug=existing_slug)
                 return
 
+            # ── 权威性评分（V2.1 §7.3 冲突仲裁）──
+            # Authority = w_source*SourceWeight + w_recency*Recency + w_consensus*Consensus
+            # 评分高的版本优先；差值<0.15 时不自动覆盖，保留双方内容
+            existing_auth = self._compute_authority_score(existing_page)
+            new_auth = self._compute_authority_score(new_page)
+            auth_diff = new_auth - existing_auth
+            # 新页面权威性显著更高时，覆盖已有内容
+            new_authoritative = auth_diff >= 0.15
+
             # 合并内容
             if mode == "update":
-                # 补充模式：检查新内容段落是否在已有页面中不存在
-                merged_body = self._merge_content_update(
-                    existing_page.body_md, new_page.body_md,
-                )
+                if new_authoritative:
+                    # 新内容权威性更高：以新内容为主，追加已有页面中独有的段落
+                    merged_body = self._merge_content_update(
+                        new_page.body_md, existing_page.body_md,
+                    )
+                else:
+                    # 补充模式：检查新内容段落是否在已有页面中不存在
+                    merged_body = self._merge_content_update(
+                        existing_page.body_md, new_page.body_md,
+                    )
             else:
                 # 融合模式：将两个版本的内容都保留
                 merged_body = self._merge_content_fusion(
@@ -2251,10 +2352,76 @@ H{level}
                 mode=mode,
                 outcome=outcome,
                 merged_chars=len(merged_body),
+                existing_authority=round(existing_auth, 3),
+                new_authority=round(new_auth, 3),
+                new_authoritative=new_authoritative,
             )
 
         except Exception as e:
             logger.exception("wiki_page_merge_failed", slug=existing_slug)
+
+    def _compute_authority_score(self, page: WikiPage) -> float:
+        """计算页面权威性评分（V2.1 §7.3）
+
+        Authority = w_source*SourceWeight + w_recency*Recency + w_consensus*Consensus
+
+        - SourceWeight: 基于来源数量推断（多来源=更可信，单来源=0.7，无来源=0.4）
+        - Recency: 基于页面 updated_at 的新近度（越新越接近 1.0）
+        - Consensus: 基于来源去重数量占比（来源越多共识越高）
+        """
+        s = self.settings
+        w_src = s.authority_source_weight
+        w_rec = s.authority_recency_weight
+        w_con = s.authority_consensus_weight
+
+        # SourceWeight
+        src_count = len(page.sources or [])
+        if src_count >= 3:
+            source_weight = 1.0
+        elif src_count >= 1:
+            source_weight = 0.7
+        else:
+            source_weight = 0.4
+
+        # Recency（基于 source_doc_id 的 checksum 无法获取时间，用 sources 数量近似）
+        # 简化：新编译页面（本次流水线产出）默认 Recency=1.0
+        # 已有页面 Recency 通过 version_control 的 updated_at 计算
+        try:
+            from app.knowledge.wiki_index import _key_from_slug
+            latest = self.vc.get_latest(_key_from_slug(page.slug))
+            if latest and latest.get("updated_at"):
+                # 解析时间戳，计算距今的小时数，24h内=1.0，7天=0.5，30天=0.2
+                from datetime import datetime, timezone as _tz
+                updated_str = latest["updated_at"]
+                # 兼容多种时间格式
+                try:
+                    updated_dt = datetime.fromisoformat(
+                        updated_str.replace("Z", "+00:00")
+                    )
+                except (ValueError, TypeError):
+                    updated_dt = None
+                if updated_dt is not None:
+                    now = datetime.now(_tz.utc)
+                    age_hours = (now - updated_dt).total_seconds() / 3600
+                    if age_hours <= 24:
+                        recency = 1.0
+                    elif age_hours <= 168:  # 7天
+                        recency = 0.5
+                    elif age_hours <= 720:  # 30天
+                        recency = 0.2
+                    else:
+                        recency = 0.1
+                else:
+                    recency = 0.5
+            else:
+                recency = 1.0  # 新页面无历史记录，视为最新
+        except Exception:
+            recency = 0.5
+
+        # Consensus（来源去重占比）
+        consensus = min(1.0, src_count / 3.0) if src_count > 0 else 0.0
+
+        return w_src * source_weight + w_rec * recency + w_con * consensus
 
     def _merge_content_update(self, existing: str, new: str) -> str:
         """补充模式：将新内容中已有页面不存在的段落追加进去"""
