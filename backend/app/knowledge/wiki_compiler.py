@@ -944,11 +944,13 @@ class WikiCompiler:
                         chunk_cb = _make_chunk_cb(entity.name)
                         t_start = time.monotonic()
                         try:
+                            # 预先获取富化的 raw_content 用于 PAGE_START 和 PAGE_COMPLETE
+                            enriched_raw = self._build_raw_content_for_entity(entity, doc)
                             _emit(ProgressEventType.PAGE_START, {
                                 "entity": entity.name,
                                 "index": idx + 1,
                                 "total": total_entities,
-                                "raw_content": (entity.evidence_span or "")[:500],
+                                "raw_content": enriched_raw[:500],
                                 "entity_type": entity.entity_type,
                             })
                             _emit(ProgressEventType.PROGRESS, {
@@ -1050,25 +1052,10 @@ class WikiCompiler:
                         if page.review_status == "review_needed":
                             result.review_needed.append(page.slug)
 
-                        # ── 构造 fallback raw_content（evidence_span 为空时兜底）──
-                        raw_content_fallback = ""
-                        if entity.evidence_span:
-                            raw_content_fallback = entity.evidence_span
-                        else:
-                            # fallback 1: 实体定义
-                            fallback_parts = []
-                            ent_def = getattr(entity, 'definition', '')
-                            if ent_def:
-                                fallback_parts.append(f"定义：{ent_def}")
-                            # fallback 2: 实体属性
-                            ent_props = getattr(entity, 'properties', None) or {}
-                            if ent_props:
-                                for k, v in list(ent_props.items())[:5]:
-                                    fallback_parts.append(f"{k}: {v}")
-                            # fallback 3: 至少包含实体名和类型
-                            fallback_parts.append(f"实体名：{entity.name}")
-                            fallback_parts.append(f"实体类型：{getattr(entity, 'entity_type', 'Concept')}")
-                            raw_content_fallback = "\n".join(fallback_parts)
+                        # ── 构造 raw_content（优先匹配文档段落，其次 evidence_span，最后兜底）──
+                        raw_content_fallback = self._build_raw_content_for_entity(
+                            entity, doc,
+                        )
 
                         # 发射 PAGE_DONE 事件，包含 LLM 错误信息和后端精确耗时
                         page_done_data = {
@@ -1149,6 +1136,7 @@ class WikiCompiler:
                 })
 
                 # 4. 结构编译（基于标题层级树）
+                struct_compile_success = False
                 if doc.heading_tree:
                     _emit(ProgressEventType.STEP_START, {"step": "struct_compile", "message": f"开始结构编译，共 {len(doc.heading_tree)} 个章节..."})
                     try:
@@ -1164,38 +1152,44 @@ class WikiCompiler:
                         result.stale_marked.extend(struct_result.stale_marked)
                         result.errors.extend(struct_result.errors)
                         result.pipeline_trace = struct_result.pipeline_trace
+                        struct_compile_success = True
                         _emit(ProgressEventType.STEP_DONE, {"step": "struct_compile", "sections": len(doc.heading_tree), "pages_created": struct_result.pages_created, "pages_updated": struct_result.pages_updated})
-
-                        # 4.5 从编译后内容重新抽取实体（比原始文本抽取更准确）
-                        _emit(ProgressEventType.STEP_START, {"step": "extract_compiled", "message": "从编译后 wiki 页面重新抽取实体..."})
-                        try:
-                            compiled_entities = await self._extract_from_compiled_pages(
-                                result.slugs, doc.doc_id, source_entry, _emit,
-                            )
-                            if compiled_entities:
-                                # 合并编译后抽取的实体（优先保留编译后抽取的结果）
-                                existing_entity_names = {e.name for e in result.entities}
-                                new_count = 0
-                                for ce in compiled_entities:
-                                    if ce.name not in existing_entity_names:
-                                        result.entities.append(ce)
-                                        new_count += 1
-                                _emit(ProgressEventType.STEP_DONE, {
-                                    "step": "extract_compiled",
-                                    "entities": len(compiled_entities),
-                                    "new_entities": new_count,
-                                    "entity_names": [e.name for e in compiled_entities],
-                                    "message": f"编译后抽取：{len(compiled_entities)} 个实体（{new_count} 个新增）",
-                                })
-                            else:
-                                _emit(ProgressEventType.STEP_DONE, {"step": "extract_compiled", "entities": 0})
-                        except Exception as e:
-                            logger.exception("wiki_compiler_extract_compiled_failed", doc_id=doc_id)
-                            _emit(ProgressEventType.STEP_DONE, {"step": "extract_compiled", "error": str(e)})
                     except Exception as e:
                         logger.exception("wiki_compiler_struct_failed", doc_id=doc_id)
                         result.errors.append(f"结构编译失败: {e}")
                         _emit(ProgressEventType.STEP_DONE, {"step": "struct_compile", "error": str(e)})
+
+                # 4.5 从编译后内容重新抽取实体（独立运行，不依赖 struct_compile 成功）
+                # 使用 result.slugs（包含 compile 阶段产出的 + struct_compile 产出的）
+                if result.slugs:
+                    _emit(ProgressEventType.STEP_START, {"step": "extract_compiled", "message": "从编译后 wiki 页面重新抽取实体..."})
+                    try:
+                        compiled_entities = await self._extract_from_compiled_pages(
+                            result.slugs, doc.doc_id, source_entry, _emit,
+                        )
+                        if compiled_entities:
+                            # 合并编译后抽取的实体（优先保留编译后抽取的结果）
+                            existing_entity_names = {e.name for e in result.entities}
+                            new_count = 0
+                            for ce in compiled_entities:
+                                if ce.name not in existing_entity_names:
+                                    result.entities.append(ce)
+                                    new_count += 1
+                            _emit(ProgressEventType.STEP_DONE, {
+                                "step": "extract_compiled",
+                                "entities": len(compiled_entities),
+                                "new_entities": new_count,
+                                "entity_names": [e.name for e in compiled_entities],
+                                "message": f"编译后抽取：{len(compiled_entities)} 个实体（{new_count} 个新增）",
+                            })
+                        else:
+                            _emit(ProgressEventType.STEP_DONE, {"step": "extract_compiled", "entities": 0})
+                    except Exception as e:
+                        logger.exception("wiki_compiler_extract_compiled_failed", doc_id=doc_id)
+                        _emit(ProgressEventType.STEP_DONE, {"step": "extract_compiled", "error": str(e)})
+                else:
+                    # 无 slugs 时也标记 extract_compiled 为跳过
+                    _emit(ProgressEventType.STEP_DONE, {"step": "extract_compiled", "entities": 0, "skipped": True, "message": "无编译产物，跳过编译后实体抽取"})
 
                 # compile 阶段输出已就绪，记录产物
                 _track("compile", "output", serialize_compile_result_summary(result))
@@ -2463,6 +2457,92 @@ H{level}
                 lines = lines[:-1]
             return "\n".join(lines)
         return t
+
+    # ── 富化 raw_content：从原始文档中找到与实体匹配的段落 ──
+    def _build_raw_content_for_entity(
+        self, entity: ExtractedEntity, doc: Any | None = None,
+    ) -> str:
+        """为实体构建富化的 raw_content。
+
+        优先级：
+        1. 从 doc.elements 中搜索包含实体名的段落，拼接其内容
+        2. 使用 entity.evidence_span（LLM 或 fallback 提取时设置）
+        3. 兜底：实体定义 + 属性 + 实体名
+        """
+        entity_name = entity.name or ""
+        # 从 evidence_span 中提取关键词
+        evidence = (entity.evidence_span or "").strip()
+        if not evidence and entity_name:
+            evidence = entity_name
+
+        # Phase 1: 尝试从文档元素中匹配
+        matched_contents: list[str] = []
+        if doc is not None:
+            doc_elements = getattr(doc, 'elements', []) or []
+            if doc_elements:
+                # 构建搜索关键词列表
+                keywords = set()
+                if entity_name:
+                    # 实体名分词（按中英文标点和空格）
+                    for token in re.split(r'[\s,，。；;、\(\)（）\[\]【】]+', entity_name):
+                        token = token.strip()
+                        if len(token) >= 2:
+                            keywords.add(token)
+                if evidence and len(evidence) <= 100:
+                    keywords.add(evidence)
+
+                # 搜索匹配的段落
+                for elem in doc_elements:
+                    content = ""
+                    if isinstance(elem, dict):
+                        content = elem.get('content', '') or ''
+                    else:
+                        content = getattr(elem, 'content', '') or ''
+                    if not content or not content.strip():
+                        continue
+                    # 检查是否包含任何关键词
+                    matched = False
+                    for kw in keywords:
+                        if kw and kw in content:
+                            matched = True
+                            break
+                    if matched:
+                        matched_contents.append(content.strip())
+                    if sum(len(c) for c in matched_contents) >= 3000:
+                        break
+
+                # 如果没有关键词匹配，使用 evidence_span 的内容作为搜索词
+                if not matched_contents and evidence and evidence != entity_name:
+                    for elem in doc_elements:
+                        content = ""
+                        if isinstance(elem, dict):
+                            content = elem.get('content', '') or ''
+                        else:
+                            content = getattr(elem, 'content', '') or ''
+                        if content and evidence[:30] in content:
+                            matched_contents.append(content.strip())
+                        if sum(len(c) for c in matched_contents) >= 3000:
+                            break
+
+        if matched_contents:
+            return "\n\n".join(matched_contents)[:2000]
+
+        # Phase 2: 使用 evidence_span
+        if entity.evidence_span and len(entity.evidence_span.strip()) > 10:
+            return entity.evidence_span.strip()[:2000]
+
+        # Phase 3: 兜底构建
+        fallback_parts = []
+        ent_def = getattr(entity, 'definition', '')
+        if ent_def:
+            fallback_parts.append(f"定义：{ent_def}")
+        ent_props = getattr(entity, 'properties', None) or {}
+        if ent_props:
+            for k, v in list(ent_props.items())[:5]:
+                fallback_parts.append(f"{k}: {v}")
+        fallback_parts.append(f"实体名：{entity.name}")
+        fallback_parts.append(f"实体类型：{getattr(entity, 'entity_type', 'Concept')}")
+        return "\n".join(fallback_parts)[:2000]
 
     # P0: 增强模板兜底 — 当 LLM 不可用时，从源文档提取内容生成结构化 Wiki 页面
     def _build_template_fallback(

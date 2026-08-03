@@ -1212,7 +1212,8 @@ const sectionStats = computed(() => {
   const done = sectionNodes.value.filter((n) => n.status === 'done').length
   const error = sectionNodes.value.filter((n) => n.status === 'error').length
   const running = sectionNodes.value.filter((n) => n.status === 'running').length
-  return { done, error, running, total: sectionNodes.value.length }
+  const pending = sectionNodes.value.filter((n) => n.status === 'pending').length
+  return { done, error, running, pending, total: sectionNodes.value.length }
 })
 
 // ========== 初始化 ==========
@@ -1798,7 +1799,20 @@ watch(sourceTab, (val) => {
                         <NTag v-if="sectionStats.running > 0" size="small" type="warning" :bordered="false">
                           处理中 {{ sectionStats.running }}
                         </NTag>
+                        <NTag v-if="sectionStats.pending > 0" size="small" :bordered="false" type="default">
+                          等待中 {{ sectionStats.pending }}
+                        </NTag>
                       </NSpace>
+
+                      <!-- 进度条 -->
+                      <NProgress
+                        v-if="sectionStats.total > 0"
+                        type="line"
+                        :percentage="Math.round(sectionStats.done / sectionStats.total * 100)"
+                        :show-indicator="true"
+                        :status="sectionStats.error > 0 ? 'error' : 'success'"
+                        style="margin-bottom: 8px"
+                      />
 
                       <!-- 章节节点列表 -->
                       <div
@@ -1810,6 +1824,7 @@ watch(sourceTab, (val) => {
                         <NSpin v-if="node.status === 'running'" :size="16" />
                         <span v-else-if="node.status === 'done'" class="success-text" style="font-size: 16px">✅</span>
                         <span v-else-if="node.status === 'error'" class="danger-text" style="font-size: 16px">❌</span>
+                        <span v-else-if="node.status === 'pending'" class="muted-text" style="font-size: 16px">⏳</span>
                         <span v-else class="muted-text" style="font-size: 16px">⏳</span>
 
                         <!-- 层级标签 -->
