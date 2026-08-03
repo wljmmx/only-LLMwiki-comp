@@ -90,6 +90,17 @@ export function getGraphEntity(name: string) {
 }
 
 /**
+ * KNOW-14: 获取实体关联的 wiki 页面列表
+ * GET /graph/entity/{name}/wiki-pages
+ */
+export function getGraphEntityWikiPages(name: string) {
+  return api.get<unknown, {
+    entity_name: string
+    wiki_pages: Array<{ slug: string; title: string; match_type: string }>
+  }>(`/graph/entity/${encodeURIComponent(name)}/wiki-pages`)
+}
+
+/**
  * 按类型列出实体
  * GET /graph/by-type/{entity_type}?limit=
  */

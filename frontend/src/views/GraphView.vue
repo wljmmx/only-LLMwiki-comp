@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   NCard,
   NTag,
@@ -31,6 +32,7 @@ import {
   getGraphStats,
   searchGraph,
   getGraphEntity,
+  getGraphEntityWikiPages,
   deleteGraphEntity,
   clearGraph,
   type GraphNode,
@@ -45,6 +47,7 @@ import LoadingState from '@/components/common/LoadingState.vue'
 
 const message = useMessage()
 const appStore = useAppStore()
+const router = useRouter()
 
 const loading = ref(false)
 const graphData = ref<{ nodes: GraphNode[]; links: GraphLink[] }>({ nodes: [], links: [] })
@@ -119,6 +122,107 @@ const detailVisible = ref(false)
 const detailLoading = ref(false)
 const selectedEntity = ref<GraphEntityDetail | null>(null)
 const selectedNodeName = ref<string>('')
+
+// KNOW-14: 实体关联的 wiki 页面列表
+const relatedWikiPages = ref<Array<{ slug: string; title: string; match_type: string }>>([])
+const relatedWikiLoading = ref(false)
+
+// KNOW-12: 图谱变更 WebSocket 连接
+const graphWsConnected = ref(false)
+let graphWs: WebSocket | null = null
+let graphWsReconnectTimer: number | null = null
+
+function connectGraphWs() {
+  // 构造 WebSocket URL（与 SSE 同源，复用 token）
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  const token = localStorage.getItem('opskg_token') || ''
+  const url = `${proto}://${window.location.host}/realtime/graph?token=${encodeURIComponent(token)}`
+  try {
+    graphWs = new WebSocket(url)
+  } catch (e) {
+    console.warn('graph WS connect failed', e)
+    return
+  }
+  graphWs.onopen = () => {
+    graphWsConnected.value = true
+  }
+  graphWs.onclose = () => {
+    graphWsConnected.value = false
+    graphWs = null
+    // 斿线重连（5s 后）
+    if (graphWsReconnectTimer === null) {
+      graphWsReconnectTimer = window.setTimeout(() => {
+        graphWsReconnectTimer = null
+        connectGraphWs()
+      }, 5000)
+    }
+  }
+  graphWs.onerror = () => {
+    // 错误由 onclose 兜底重连
+  }
+  graphWs.onmessage = (evt) => {
+    try {
+      const msg = JSON.parse(evt.data)
+      if (msg.type === 'graph_changed') {
+        handleGraphChange(msg)
+      }
+    } catch (e) {
+      // 忽略解析错误
+    }
+  }
+}
+
+function disconnectGraphWs() {
+  if (graphWsReconnectTimer !== null) {
+    window.clearTimeout(graphWsReconnectTimer)
+    graphWsReconnectTimer = null
+  }
+  if (graphWs) {
+    graphWs.onclose = null // 阻止重连
+    graphWs.close()
+    graphWs = null
+  }
+  graphWsConnected.value = false
+}
+
+// KNOW-12: 增量更新图谱（收到 graph_changed 事件）
+function handleGraphChange(msg: {
+  action: string
+  entity_id: string
+  entity_type: string
+}) {
+  const { action, entity_id, entity_type } = msg
+  if (action === 'delete') {
+    // 删除节点 + 相关边
+    graphData.value = {
+      nodes: graphData.value.nodes.filter((n) => n.id !== entity_id),
+      links: graphData.value.links.filter(
+        (l) => l.source !== entity_id && l.target !== entity_id,
+      ),
+    }
+    applyGraph()
+    // 更新统计
+    loadStats()
+  } else if (action === 'upsert') {
+    // 新增/更新节点：若不存在则添加（避免重复）
+    const exists = graphData.value.nodes.some((n) => n.id === entity_id)
+    if (!exists) {
+      const groupMap: Record<string, number> = {
+        Host: 1, Service: 2, Component: 3, Parameter: 4, Command: 5,
+        Procedure: 6, Incident: 7, Symptom: 8, Experience: 9,
+        Concept: 10, Document: 11,
+      }
+      graphData.value.nodes.push({
+        id: entity_id,
+        type: entity_type || 'Concept',
+        group: groupMap[entity_type] || 10,
+      })
+      applyGraph()
+    }
+    loadStats()
+  }
+  // relation_upsert 不做增量处理（需两端节点都存在，且边信息不完整，交给全量刷新兜底）
+}
 
 // 搜索结果
 const searchResults = ref<{ name: string; type: string; confidence?: number }[]>([])
@@ -315,6 +419,9 @@ async function openEntityDetail(name: string) {
   detailLoading.value = true
   selectedEntity.value = null
   selectedNodeName.value = name
+  // KNOW-14: 重置关联 wiki 页面
+  relatedWikiPages.value = []
+  relatedWikiLoading.value = true
   try {
     const res = await getGraphEntity(name)
     selectedEntity.value = res
@@ -327,6 +434,21 @@ async function openEntityDetail(name: string) {
   } finally {
     detailLoading.value = false
   }
+  // KNOW-14: 加载关联 wiki 页面（不阻塞详情展示）
+  try {
+    const wikiRes = await getGraphEntityWikiPages(name)
+    relatedWikiPages.value = wikiRes.wiki_pages || []
+  } catch (err: any) {
+    // 关联 wiki 加载失败不提示错误，静默处理
+    relatedWikiPages.value = []
+  } finally {
+    relatedWikiLoading.value = false
+  }
+}
+
+function jumpToWikiPage(slug: string) {
+  // 跳转到 wiki 编辑/查看页
+  router.push(`/wiki/${encodeURIComponent(slug)}`)
 }
 
 async function handleDeleteEntity(name: string) {
@@ -376,6 +498,13 @@ const statCards = computed(() => [
 onMounted(() => {
   loadStats()
   loadGraph()
+  // KNOW-12: 连接图谱变更 WebSocket
+  connectGraphWs()
+})
+
+onUnmounted(() => {
+  // KNOW-12: 断开 WebSocket
+  disconnectGraphWs()
 })
 </script>
 
@@ -412,6 +541,14 @@ onMounted(() => {
           <n-button quaternary size="small" :loading="loading" @click="loadGraph">刷新</n-button>
           <n-button size="small" @click="() => fitView({ padding: 0.2 })">适配视图</n-button>
           <n-button size="small" type="error" quaternary @click="handleClearGraph">清空图谱</n-button>
+          <n-tag
+            size="small"
+            :bordered="false"
+            :type="graphWsConnected ? 'success' : 'default'"
+            style="margin-left: 8px"
+          >
+            {{ graphWsConnected ? '实时同步' : '未连接' }}
+          </n-tag>
         </n-space>
       </template>
 
@@ -560,6 +697,32 @@ onMounted(() => {
               </n-space>
             </n-card>
           </n-space>
+
+          <!-- KNOW-14: 关联 Wiki 页面（wiki↔graph 双向关联可视化） -->
+          <h4 style="margin-top: 20px; margin-bottom: 8px">
+            关联 Wiki 页面 ({{ relatedWikiPages.length }})
+          </h4>
+          <LoadingState v-if="relatedWikiLoading" text="加载关联页面..." />
+          <n-empty v-else-if="!relatedWikiPages.length" description="无关联 Wiki 页面" />
+          <n-space v-else vertical :size="6">
+            <n-card
+              v-for="page in relatedWikiPages"
+              :key="page.slug"
+              size="small"
+              :bordered="true"
+              hoverable
+              @click="jumpToWikiPage(page.slug)"
+            >
+              <n-space align="center" :size="8" wrap>
+                <n-tag size="small" :bordered="false" type="success">
+                  {{ page.match_type === 'backlink' ? '反向链接' : page.match_type === 'title' ? '标题匹配' : '正文匹配' }}
+                </n-tag>
+                <span style="font-weight: 500">{{ page.title }}</span>
+                <code style="font-size: 11px; color: #999">{{ page.slug }}</code>
+              </n-space>
+            </n-card>
+          </n-space>
+
           <n-button
             type="error"
             size="small"

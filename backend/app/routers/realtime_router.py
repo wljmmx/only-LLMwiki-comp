@@ -2,6 +2,7 @@
 
 WebSocket 端点：
     WS /realtime/collab/{slug}?token=<token>
+    WS /realtime/graph?token=<token>     KNOW-12: 图谱变更实时推送
 
     鉴权：query 参数 token，复用 verify_token_string（与 HTTP Bearer 同语义）
     开发模式（未配置 OPSKG_API_TOKEN）允许匿名连接
@@ -240,6 +241,100 @@ async def collab_ws(
         pass
     finally:
         await hub.disconnect(slug, user_id)
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# ────────── WebSocket 图谱变更推送（KNOW-12）──────────
+
+
+@router.websocket("/realtime/graph")
+async def graph_ws(
+    websocket: WebSocket,
+    token: str | None = Query(default=None),
+) -> None:
+    """KNOW-12: 图谱变更实时推送 WebSocket 端点
+
+    订阅 graph_event_bus，将图谱变更事件（upsert/delete/relation_upsert）
+    实时推送给前端 GraphView，实现增量更新而非全量刷新。
+
+    协议：
+        服务端 → 客户端：
+            {"type": "graph_changed", "action": "upsert|delete|...", "entity_id": "...",
+             "entity_type": "...", "source_doc_id": "...", "timestamp": 123.456}
+            {"type": "connected", "subscribers": N}  # 连接成功
+            {"type": "heartbeat_ack"}                 # 心跳回执
+
+        客户端 → 服务端：
+            {"type": "heartbeat"}  # 心跳保活
+    """
+    user = _resolve_user(token)
+    if user is None:
+        await websocket.close(code=4401, reason="认证失败")
+        return
+
+    await websocket.accept()
+
+    from app.realtime.graph_event_bus import get_graph_event_bus
+
+    bus = get_graph_event_bus()
+
+    # 发送连接成功消息
+    try:
+        await websocket.send_json({
+            "type": "connected",
+            "subscribers": bus.subscriber_count(),
+        })
+    except Exception:  # noqa: BLE001
+        return
+
+    # 订阅事件总线 + 同时监听客户端消息（心跳）
+    import asyncio
+
+    async def _consume_events() -> None:
+        async for event in bus.subscribe():
+            try:
+                await websocket.send_json({
+                    "type": "graph_changed",
+                    "action": event.action,
+                    "entity_id": event.entity_id,
+                    "entity_type": event.entity_type,
+                    "changed_fields": event.changed_fields,
+                    "source_doc_id": event.source_doc_id,
+                    "timestamp": event.timestamp,
+                })
+            except Exception:  # noqa: BLE001
+                break
+
+    async def _receive_messages() -> None:
+        while True:
+            message = await websocket.receive_json()
+            if message.get("type") == "heartbeat":
+                try:
+                    await websocket.send_json({"type": "heartbeat_ack"})
+                except Exception:  # noqa: BLE001
+                    break
+
+    event_task = asyncio.create_task(_consume_events())
+    recv_task = asyncio.create_task(_receive_messages())
+
+    try:
+        # 任一任务结束（断连/异常）即退出
+        done, pending = await asyncio.wait(
+            {event_task, recv_task}, return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+    except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        for task in (event_task, recv_task):
+            if not task.done():
+                task.cancel()
         try:
             await websocket.close()
         except Exception:  # noqa: BLE001

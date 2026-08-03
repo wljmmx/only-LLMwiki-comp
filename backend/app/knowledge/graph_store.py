@@ -175,6 +175,11 @@ class GraphStore:
             data = _to_jsonable(dict(record)) if record else {}
         # 写操作成功后全量失效缓存（一致性优先于性能）
         self._cache_invalidate()
+        # KNOW-11: 发布图谱变更事件
+        self._publish_graph_event(
+            "upsert", entity.name, entity.entity_type,
+            source_doc_id=entity.source_doc_id,
+        )
         return data
 
     def upsert_relation(self, rel: GraphRelation) -> dict:
@@ -202,6 +207,11 @@ class GraphStore:
             data = _to_jsonable(dict(record)) if record else {}
         # 写操作成功后全量失效缓存（一致性优先于性能）
         self._cache_invalidate()
+        # KNOW-11: 发布图谱变更事件
+        self._publish_graph_event(
+            "relation_upsert", f"{rel.from_entity}→{rel.to_entity}",
+            rel.relation_type, source_doc_id=rel.source_doc_id,
+        )
         return data
 
     def batch_upsert(
@@ -527,7 +537,34 @@ class GraphStore:
             record = result.single()
             deleted = record["deleted"] if record else 0
         self._cache_invalidate()
+        # KNOW-11: 发布图谱变更事件
+        self._publish_graph_event("delete", name)
         return {"deleted": deleted > 0, "name": name, "nodes_removed": deleted}
+
+    @staticmethod
+    def _publish_graph_event(
+        action: str,
+        entity_id: str,
+        entity_type: str = "",
+        source_doc_id: str = "",
+    ) -> None:
+        """KNOW-11: 发布图谱变更事件到事件总线（同步，fire-and-forget）
+
+        从同步上下文调用；无事件循环时静默跳过（不阻塞调用方）。
+        """
+        try:
+            from app.realtime.graph_event_bus import get_graph_event_bus
+
+            bus = get_graph_event_bus()
+            bus.publish_sync(
+                action=action,
+                entity_id=entity_id,
+                entity_type=entity_type,
+                source_doc_id=source_doc_id,
+            )
+        except Exception:  # noqa: BLE001
+            # 事件发布失败不影响图谱写入
+            pass
 
     def clear_all(self) -> dict:
         """清空所有图谱数据（实体和关系）"""

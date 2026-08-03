@@ -209,6 +209,78 @@ async def graph_entity(name: str) -> dict:
         return {"error": str(e), "hint": "Neo4j 未连接或不可用"}
 
 
+@router.get("/graph/entity/{name}/wiki-pages")
+async def graph_entity_wiki_pages(name: str) -> dict:
+    """KNOW-14: 查询引用该实体的 wiki 页面列表（wiki↔graph 双向关联可视化）
+
+    查询策略（两级）：
+    1. backlink 索引：实体名作为 slug 的 backlink 查询
+    2. 全文扫描：wiki 页面正文/标题中包含实体名称的页面
+
+    Returns:
+        {"entity_name": "...", "wiki_pages": [{slug, title, match_type}]}
+    """
+    from app.knowledge.wiki_index import list_wiki_pages
+    from app.knowledge.wikilink import get_backlinks
+    from app.storage.version_control import get_version_control
+
+    pages: list[dict] = []
+    seen_slugs: set[str] = set()
+
+    # 1. backlink 查询（实体名直接作为 slug）
+    try:
+        backlinks = get_backlinks(name)
+        for bl in backlinks:
+            if bl.source_slug not in seen_slugs:
+                # 获取页面标题
+                vc = get_version_control()
+                latest = vc.get_latest(f"wiki:{bl.source_slug}")
+                title = bl.source_slug
+                if latest:
+                    # 从 frontmatter 提取 title
+                    content = latest.get("content", "")
+                    for line in content.split("\n"):
+                        if line.startswith("title:"):
+                            title = line.split(":", 1)[1].strip().strip('"').strip("'")
+                            break
+                pages.append({
+                    "slug": bl.source_slug,
+                    "title": title,
+                    "match_type": "backlink",
+                })
+                seen_slugs.add(bl.source_slug)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 2. 全文扫描：标题或正文包含实体名
+    try:
+        all_pages = list_wiki_pages(limit=500)
+        vc = get_version_control()
+        name_lower = name.lower()
+        for p in all_pages:
+            slug = p.get("slug", "")
+            if slug in seen_slugs:
+                continue
+            title = p.get("title", slug)
+            # 标题匹配
+            if name_lower in title.lower():
+                pages.append({"slug": slug, "title": title, "match_type": "title"})
+                seen_slugs.add(slug)
+                continue
+            # 正文匹配（需加载内容）
+            try:
+                latest = vc.get_latest(f"wiki:{slug}")
+                if latest and name_lower in latest.get("content", "").lower():
+                    pages.append({"slug": slug, "title": title, "match_type": "content"})
+                    seen_slugs.add(slug)
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {"entity_name": name, "wiki_pages": pages}
+
+
 @router.get("/graph/search")
 async def graph_search(q: str = Query(..., min_length=1), limit: int = 20) -> dict:
     """搜索图谱实体"""
