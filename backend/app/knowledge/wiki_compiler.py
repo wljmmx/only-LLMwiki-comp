@@ -70,7 +70,7 @@ from app.knowledge.wiki_compiler_utils import (
     make_slug,
 )
 from app.knowledge.wiki_drift import clear_stale, record_compiled_checksum
-from app.knowledge.wiki_index import _key_from_slug, list_wiki_pages, rebuild_index
+from app.knowledge.wiki_index import _key_from_slug, _parse_frontmatter, list_wiki_pages, rebuild_index
 from app.knowledge.wikilink import WIKILINK_RE, update_backlinks
 from app.observability import record_business_histogram, record_business_metric, span
 from app.parsers import get_parser
@@ -1115,29 +1115,55 @@ class WikiCompiler:
                     "message": f"段落编译完成：{total_paragraphs} 段落 → {len(result.slugs)} 页面",
                 })
 
-                # 4. 结构编译（基于标题层级树）
-                struct_compile_success = False
-                if doc.heading_tree:
-                    _emit(ProgressEventType.STEP_START, {"step": "struct_compile", "message": f"开始结构编译，共 {len(doc.heading_tree)} 个章节..."})
-                    try:
-                        struct_result = await self._compile_heading_tree_to_wiki(
-                            doc, source_entry, force=force, on_progress=_emit,
-                            pipeline_run_id=pipeline_run_id,
-                        )
-                        result.pages_created += struct_result.pages_created
-                        result.pages_updated += struct_result.pages_updated
-                        result.pages_unchanged += struct_result.pages_unchanged
-                        result.slugs.extend(struct_result.slugs)
-                        result.review_needed.extend(struct_result.review_needed)
-                        result.stale_marked.extend(struct_result.stale_marked)
-                        result.errors.extend(struct_result.errors)
-                        result.pipeline_trace = struct_result.pipeline_trace
-                        struct_compile_success = True
-                        _emit(ProgressEventType.STEP_DONE, {"step": "struct_compile", "sections": len(doc.heading_tree), "pages_created": struct_result.pages_created, "pages_updated": struct_result.pages_updated})
-                    except Exception as e:
-                        logger.exception("wiki_compiler_struct_failed", doc_id=doc_id)
-                        result.errors.append(f"结构编译失败: {e}")
-                        _emit(ProgressEventType.STEP_DONE, {"step": "struct_compile", "error": str(e)})
+                # ── 4. 结构编译（增量集成到已有 Wiki 知识库） ──
+                # 核心：将本次新增 wiki 页面逐个向已有 wiki 目录环境进行融合
+                #  - 判断新增分支节点（已有目录不存在 → 创建）
+                #  - 在已有节点修改/补充/合并（已有目录存在相似页面 → 融合）
+                #  - 补充双向关联：wiki ↔ graph ↔ 实体 ↔ 原始文档
+
+                _emit(ProgressEventType.STEP_START, {
+                    "step": "struct_compile",
+                    "message": f"开始结构集成，将 {len(result.slugs)} 个新页面融合到已有 Wiki 目录...",
+                })
+                _update_step("struct_compile", "running")
+
+                struct_result = WikiCompileResult(doc_id=doc.doc_id)
+                integration_report = await self._integrate_pages_into_wiki(
+                    new_slugs=list(result.slugs),
+                    source_entry=source_entry,
+                    entities=entities,
+                    para_entities_map=para_entities_map,
+                    doc=doc,
+                    force=force,
+                    on_progress=_emit,
+                    pipeline_run_id=pipeline_run_id,
+                )
+
+                # 汇总结构编译结果
+                result.pages_created += integration_report.get("pages_created", 0)
+                result.pages_updated += integration_report.get("pages_updated", 0)
+                result.pages_unchanged += integration_report.get("pages_unchanged", 0)
+                result.review_needed.extend(integration_report.get("review_needed", []))
+                result.stale_marked.extend(integration_report.get("stale_marked", []))
+                result.errors.extend(integration_report.get("errors", []))
+
+                # 记录结构集成事件
+                _track("struct_compile", "output", integration_report)
+
+                _emit(ProgressEventType.STEP_DONE, {
+                    "step": "struct_compile",
+                    "pages_integrated": integration_report.get("pages_integrated", 0),
+                    "pages_created": integration_report.get("pages_created", 0),
+                    "pages_merged": integration_report.get("pages_merged", 0),
+                    "pages_updated": integration_report.get("pages_updated", 0),
+                    "graph_relations_added": integration_report.get("graph_relations_added", 0),
+                    "message": (
+                        f"结构集成完成：新增 {integration_report.get('pages_created', 0)} 页面，"
+                        f"合并 {integration_report.get('pages_merged', 0)} 页面，"
+                        f"更新 {integration_report.get('pages_updated', 0)} 页面，"
+                        f"图谱关联 {integration_report.get('graph_relations_added', 0)} 条"
+                    ),
+                })
 
                 # 4.5 从编译后内容重新抽取实体（独立运行，不依赖 struct_compile 成功）
                 # 使用 result.slugs（包含 compile 阶段产出的 + struct_compile 产出的）
@@ -1828,6 +1854,657 @@ H{level}
 {para_content}
 
 <!-- LLM fallback: paragraph -->"""
+
+    # ── 结构编译：增量集成到已有 Wiki 知识库 ──
+
+    async def _integrate_pages_into_wiki(
+        self,
+        new_slugs: list[str],
+        source_entry: dict,
+        entities: list,
+        para_entities_map: dict[int, list[dict]],
+        doc: ParsedDocument,
+        *,
+        force: bool = False,
+        on_progress: Any | None = None,
+        pipeline_run_id: str | None = None,
+    ) -> dict:
+        """将本次新增 wiki 页面增量集成到已有 Wiki 知识库。
+
+        核心流程：
+        1. 加载已有 Wiki 目录（所有现存页面的元数据索引）
+        2. 对每个新页面逐个匹配已有目录：
+           - slug 精确匹配 → 更新已有节点（补充/修改内容）
+           - 标题/类型模糊匹配 → 合并到已有节点（融合内容）
+           - 无匹配 → 创建新分支节点
+        3. 补充双向关联：wiki ↔ graph ↔ 实体 ↔ 原始文档
+        4. 产出集成报告
+
+        Returns:
+            dict {pages_created, pages_merged, pages_updated,
+                  graph_relations_added, review_needed, stale_marked, errors}
+        """
+        report: dict[str, Any] = {
+            "pages_created": 0,
+            "pages_merged": 0,
+            "pages_updated": 0,
+            "pages_unchanged": 0,
+            "graph_relations_added": 0,
+            "review_needed": [],
+            "stale_marked": [],
+            "errors": [],
+            "pages_integrated": len(new_slugs),
+            "integration_detail": [],
+        }
+
+        # ── Phase 1: 加载已有 Wiki 目录索引 ──
+        existing_index = self._load_existing_wiki_index()
+        existing_slugs = set(existing_index.keys())
+
+        logger.info(
+            "struct_compile_integration_start",
+            new_pages=len(new_slugs),
+            existing_pages=len(existing_slugs),
+        )
+
+        # ── Phase 2: 逐页融合 ──
+        for idx, slug in enumerate(new_slugs):
+            if pipeline_run_id:
+                await self._check_paused(pipeline_run_id)
+
+            # 从版本控制加载新页面
+            new_page = self._load_wiki_page_from_storage(slug)
+            if not new_page:
+                report["errors"].append(f"页面 {slug} 加载失败")
+                continue
+
+            action_detail = {
+                "slug": slug,
+                "title": new_page.title,
+                "action": "unchanged",
+                "matched_existing": None,
+                "note": "",
+            }
+
+            # ── 匹配决策 ──
+            matched_existing = self._match_existing_page(
+                new_page, existing_index, entities,
+            )
+
+            if matched_existing is None:
+                # 新增分支节点：已有目录不存在此页面
+                action = "created"
+                report["pages_created"] += 1
+                action_detail["action"] = "created"
+                action_detail["note"] = "新增分支节点"
+
+                # 确保页面已正确保存（compile 阶段已保存，这里确保图谱同步）
+                self._sync_page_to_graph(new_page)
+                report["graph_relations_added"] += self._update_graph_relations(
+                    new_page, entities, source_entry, mode="create",
+                )
+
+            else:
+                # 融合到已有节点
+                existing_slug = matched_existing["slug"]
+                action_detail["matched_existing"] = existing_slug
+
+                similarity = matched_existing.get("similarity", 0)
+
+                if similarity >= 0.85:
+                    # 高度相似 → 更新（补充/修改）
+                    action = "updated"
+                    report["pages_updated"] += 1
+                    action_detail["action"] = "updated"
+                    action_detail["note"] = f"更新已有节点（相似度 {similarity:.0%}）"
+
+                    self._merge_page_into_existing(
+                        existing_slug, new_page, mode="update", force=force,
+                    )
+                    report["graph_relations_added"] += self._update_graph_relations(
+                        new_page, entities, source_entry, mode="merge",
+                        existing_slug=existing_slug,
+                    )
+
+                else:
+                    # 中度相似 → 合并（融合内容）
+                    action = "merged"
+                    report["pages_merged"] += 1
+                    action_detail["action"] = "merged"
+                    action_detail["note"] = f"合并到已有节点（相似度 {similarity:.0%}）"
+
+                    self._merge_page_into_existing(
+                        existing_slug, new_page, mode="merge", force=force,
+                    )
+                    report["graph_relations_added"] += self._update_graph_relations(
+                        new_page, entities, source_entry, mode="merge",
+                        existing_slug=existing_slug,
+                    )
+
+                    # 标记新页面为 stale（已合并到已有节点）
+                    report["stale_marked"].append(slug)
+
+            # ── 发射页面集成事件 ──
+            if on_progress:
+                try:
+                    on_progress(ProgressEventType.PAGE_DONE, {
+                        "entity": new_page.title,
+                        "slug": slug,
+                        "action": action_detail["action"],
+                        "matched_existing": matched_existing["slug"] if matched_existing else None,
+                        "index": idx + 1,
+                        "total": len(new_slugs),
+                        "status": "done",
+                    })
+                except Exception:
+                    pass
+
+            report["integration_detail"].append(action_detail)
+
+        # ── Phase 3: 构建目录树 ──
+        try:
+            tree_info = self._build_directory_tree(
+                existing_index, new_slugs, doc, entities, para_entities_map,
+            )
+            report["directory_tree"] = tree_info
+            logger.info(
+                "struct_compile_directory_built",
+                tree_nodes=len(tree_info.get("nodes", [])),
+            )
+        except Exception as e:
+            logger.exception("struct_compile_directory_failed")
+            report["errors"].append(f"目录树构建失败: {e}")
+
+        # ── Phase 4: 重建索引 ──
+        try:
+            from app.knowledge.wiki_index import rebuild_index
+            index_result = rebuild_index()
+            report["index_rebuilt"] = True
+            report["index_details"] = index_result
+        except Exception as e:
+            logger.warning("struct_compile_index_rebuild_failed", error=str(e))
+            report["index_rebuilt"] = False
+
+        logger.info(
+            "struct_compile_integration_done",
+            pages_created=report["pages_created"],
+            pages_merged=report["pages_merged"],
+            pages_updated=report["pages_updated"],
+            graph_relations=report["graph_relations_added"],
+        )
+        return report
+
+    def _load_existing_wiki_index(self) -> dict[str, dict]:
+        """加载已有 Wiki 目录索引（slug → 元数据）"""
+        from app.knowledge.wiki_index import list_wiki_pages
+
+        try:
+            pages = list_wiki_pages(limit=5000)
+            index: dict[str, dict] = {}
+            for p in pages:
+                slug = p["slug"]
+                index[slug] = {
+                    "slug": slug,
+                    "title": p["title"],
+                    "type": p["type"],
+                    "tags": p.get("tags", []),
+                    "updated_at": p.get("updated_at"),
+                    "doc_key": p.get("doc_key"),
+                }
+            return index
+        except Exception as e:
+            logger.warning("wiki_index_load_failed", error=str(e))
+            return {}
+
+    def _load_wiki_page_from_storage(self, slug: str) -> WikiPage | None:
+        """从版本控制加载 Wiki 页面"""
+        try:
+            doc_key = _key_from_slug(slug)
+            latest = self.vc.get_latest(doc_key)
+            if not latest:
+                return None
+
+            meta, body = _parse_frontmatter(latest["content"])
+            return WikiPage(
+                slug=slug,
+                title=meta.get("title", slug),
+                type=meta.get("type", "concept"),
+                tags=meta.get("tags", []),
+                sources=meta.get("sources", []),
+                body_md=body,
+                review_status=meta.get("review_status", "auto"),
+                llm_error=None,
+                source_doc_id=meta.get("source_doc_id", ""),
+                paragraph_labels=meta.get("paragraph_labels", []),
+            )
+        except Exception as e:
+            logger.warning("wiki_page_load_failed", slug=slug, error=str(e))
+            return None
+
+    def _match_existing_page(
+        self,
+        new_page: WikiPage,
+        existing_index: dict[str, dict],
+        entities: list,
+    ) -> dict | None:
+        """判断新页面与已有页面的匹配关系。
+
+        匹配策略：
+        1. slug 精确匹配 → 直接返回
+        2. 标题完全匹配（同 type） → 直接返回
+        3. 标题相似度匹配 → 返回最高相似度的已有页面
+        4. 实体关联匹配 → 查找包含相同实体的已有页面
+
+        Returns:
+            匹配的已有页面信息 dict（含 similarity），或 None（无匹配）
+        """
+        # 策略 1: slug 精确匹配
+        if new_page.slug in existing_index:
+            return {
+                "slug": new_page.slug,
+                "title": existing_index[new_page.slug]["title"],
+                "similarity": 1.0,
+                "reason": "slug_exact_match",
+            }
+
+        # 策略 2: 标题完全匹配
+        for slug, meta in existing_index.items():
+            if meta["title"] == new_page.title and meta["type"] == new_page.type:
+                return {
+                    "slug": slug,
+                    "title": meta["title"],
+                    "similarity": 0.95,
+                    "reason": "title_exact_match",
+                }
+
+        # 策略 3: 标题相似度（简单子串 + 长度比例）
+        best_match: dict | None = None
+        for slug, meta in existing_index.items():
+            title_sim = self._compute_title_similarity(new_page.title, meta["title"])
+            if title_sim > 0.6:
+                if best_match is None or title_sim > best_match["similarity"]:
+                    best_match = {
+                        "slug": slug,
+                        "title": meta["title"],
+                        "similarity": title_sim,
+                        "reason": "title_similarity",
+                    }
+
+        # 策略 4: 实体关联匹配（检查新页面关联的实体是否已存在于某已有页面）
+        if entities:
+            new_page_entity_names = set()
+            for ent in entities:
+                if hasattr(ent, 'name') and ent.name:
+                    if ent.name in new_page.body_md:
+                        new_page_entity_names.add(ent.name)
+
+            if new_page_entity_names:
+                for slug, meta in existing_index.items():
+                    if meta["type"] != new_page.type:
+                        continue
+                    # 检查已有页面是否包含相同实体
+                    if self._page_contains_entities(slug, new_page_entity_names):
+                        if best_match is None or 0.7 > best_match["similarity"]:
+                            best_match = {
+                                "slug": slug,
+                                "title": meta["title"],
+                                "similarity": 0.7,
+                                "reason": "entity_overlap",
+                            }
+                            break
+
+        return best_match
+
+    def _compute_title_similarity(self, title_a: str, title_b: str) -> float:
+        """计算两个标题的相似度（基于字符集交集）"""
+        if not title_a or not title_b:
+            return 0.0
+        set_a = set(title_a.lower())
+        set_b = set(title_b.lower())
+        intersection = set_a & set_b
+        union = set_a | set_b
+        if not union:
+            return 0.0
+        return len(intersection) / len(union)
+
+    def _page_contains_entities(self, slug: str, entity_names: set[str]) -> bool:
+        """检查已有页面是否包含指定实体名"""
+        try:
+            doc_key = _key_from_slug(slug)
+            latest = self.vc.get_latest(doc_key)
+            if not latest:
+                return False
+            content = latest["content"].lower()
+            count = sum(1 for name in entity_names if name.lower() in content)
+            return count >= max(1, len(entity_names) // 2)
+        except Exception:
+            return False
+
+    def _merge_page_into_existing(
+        self,
+        existing_slug: str,
+        new_page: WikiPage,
+        *,
+        mode: str = "update",
+        force: bool = False,
+    ) -> None:
+        """将新页面内容合并到已有页面。
+
+        Args:
+            existing_slug: 已有页面的 slug
+            new_page: 新页面
+            mode: "update"(补充) 或 "merge"(融合)
+        """
+        try:
+            # 加载已有页面
+            existing_page = self._load_wiki_page_from_storage(existing_slug)
+            if not existing_page:
+                logger.warning("merge_target_not_found", slug=existing_slug)
+                return
+
+            # 合并内容
+            if mode == "update":
+                # 补充模式：检查新内容段落是否在已有页面中不存在
+                merged_body = self._merge_content_update(
+                    existing_page.body_md, new_page.body_md,
+                )
+            else:
+                # 融合模式：将两个版本的内容都保留
+                merged_body = self._merge_content_fusion(
+                    existing_page.body_md, new_page.body_md, new_page.title,
+                )
+
+            # 合并 sources
+            existing_sources = existing_page.sources or []
+            new_sources = new_page.sources or []
+            merged_sources = list(existing_sources)
+            for src in new_sources:
+                if src not in merged_sources:
+                    merged_sources.append(src)
+
+            # 合并 tags
+            merged_tags = list(set(
+                (existing_page.tags or []) + (new_page.tags or [])
+            ))
+
+            # 更新已有页面
+            updated_page = WikiPage(
+                slug=existing_page.slug,
+                title=existing_page.title,
+                type=existing_page.type,
+                tags=merged_tags,
+                sources=merged_sources,
+                body_md=merged_body,
+                review_status="auto",
+                llm_error=None,
+                source_doc_id=existing_page.source_doc_id or new_page.source_doc_id,
+                paragraph_labels=existing_page.paragraph_labels or new_page.paragraph_labels,
+            )
+
+            outcome = self._save_page(updated_page, force=force)
+            self._sync_page_to_graph(updated_page)
+
+            logger.info(
+                "wiki_page_merged",
+                target_slug=existing_slug,
+                source_slug=new_page.slug,
+                mode=mode,
+                outcome=outcome,
+                merged_chars=len(merged_body),
+            )
+
+        except Exception as e:
+            logger.exception("wiki_page_merge_failed", slug=existing_slug)
+
+    def _merge_content_update(self, existing: str, new: str) -> str:
+        """补充模式：将新内容中已有页面不存在的段落追加进去"""
+        existing_paragraphs = [
+            p.strip() for p in existing.split("\n\n") if p.strip()
+        ]
+        new_paragraphs = [
+            p.strip() for p in new.split("\n\n") if p.strip()
+        ]
+
+        existing_text = existing.lower()
+        appended: list[str] = []
+        for para in new_paragraphs:
+            # 检查该段落是否已在已有内容中
+            if para.lower() not in existing_text and len(para) > 20:
+                appended.append(para)
+
+        if appended:
+            return existing + "\n\n## 补充内容\n\n" + "\n\n".join(appended)
+        return existing
+
+    def _merge_content_fusion(self, existing: str, new: str, new_title: str) -> str:
+        """融合模式：保留两个版本的内容，添加来源标注"""
+        fused = f"""{existing}
+
+---
+
+## 更新内容（来自本次编译：{new_title}）
+
+{new}
+
+<!-- 融合来源：已有页面 + 新编译页面 -->"""
+        return fused
+
+    def _update_graph_relations(
+        self,
+        page: WikiPage,
+        entities: list,
+        source_entry: dict,
+        *,
+        mode: str = "create",
+        existing_slug: str | None = None,
+    ) -> int:
+        """更新图谱双向关联关系。
+
+        Returns:
+            新增的图谱关系数量
+        """
+        relations_added = 0
+
+        try:
+            from app.knowledge.graph_store import GraphEntity, GraphRelation, get_graph_store
+
+            store = get_graph_store()
+
+            # 1. 确保页面节点在图谱中
+            page_entity = GraphEntity(
+                entity_type=page.type,
+                name=page.title,
+                properties={
+                    "slug": page.slug,
+                    "tags": page.tags,
+                    "review_status": page.review_status,
+                    "source_doc_id": page.source_doc_id,
+                    "is_wiki_page": True,
+                },
+                source_doc_id=source_entry.get("doc_id", ""),
+                confidence=1.0,
+            )
+            store.upsert_entity(page_entity)
+            relations_added += 1
+
+            # 2. 建立实体 → 页面的双向关联
+            for ent in entities:
+                if hasattr(ent, 'name') and ent.name:
+                    try:
+                        graph_ent = GraphEntity(
+                            entity_type=getattr(ent, 'entity_type', 'Concept'),
+                            name=ent.name,
+                            properties={
+                                "slug": getattr(ent, 'slug', ''),
+                                "confidence": getattr(ent, 'confidence', 0.8),
+                            },
+                            source_doc_id=source_entry.get("doc_id", ""),
+                            confidence=getattr(ent, 'confidence', 0.8),
+                        )
+                        store.upsert_entity(graph_ent)
+                        relations_added += 1
+
+                        # has_entity 关系
+                        rel = GraphRelation(
+                            relation_type="has_entity",
+                            from_entity=page.slug,
+                            to_entity=ent.name,
+                            properties={"source": "struct_compile"},
+                            source_doc_id=source_entry.get("doc_id", ""),
+                            confidence=0.9,
+                        )
+                        store.upsert_relation(rel)
+                        relations_added += 1
+                    except Exception:
+                        pass
+
+            # 3. 合并关联
+            if existing_slug and existing_slug != page.slug:
+                try:
+                    rel = GraphRelation(
+                        relation_type="merged_from",
+                        from_entity=existing_slug,
+                        to_entity=page.slug,
+                        properties={"mode": mode},
+                        source_doc_id=source_entry.get("doc_id", ""),
+                        confidence=1.0,
+                    )
+                    store.upsert_relation(rel)
+                    relations_added += 1
+                except Exception:
+                    pass
+
+            # 4. 页面 → 源文档关联
+            if source_entry.get("doc_id"):
+                try:
+                    rel = GraphRelation(
+                        relation_type="sourced_from",
+                        from_entity=page.slug,
+                        to_entity=source_entry["doc_id"],
+                        properties={"source_type": "original_document"},
+                        source_doc_id=source_entry.get("doc_id", ""),
+                        confidence=1.0,
+                    )
+                    store.upsert_relation(rel)
+                    relations_added += 1
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.warning(
+                "graph_relation_update_failed",
+                slug=page.slug,
+                mode=mode,
+                error=str(e),
+            )
+
+        return relations_added
+
+    def _build_directory_tree(
+        self,
+        existing_index: dict[str, dict],
+        new_slugs: list[str],
+        doc: ParsedDocument,
+        entities: list,
+        para_entities_map: dict[int, list[dict]],
+    ) -> dict:
+        """构建目录树：基于标题树骨架 + 已有 wiki 页面 + 新页面
+
+        Returns:
+            {"nodes": [...], "total_pages": int, "tree_depth": int}
+        """
+        tree_nodes: list[dict] = []
+        heading_tree = doc.heading_tree or []
+
+        # 构建实体名 → 页面slug映射
+        entity_to_slug: dict[str, str] = {}
+        for slug in new_slugs:
+            page = self._load_wiki_page_from_storage(slug)
+            if page:
+                # 查找该页面包含的实体
+                for ent in entities:
+                    if hasattr(ent, 'name') and ent.name in page.body_md:
+                        entity_to_slug[ent.name] = slug
+
+        # 遍历标题树构建目录
+        def _build_node(heading_node, depth: int = 0) -> dict:
+            node = {
+                "title": heading_node.title,
+                "level": heading_node.level,
+                "slug": heading_node.slug,
+                "depth": depth,
+                "wiki_pages": [],
+                "child_sections": [],
+                "entities": [],
+            }
+
+            # 查找匹配的 wiki 页面
+            heading_slug = heading_node.slug or _slugify(heading_node.title)
+            if heading_slug and heading_slug in existing_index:
+                node["wiki_pages"].append({
+                    "slug": heading_slug,
+                    "title": existing_index[heading_slug]["title"],
+                    "type": existing_index[heading_slug]["type"],
+                })
+            elif heading_slug and heading_slug in new_slugs:
+                node["wiki_pages"].append({
+                    "slug": heading_slug,
+                    "title": heading_node.title,
+                    "type": "concept",
+                    "is_new": True,
+                })
+
+            # 查找该章节涉及的实体
+            for ent in entities:
+                if hasattr(ent, 'source_section_id') and ent.source_section_id:
+                    if heading_node.title in ent.source_section_id or ent.source_section_id in heading_node.title:
+                        node["entities"].append({
+                            "name": ent.name,
+                            "type": ent.entity_type,
+                            "wiki_slug": entity_to_slug.get(ent.name, ""),
+                        })
+
+            # 递归处理子节点
+            if hasattr(heading_node, 'children') and heading_node.children:
+                for child in heading_node.children:
+                    node["child_sections"].append(
+                        _build_node(child, depth + 1)
+                    )
+
+            return node
+
+        for h in heading_tree:
+            tree_nodes.append(_build_node(h))
+
+        # 如果没有标题树，基于新页面构建扁平目录
+        if not tree_nodes and new_slugs:
+            for slug in new_slugs:
+                page = self._load_wiki_page_from_storage(slug)
+                if page:
+                    tree_nodes.append({
+                        "title": page.title,
+                        "level": 1,
+                        "slug": slug,
+                        "depth": 0,
+                        "wiki_pages": [{
+                            "slug": slug,
+                            "title": page.title,
+                            "type": page.type,
+                            "is_new": True,
+                        }],
+                        "child_sections": [],
+                        "entities": [],
+                    })
+
+        return {
+            "nodes": tree_nodes,
+            "total_pages": len(new_slugs),
+            "tree_depth": max(
+                (n.get("depth", 0) for n in tree_nodes),
+                default=0,
+            ),
+            "entity_slug_map": entity_to_slug,
+        }
 
     async def _extract_from_compiled_pages(
         self,
