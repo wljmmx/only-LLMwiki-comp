@@ -20,20 +20,29 @@
 
 | 层级/阶段 | 范式要求 | 当前实现 | 差距 |
 |-----------|---------|---------|------|
-| **L1 Raw** | 原始文档 immutable，LLM 只读 | DocumentStore 持久化，但 delete() 会删物理文件 | 部分实现 |
-| **L2 Wiki** | LLM 编译 raw → Markdown + `[[wikilink]]` + index.md | 图谱写 Neo4j，Wiki 手动 POST，无双向链接 | **范式错位** |
-| **L3 Schema** | AGENTS.md 教 LLM 做 wiki 管理员 | 完全缺失 | **0→1** |
-| **Ingest** | LLM 阅读 → 写 wiki 页面 → 建 cross-reference | 抽取写图谱，Runbook 明确"无需 LLM" | **终点错位** |
-| **Query** | 从 index.md 导航编译 wiki 回答 | RAG 检索原文 snippet（向量未启用） | **范式错配** |
-| **Lint** | 矛盾/stale/orphan/missing concept 检测 | 完全缺失 | **0→1** |
-| **Maintain** | 漂移修正、孤岛清理、index 维护 | 仅版本控制，无漂移检测 | **缺失** |
+| **L1 Raw** | 原始文档 immutable，LLM 只读 | DocumentStore 持久化，解析后 MD 作为原文档基准 | ✅ 已实现 |
+| **L2 Wiki** | LLM 编译 raw → Markdown + `[[wikilink]]` + index.md | 逐段编译 + `[[wikilink]]` 双向链接 + backlink 自动维护 | ✅ 已实现 |
+| **L3 Schema** | AGENTS.md 教 LLM 做 wiki 管理员 | AGENTS.md 已落地，含双向关联模型说明 | ✅ 已实现 |
+| **Ingest** | LLM 阅读 → 写 wiki 页面 → 建 cross-reference | 段落遍历编译 + struct_compile 增量集成 + 双向关联 | ✅ 已实现 |
+| **Query** | 从 index.md 导航编译 wiki 回答 | wiki_query.py 基于 wiki 回答 | 🟡 待增强回写 |
+| **Lint** | 矛盾/stale/orphan/missing concept 检测 | wiki_lint.py 6 类检查已交付 | ✅ 已实现 |
+| **Maintain** | 漂移修正、孤岛清理、index 维护 | wiki_drift.py 漂移检测 + 重编译 | ✅ 已实现 |
 
 ### 1.2 核心结论
 
-项目自称"LLM Wiki"但实际是"LLM 图谱 + 模板化 Runbook 生成器"。最致命的三个 gap：
-1. **无 `[[wikilink]]` 双向链接** — Karpathy 范式的核心结构化机制
-2. **无 LLM-as-wiki-compiler 路径** — LLM 抽取终点是图谱而非 Markdown wiki
-3. **无 Lint 防漂移机制** — 知识漂移致命缺陷无防护
+> **更新（2026-08-03）**：原 V2.1 审计时的三个致命 gap 已全部修复。
+> 当前项目已完整实现 Karpathy LLM Wiki 范式，并在此基础上演进为**双向关联模型**。
+
+**已修复的 gap**：
+1. ✅ **`[[wikilink]]` 双向链接** — wikilink.py 完整实现，backlink 自动维护
+2. ✅ **LLM-as-wiki-compiler 路径** — 段落遍历编译，struct_compile 增量集成到已有 wiki
+3. ✅ **Lint 防漂移机制** — wiki_lint.py 6 类检查 + wiki_drift.py 漂移检测 + 自动重编译
+
+**新增的演进**（超出原计划）：
+4. ✅ **段落级编译** — compile 阶段按段落顺序处理，对比视图展示原始内容 vs LLM 编译结果
+5. ✅ **增量集成** — struct_compile 将新页面 4 级匹配合并到已有 wiki 知识库
+6. ✅ **双向关联模型** — wiki ↔ graph ↔ 实体 ↔ 原始文档 的完整知识网络（修订 V2.1 单向规则）
+7. ✅ **解析后 MD 作为原文档基准** — 解析产物作为后续处理的统一输入
 
 ---
 
@@ -66,13 +75,14 @@
 - 保存为 `wiki:index` 特殊 slug
 - 验收：Ingest/Lint 后自动刷新 index.md
 
-#### P0-4 Wiki 编译器（LLM-as-compiler）
-- 新建 `app/knowledge/wiki_compiler.py`：
-  - `compile_raw_to_wiki(doc_id) -> list[WikiPage]` LLM 阅读 raw 文档 → 编译实体页/概念页/故障页
-  - 复用 `doc_generator.py` 的 LangGraph 能力，但终点是 Markdown wiki 页面
-  - 自动插入 `[[wikilink]]` cross-reference
-  - 增量更新（已存在页面则合并新事实 + 标注 stale）
-- 验收：上传文档后自动生成 3-10 个 wiki 页面，含双向链接
+#### P0-4 Wiki 编译器（LLM-as-compiler）✅ 已完成
+- `app/knowledge/wiki_compiler.py`：
+  - `compile()` 按段落顺序编译 raw → wiki 页面（逐段处理，非按实体遍历）
+  - LLM 将每个段落编译为结构化 Markdown，含 `[[wikilink]]` cross-reference
+  - `struct_compile` 阶段增量集成到已有 wiki（4 级匹配 + 合并/更新/新增）
+  - 双向关联：wiki ↔ graph ↔ 实体 ↔ 原始文档（修订 V2.1 单向规则）
+  - 解析后 MD 文档作为原文档基准，段落原始内容保留在对比视图中
+- 验收：上传文档后自动生成 wiki 页面，含双向链接和图谱关联
 
 ### 阶段 2: 生命周期闭环（P1）
 

@@ -4,6 +4,9 @@
 > 目标：将 OpsKG 升级为 OKF v0.1 一等公民 + 运维增强平台
 > 依据：[OKF v0.1 SPEC](https://openknowledgeformat.com/what-is-okf) + [Karpathy LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 > 验证：S17-1(82) + S17-2(38) + S17-3(35) + S17-4(19) + S12-2(25) = **199 assertions 全过**
+>
+> **2026-08-03 修订**：源真值模型从 V2.1 单向规则修订为双向关联模型。
+> 解析后 MD 文档作为原文档基准，wiki ↔ graph ↔ 实体 ↔ 文档建立双向链接。
 
 ## 一、设计原则
 

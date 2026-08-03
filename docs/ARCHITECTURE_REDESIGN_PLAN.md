@@ -1,18 +1,25 @@
 # OpsKG 架构重构计划
 
-> 编译日期: 2026-07-20
-> 状态: ✅ 全部完成
+> 编译日期: 2026-07-20 | 最后修订: 2026-08-03
+> 状态: ✅ 全部完成（含双向关联模型修订）
 >
 > 本文档为 OpsKG 知识库系统的完整重构计划，涵盖从原始文档上传到标准化输出文档的全链路。
-
----
+>
+> **2026-08-03 修订**：数据流从"单向源真值模型"修订为"双向关联模型"。
+> 解析后 MD 文档作为原文档基准，wiki、graph、实体之间建立双向链接与关联。
 
 ## 一、四层架构总览
 
 ```
 L0: Raw Documents      原始上传文件（不可变，仅触发编译）
-L1: Compiled Sections  章节编译产物 .md（LLM 编译，版本控制，可 diff）
-L2: Wiki Pages + Graph 知识产物（Wiki 阅读页面 + 知识图谱，从 L1 确定性派生 + LLM 增强）
+L1: Parsed Markdown    解析后 MD 文档（原文档基准，段落级结构化）
+    ├─ 段落分类 + 知识抽取
+    ├─ 实体→段落索引映射（source_paragraph_index）
+    └─ 章节标题树（heading_tree）
+L2: Wiki Pages + Graph 知识产物（双向关联）
+    ├─ Wiki 页面（段落编译 + 章节页面 + 实体页面）
+    ├─ 知识图谱（has_entity / merged_from / sourced_from 双向关系）
+    └─ [[wikilink]] 双向链接 + backlink 自动维护
 L3: Search Index       FTS5 + 向量索引
 ```
 

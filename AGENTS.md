@@ -14,10 +14,30 @@
 ## 二、三层架构
 
 ```
-L1 Raw Layer    data/uploads/        原始文档（immutable，LLM 只读不写）
-L2 Wiki Layer   wiki:{slug}          LLM 编译的 Markdown Wiki（你拥有写权限）
-L3 Schema Layer AGENTS.md            本文件，教你做 wiki 管理员（你与人共同演化）
+L0 Raw Uploads   data/uploads/        原始上传文件（immutable，仅触发编译）
+L1 Parsed MD     ParsedDocument       解析后 MD 文档（原文档基准，段落级结构化）
+L2 Wiki Layer    wiki:{slug}          LLM 编译的 Markdown Wiki（你拥有写权限）
+L2 Graph Layer   Neo4j                知识图谱（双向关联：has_entity/merged_from/sourced_from）
+L3 Schema Layer  AGENTS.md            本文件，教你做 wiki 管理员（你与人共同演化）
 ```
+
+### 2.1 双向关联模型（2026-08-03 修订）
+
+> 原 V2.1 设计中"Wiki 不反写图谱"的单向规则已修订为**双向关联模型**。
+
+**关联方向**：
+- 原始上传文件 → 解析后 MD：单向，解析产物作为原文档基准
+- 解析后 MD → 知识图谱：抽取实体写入图谱，记录 `source_paragraph_index`
+- 解析后 MD → LLM-Wiki：逐段编译为 wiki 页面
+- **Wiki ↔ Graph（双向）**：
+  - Wiki 页面通过 `[[wikilink]]` 引用图谱实体（wiki → graph）
+  - struct_compile 阶段将 wiki 页面节点和关系同步到图谱（wiki → graph）
+  - 图谱变更触发受影响 Wiki 页面重编译（graph → wiki）
+- **实体 ↔ Wiki 页面 ↔ 章节段落（三向关联）**：
+  - 实体→段落：`source_paragraph_index` 属性
+  - 段落→章节：`section` 属性
+  - 章节→Wiki 页面：struct_compile 按章节分组生成页面
+  - Wiki 页面→实体：`[[wikilink]]` 引用 + 图谱 `has_entity` 关系
 
 ## 三、Wiki 页面骨架
 
@@ -102,18 +122,28 @@ backlink 由系统自动维护，无需手写。每个页面底部的 `## 来源
 当新 raw 文档进入 `data/uploads/`：
 
 ```
-1. 解析 raw 文档 → ParsedDocument
-2. LLM 阅读全文（分块处理，避免截断）
-3. 提取实体/概念/论点/故障案例
-4. 对每个实体/概念：
-   a. 查询 wiki 是否已有该 slug 的页面
-   b. 已存在 → 合并新事实，标注 stale 项
-   c. 不存在 → 创建新页面，按骨架模板填充
-5. 建立 [[wikilink]] cross-reference：
-   a. 新页面中的概念链接到已有页面
-   b. 已有页面中提及新概念时回链到新页面
-6. 更新 index.md（按类型分组 + 最近变更）
-7. 标注需要人工审查的低置信项（review_status: review_needed）
+1. 解析 raw 文档 → ParsedDocument（解析后 MD 作为原文档基准）
+2. 段落分类：对每个段落进行层级标签分类
+3. 知识抽取：提取实体/概念/论点/故障案例
+   a. 为每个实体绑定来源段落（evidence_span + source_paragraph_index）
+   b. 建立实体→段落索引的反向映射
+4. LLM 编译 Wiki（逐段顺序处理，非按实体遍历）：
+   a. 对每个段落调用 LLM 编译为结构化 Markdown
+   b. 不管段落是否有关联实体都处理
+   c. 生成 [[wikilink]] cross-reference
+   d. 按章节分组生成章节级 Wiki 页面
+   e. 保留实体级 Wiki 页面作为浏览入口
+5. 结构编译（增量集成到已有 Wiki 知识库）：
+   a. 加载已有 Wiki 目录索引
+   b. 逐页匹配（4 级策略：slug精确→标题完全→标题相似度→实体关联）
+   c. 匹配成功 → 合并/更新已有节点
+   d. 无匹配 → 创建新分支节点
+   e. 补充双向关联：wiki ↔ graph ↔ 实体 ↔ 原始文档
+   f. 构建目录树（基于 heading_tree 骨架 + Wiki 页面挂载）
+   g. 重建索引
+6. 编译后实体抽取：从编译后 wiki 页面重新抽取实体
+7. 更新 index.md（按类型分组 + 最近变更）
+8. 标注需要人工审查的低置信项（review_status: review_needed）
 ```
 
 ### 命名约定（slug 规则）
