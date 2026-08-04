@@ -2,8 +2,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { NSplit, NButton, NIcon, NResult, NBreadcrumb, NBreadcrumbItem, NDrawer, NDrawerContent, NModal, useMessage } from 'naive-ui'
-import { MenuOutline, HomeOutline, ChevronForwardOutline } from '@vicons/ionicons5'
-import { listWikiPages, getWikiPage, getWikiBacklinks, deleteWikiPage } from '@/api/wiki'
+import { MenuOutline, HomeOutline, ChevronForwardOutline, RefreshOutline } from '@vicons/ionicons5'
+import { listWikiPages, getWikiPage, getWikiBacklinks, deleteWikiPage, getWikiHeadingTree, type HeadingTreeResult } from '@/api/wiki'
 import { renderWikiMarkdown } from '@/utils/wikiRender'
 import { parseFrontmatter } from '@/utils/frontmatter'
 import { getTypeLabel } from '@/utils/format'
@@ -11,6 +11,7 @@ import type { WikiPage, BacklinkItem } from '@/types/api'
 import WikiSidebar from '@/components/wiki/WikiSidebar.vue'
 import WikiContent from '@/components/wiki/WikiContent.vue'
 import WikiVersionHistory from '@/components/wiki/WikiVersionHistory.vue'
+import WikiHeadingTree from '@/components/wiki/WikiHeadingTree.vue'
 import { useRecentPages } from '@/composables/useRecentPages'
 
 const { trackPage } = useRecentPages()
@@ -23,6 +24,11 @@ const pages = ref<WikiPage[]>([])
 const currentPage = ref<WikiPage | null>(null)
 const backlinks = ref<BacklinkItem[]>([])
 const selectedKey = ref<string | null>(null)
+
+// KNOW-15: 章节目录树
+const headingTree = ref<HeadingTreeResult | null>(null)
+const headingTreeLoading = ref(false)
+const showHeadingTree = ref(true)
 
 const route = useRoute()
 
@@ -161,6 +167,8 @@ async function loadPage(slug: string) {
     backlinks.value = bl
     // P2-6: 记录最近访问
     trackPage(page.slug, page.title, page.type)
+    // KNOW-15: 加载章节树
+    loadHeadingTree(page.slug)
   } catch (err: any) {
     pageError.value = err?.response?.data?.detail || err?.message || '加载页面失败'
     console.error(err)
@@ -220,6 +228,26 @@ function toggleSidebar() {
 // P0: 移动端打开侧边栏抽屉
 function openMobileDrawer() {
   mobileDrawerVisible.value = true
+}
+
+// KNOW-15: 加载章节树数据
+async function loadHeadingTree(slug: string) {
+  headingTreeLoading.value = true
+  try {
+    const res = await getWikiHeadingTree(slug)
+    headingTree.value = res
+  } catch (err: any) {
+    console.error('加载章节树失败:', err)
+    headingTree.value = null
+  } finally {
+    headingTreeLoading.value = false
+  }
+}
+
+// KNOW-15: 点击目录节点时的处理
+function handleHeadingSelect(slug: string) {
+  // WikiHeadingTree 组件已自动执行 scrollIntoView
+  // 此处可扩展：高亮当前章节、记录访问等
 }
 
 onMounted(() => {
@@ -318,6 +346,44 @@ onMounted(() => {
         @lock-change="handleLockChange"
         @delete-page="handleDeletePage"
       />
+
+      <!-- KNOW-15: 右侧章节目录面板 -->
+      <div v-show="showHeadingTree && headingTree" class="wiki-heading-tree-panel">
+        <div class="heading-tree-header">
+          <span class="heading-tree-title">目录</span>
+          <NButton
+            quaternary
+            size="tiny"
+            :disabled="headingTreeLoading"
+            @click="loadHeadingTree(selectedKey!)"
+          >
+            <template #icon>
+              <NIcon :component="RefreshOutline" />
+            </template>
+          </NButton>
+        </div>
+        <WikiHeadingTree
+          :tree="headingTree!.heading_tree"
+          :loading="headingTreeLoading"
+          @select="handleHeadingSelect"
+        />
+      </div>
+
+      <!-- KNOW-15: 右侧面板折叠按钮 -->
+      <div v-if="headingTree" class="heading-tree-toggle-btn">
+        <NButton
+          quaternary
+          size="tiny"
+          @click="showHeadingTree = !showHeadingTree"
+        >
+          <template #icon>
+            <NIcon
+              :component="ChevronForwardOutline"
+              :style="{ transform: showHeadingTree ? 'rotate(180deg)' : 'rotate(0deg)' }"
+            />
+          </template>
+        </NButton>
+      </div>
     </div>
 
     <!-- P0: 移动端侧边栏抽屉 -->
@@ -412,6 +478,50 @@ onMounted(() => {
   justify-content: center;
 }
 
+/* KNOW-15: 右侧章节目录面板 */
+.wiki-heading-tree-panel {
+  width: 260px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--n-border-color, #e5e7eb);
+  background: var(--n-card-color, #fff);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.heading-tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--n-border-color, #e5e7eb);
+  flex-shrink: 0;
+}
+
+.heading-tree-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--n-text-color, #111827);
+}
+
+.heading-tree-toggle-btn {
+  position: absolute;
+  right: 260px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  transition: right 0.2s ease;
+}
+
+.wiki-layout > .wiki-heading-tree-panel {
+  overflow: hidden;
+}
+
+.wiki-layout > .wiki-heading-tree-panel :deep(.wiki-heading-tree) {
+  flex: 1;
+  overflow: hidden;
+}
+
 /* P0: 响应式布局 */
 @media (max-width: 768px) {
   .wiki-breadcrumb {
@@ -424,6 +534,12 @@ onMounted(() => {
     display: none;
   }
   .sidebar-toggle-btn {
+    display: none;
+  }
+  .wiki-heading-tree-panel {
+    display: none;
+  }
+  .heading-tree-toggle-btn {
     display: none;
   }
   .wiki-layout {

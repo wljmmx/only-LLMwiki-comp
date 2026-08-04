@@ -673,5 +673,101 @@ async def graph_delete_by_source(doc_id: str) -> dict:
         logger.info("graph_delete_by_source_done", doc_id=doc_id)
         return result
     except Exception as e:
-        logger.error("graph_delete_by_source_failed", doc_id=doc_id, error=str(e))
+        logger.error("graph_delete_by_source_failed", error=str(e))
         raise HTTPException(500, f"按源文档删除失败: {e}")
+
+
+# ────────── KNOW-16: 图谱路径分析 ──────────
+
+
+@router.get("/graph/shortest-path")
+async def graph_shortest_path(
+    from_entity: str = Query(..., description="起始实体名称"),
+    to_entity: str = Query(..., description="目标实体名称"),
+    max_depth: int = Query(5, ge=1, le=10, description="最大搜索深度"),
+) -> dict:
+    """KNOW-16: 查找两个实体之间的最短路径
+
+    GET /graph/shortest-path?from=...&to=...&max_depth=5
+    """
+    try:
+        store = get_graph_store()
+        return store.shortest_path(from_entity, to_entity, max_depth)
+    except Exception as e:
+        return {"error": str(e), "hint": "Neo4j 未连接或不可用", "found": False, "path": []}
+
+
+@router.get("/graph/impact-propagation")
+async def graph_impact_propagation(
+    entity: str = Query(..., description="源实体名称"),
+    depth: int = Query(2, ge=1, le=5, description="传播深度"),
+) -> dict:
+    """KNOW-16: 影响传播分析
+
+    GET /graph/impact-propagation?entity=...&depth=2
+    """
+    try:
+        store = get_graph_store()
+        return store.impact_propagation(entity, depth)
+    except Exception as e:
+        return {"error": str(e), "hint": "Neo4j 未连接或不可用", "entity": entity, "affected_count": 0}
+
+
+# ────────── KNOW-18: 实体时间演变回放 ──────────
+
+
+@router.get("/graph/entity/{name}/history")
+async def graph_entity_history(
+    name: str,
+    limit: int = Query(50, ge=1, le=200),
+) -> dict:
+    """KNOW-18: 获取实体变更历史
+
+    GET /graph/entity/{name}/history?limit=50
+    """
+    try:
+        store = get_graph_store()
+        return store.get_entity_history(name, limit)
+    except Exception as e:
+        return {
+            "error": str(e),
+            "hint": "Neo4j 未连接或不可用",
+            "entity_name": name,
+            "history": [],
+        }
+
+
+# ────────── KNOW-17: backlink 关系图 API ──────────
+
+
+@router.get("/graph/entity/{name}/backlinks")
+async def graph_entity_backlinks(name: str) -> dict:
+    """KNOW-17: 获取实体的 backlink 关系图数据
+
+    返回引用该实体的所有 wiki 页面及其关系。
+    """
+    from app.knowledge.wikilink import get_backlinks
+    from app.storage.version_control import get_version_control
+
+    backlinks = get_backlinks(name)
+    pages = []
+    for bl in backlinks:
+        vc = get_version_control()
+        latest = vc.get_latest(f"wiki:{bl.source_slug}")
+        title = bl.source_slug
+        if latest:
+            content = latest.get("content", "")
+            for line in content.split("\n"):
+                if line.startswith("title:"):
+                    title = line.split(":", 1)[1].strip().strip('"').strip("'")
+                    break
+        pages.append({
+            "slug": bl.source_slug,
+            "title": title,
+            "count": bl.count,
+        })
+    return {
+        "entity_name": name,
+        "backlink_count": len(pages),
+        "backlinks": pages,
+    }

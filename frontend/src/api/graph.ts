@@ -128,3 +128,84 @@ export function deleteGraphEntity(name: string) {
 export function clearGraph() {
   return api.delete<unknown, { nodes_removed: number; relations_removed: number }>('/graph/clear')
 }
+
+// ────────── KNOW-16: 图谱路径分析 ──────────
+
+export interface ShortestPathResult {
+  found: boolean
+  path: Array<{ name: string; type: string }>
+  length: number
+  depth_searched: number
+  error?: string
+  hint?: string
+}
+
+export interface ImpactPropagationResult {
+  entity: string
+  affected_count: number
+  affected_entities: Array<{ name: string; type: string; distance: number }>
+  error?: string
+  hint?: string
+}
+
+/**
+ * KNOW-16: 查找两个实体之间的最短路径
+ * GET /graph/shortest-path?from=...&to=...&max_depth=5
+ */
+export function getShortestPath(from: string, to: string, maxDepth = 5) {
+  return api.get<unknown, ShortestPathResult>('/graph/shortest-path', {
+    params: { from_entity: from, to_entity: to, max_depth: maxDepth },
+  })
+}
+
+/**
+ * KNOW-16: 影响传播分析
+ * GET /graph/impact-propagation?entity=...&depth=2
+ */
+export function getImpactPropagation(entity: string, depth = 2) {
+  return api.get<unknown, ImpactPropagationResult>('/graph/impact-propagation', {
+    params: { entity, depth },
+  })
+}
+
+// ────────── KNOW-17: backlink 关系图 ──────────
+
+export interface BacklinkGraphResult {
+  entity_name: string
+  backlink_count: number
+  backlinks: Array<{ slug: string; title: string; count: number }>
+}
+
+/**
+ * KNOW-17: 获取实体的 backlink 关系图数据
+ * GET /graph/entity/{name}/backlinks
+ */
+export function getEntityBacklinks(name: string) {
+  return api.get<unknown, BacklinkGraphResult>(`/graph/entity/${encodeURIComponent(name)}/backlinks`)
+}
+
+// ────────── KNOW-18: 实体时间演变回放 ──────────
+
+export interface EntityHistoryResult {
+  entity_name: string
+  entity_type: string
+  history: Array<{
+    action: string
+    source_doc_id: string
+    timestamp: string
+    confidence: number
+  }>
+  note: string
+  error?: string
+  hint?: string
+}
+
+/**
+ * KNOW-18: 获取实体变更历史
+ * GET /graph/entity/{name}/history?limit=50
+ */
+export function getEntityHistory(name: string, limit = 50) {
+  return api.get<unknown, EntityHistoryResult>(`/graph/entity/${encodeURIComponent(name)}/history`, {
+    params: { limit },
+  })
+}

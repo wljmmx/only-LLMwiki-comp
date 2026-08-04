@@ -259,6 +259,67 @@ class TextCleaner:
             stats=stats,
         )
 
+    async def aclean(
+        self,
+        text: str,
+        preserve_code_blocks: bool = True,
+        extract_attachments: bool = True,
+        use_llm_classification: bool = True,
+    ) -> CleanedDocument:
+        """异步版本的 clean() — 支持 LLM 段落分类
+
+        Args:
+            text: 原始文本
+            preserve_code_blocks: 是否保护代码块
+            extract_attachments: 是否提取附件
+            use_llm_classification: 是否使用 LLM 进行段落分类（默认 True）
+                - True: 使用 LLM 分类，失败时降级为关键词
+                - False: 仅使用关键词分类（向后兼容）
+
+        Returns:
+            CleanedDocument
+        """
+        # 先执行同步清洗管道（不含段落分类）
+        doc = self.clean(
+            text,
+            preserve_code_blocks=preserve_code_blocks,
+            extract_attachments=extract_attachments,
+        )
+
+        if not use_llm_classification:
+            return doc
+
+        # LLM 分类：替换关键词分类结果
+        try:
+            from app.core.llm.router import get_llm_client
+            from app.parsers.paragraph_classifier import (
+                classify_paragraphs_with_llm,
+                to_cleaned_dict,
+            )
+
+            llm_client = get_llm_client()
+            llm_results = await classify_paragraphs_with_llm(
+                doc.paragraphs, llm_client,
+            )
+            doc.paragraph_classes = to_cleaned_dict(llm_results)
+
+            # 更新 stats
+            doc.stats['llm_classification_used'] = True
+            doc.stats['llm_classification_count'] = len(doc.paragraph_classes)
+
+        except Exception as e:
+            import structlog
+            logger = structlog.get_logger()
+            logger.warning(
+                "llm_classification_failed_fallback_to_keyword",
+                error=str(e),
+                paragraph_count=len(doc.paragraphs),
+            )
+            doc.stats['llm_classification_used'] = False
+            doc.stats['llm_classification_error'] = str(e)
+
+        return doc
+
     # ─── 私有方法 ────────────────────────────────────────────────
 
     def _normalize_encoding(self, text: str) -> str:

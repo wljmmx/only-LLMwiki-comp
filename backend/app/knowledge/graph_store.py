@@ -733,6 +733,165 @@ class GraphStore:
         names = [e["name"] for e in entities if e.get("name")]
         return self.batch_delete_entities(names)
 
+    # ── KNOW-16: 图谱路径分析 ──
+
+    def shortest_path(
+        self, from_entity: str, to_entity: str, max_depth: int = 5
+    ) -> dict:
+        """KNOW-16: 查找两个实体之间的最短路径（BFS 实现）
+
+        Args:
+            from_entity: 起始实体名称
+            to_entity: 目标实体名称
+            max_depth: 最大搜索深度（默认 5）
+
+        Returns:
+            {
+                "found": bool,
+                "path": [{"name": "...", "type": "..."}],  # 路径节点列表
+                "length": int,  # 路径长度（边数）
+                "depth_searched": int  # 实际搜索深度
+            }
+        """
+        cache_key = f"shortest_path:{from_entity}:{to_entity}:{max_depth}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH path = shortestPath(
+                    (start:Entity {name: $from_name})-[*1..""" + str(max_depth) + """]-
+                    (end:Entity {name: $to_name})
+                )
+                RETURN
+                    [node IN nodes(path) | {name: node.name, type: node.entity_type}] AS path,
+                    length(path) AS length,
+                    size(relationships(path)) AS depth_searched
+                """,
+                from_name=from_entity,
+                to_name=to_entity,
+            )
+            record = result.single()
+            if record:
+                data = _to_jsonable(dict(record))
+                data["found"] = True
+            else:
+                data = {
+                    "found": False,
+                    "path": [],
+                    "length": -1,
+                    "depth_searched": max_depth,
+                }
+        self._cache_set(cache_key, data)
+        return data
+
+    def impact_propagation(
+        self, entity_name: str, depth: int = 2
+    ) -> dict:
+        """KNOW-16: 影响传播分析 — 查找实体的所有下游依赖
+
+        Args:
+            entity_name: 源实体名称
+            depth: 传播深度（默认 2）
+
+        Returns:
+            {
+                "entity": "...",
+                "affected_count": int,
+                "affected_entities": [{"name": "...", "type": "...", "distance": int}]
+            }
+        """
+        cache_key = f"impact:{entity_name}:{depth}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (start:Entity {name: $name})-[*1..""" + str(depth) + """]->(affected:Entity)
+                WHERE affected.name <> $name
+                RETURN
+                    affected.name AS name,
+                    affected.entity_type AS type,
+                    length(shortestPath(
+                        (start)-[*1..""" + str(depth) + """]->(affected)
+                    )) AS distance
+                ORDER BY distance ASC
+                """,
+                name=entity_name,
+            )
+            affected = [_to_jsonable(dict(r)) for r in result]
+
+        data = {
+            "entity": entity_name,
+            "affected_count": len(affected),
+            "affected_entities": affected[:100],  # 限制返回数量
+        }
+        self._cache_set(cache_key, data)
+        return data
+
+    # ── KNOW-18: 实体时间演变回放 ──
+
+    def get_entity_history(
+        self, entity_name: str, limit: int = 50
+    ) -> dict:
+        """KNOW-18: 获取实体的变更历史
+
+        由于 Neo4j 本身不维护历史版本，这里基于 source_doc_id 和图谱写入时间
+        重建实体的变更轨迹。
+
+        Args:
+            entity_name: 实体名称
+            limit: 返回记录数上限
+
+        Returns:
+            {
+                "entity_name": "...",
+                "history": [
+                    {
+                        "action": "upsert" | "delete",
+                        "source_doc_id": "...",
+                        "timestamp": "...",
+                        "confidence": float
+                    }
+                ]
+            }
+        """
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (n:Entity {name: $name})
+                RETURN n.name AS name, n.entity_type AS type,
+                       n.source_doc_id AS source_doc_id,
+                       n.confidence AS confidence,
+                       n.updated_at AS updated_at
+                """,
+                name=entity_name,
+            )
+            record = result.single()
+            entity_data = _to_jsonable(dict(record)) if record else None
+
+        # 构造历史记录（简化版：基于当前实体状态）
+        # 完整历史需要额外的事件日志存储
+        history = []
+        if entity_data:
+            history.append({
+                "action": "upsert",
+                "source_doc_id": entity_data.get("source_doc_id", ""),
+                "timestamp": str(entity_data.get("updated_at", "")),
+                "confidence": entity_data.get("confidence", 0),
+            })
+
+        return {
+            "entity_name": entity_name,
+            "entity_type": entity_data.get("type", "") if entity_data else "",
+            "history": history[:limit],
+            "note": "当前为简化实现，仅返回最新状态。完整变更历史需配合事件日志系统。",
+        }
+
 
 # 全局单例
 _graph_store: GraphStore | None = None

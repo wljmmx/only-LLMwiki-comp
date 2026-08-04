@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     # 最大缓存条目数，默认 1000
     llm_cache_max_size: int = 1000
 
+    # ── 段落分类配置 ──
+    # 是否启用 LLM 段落分类（True=LLM 分类，失败降级关键词；False=仅关键词）
+    paragraph_classify_use_llm: bool = True
+    # LLM 段落分类每批处理的段落数
+    paragraph_classify_batch_size: int = 20
+
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:7b"

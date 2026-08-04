@@ -258,6 +258,10 @@ const extractEntities = ref<EntityProgressItem[]>([])
 const compileEntities = ref<EntityProgressItem[]>([])
 const compileStepStartTime = ref<number>(0)
 
+// ── 步骤总项数追踪（用于进度条正确计算百分比）──
+const extractTotalItems = ref(0)
+const compileTotalItems = ref(0)
+
 // ── 乱序事件缓存：page_done 先到但实体尚未创建时暂存于此 ──
 // key: 步骤名 + 实体名，value: page_done 事件数据 + 接收时间戳
 type PendingDoneKey = string
@@ -301,6 +305,17 @@ function getStepEntityList(step: typeof compileSteps.value[0]): EntityProgressIt
   return []
 }
 
+// 根据步骤名获取对应的总项数（用于进度条正确计算百分比）
+function getStepTotalItems(step: typeof compileSteps.value[0]): number {
+  if (step.name === 'extract') {
+    return extractTotalItems.value || extractEntities.value.length
+  }
+  if (step.name === 'compile') {
+    return compileTotalItems.value || compileEntities.value.length
+  }
+  return 0
+}
+
 const compileResult = ref<{
   pages_created?: number
   pages_updated?: number
@@ -328,6 +343,8 @@ function resetSteps() {
   sectionNodes.value = []
   pipelineRunId.value = null
   isPaused.value = false
+  extractTotalItems.value = 0
+  compileTotalItems.value = 0
 }
 
 // P3: 从指定阶段重跑
@@ -427,6 +444,7 @@ function startCompile() {
           // 步骤开始时清空对应的实体进度列表和乱序缓存
           if (step === 'extract') {
             extractEntities.value = []
+            extractTotalItems.value = 0
             compileSteps.value[idx].details = '正在连接 LLM 服务，构建抽取上下文...'
             // 清理 extract 相关的 pending done
             for (const k of pendingDoneMap.value.keys()) {
@@ -434,6 +452,7 @@ function startCompile() {
             }
           } else if (step === 'compile') {
             compileEntities.value = []
+            compileTotalItems.value = 0
             compileSteps.value[idx].details = '正在连接 LLM 服务，准备编译 Wiki 页面...'
             for (const k of pendingDoneMap.value.keys()) {
               if (k.startsWith('compile:')) pendingDoneMap.value.delete(k)
@@ -598,6 +617,15 @@ function startCompile() {
           current: data.index ?? 0,
           total: data.total ?? 0,
           currentEntity: data.entity ?? data.section ?? '',
+        }
+
+        // 记录步骤总项数（仅首次设置，避免被后续事件覆盖）
+        const total = data.total ?? 0
+        if (stepName === 'extract' && total > 0 && extractTotalItems.value === 0) {
+          extractTotalItems.value = total
+        }
+        if (stepName === 'compile' && total > 0 && compileTotalItems.value === 0) {
+          compileTotalItems.value = total
         }
 
         // 步骤详情文本
@@ -932,7 +960,7 @@ function startCompile() {
           total: data.total as number ?? 0,
           currentEntity: data.status === 'processing' ? `处理章节: ${data.title}` : `完成章节: ${data.title}`,
         }
-        compileProgress.value = ((4 * 100) + (data.percent as number ?? 0)) / 7
+        compileProgress.value = ((4 * 100) + (data.percent as number ?? 0)) / 8
       } else if (evt.type === 'done') {
         compileProgress.value = 100
         compiling.value = false
@@ -1465,14 +1493,14 @@ watch(sourceTab, (val) => {
                   <div class="compile-entities-progress">
                     <NProgress
                       :percentage="Math.round(
-                        (getStepEntityList(step).filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length / getStepEntityList(step).length) * 100
+                        (getStepEntityList(step).filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length / Math.max(getStepTotalItems(step), 1)) * 100
                       )"
                       :height="6"
                       :border-radius="3"
                       :color="getStepEntityList(step).some(e => e.status === 'error') ? '#f0a020' : '#18a058'"
                     />
                     <span class="meta-text" style="font-size: 11px; margin-top: 2px">
-                      {{ getStepEntityList(step).filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length }}/{{ getStepEntityList(step).length }} {{ step.name === 'extract' ? '个实体' : '个页面' }}
+                      {{ getStepEntityList(step).filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length }}/{{ getStepTotalItems(step) }} {{ step.name === 'extract' ? '个实体' : '个页面' }}
                     </span>
                   </div>
                   <!-- 实体/章节列表 -->

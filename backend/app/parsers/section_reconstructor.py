@@ -373,7 +373,7 @@ class SectionReconstructor:
 
             # 生成章节标题
             first_para = section_paras[0]
-            title, original_title = self._generate_section_title(
+            title, original_title, title_from_first = self._generate_section_title(
                 first_para, level, para_classes, start_idx,
             )
 
@@ -386,7 +386,13 @@ class SectionReconstructor:
                         orig_level = h.get('level')
                         break
 
-            content = '\n\n'.join(section_paras)
+            # 如果 title 从第一段派生，从内容中排除第一段避免重复
+            if title_from_first and len(section_paras) > 1:
+                content_paras = section_paras[1:]
+            else:
+                content_paras = section_paras
+
+            content = '\n\n'.join(content_paras)
 
             sections.append(ReconstructedSection(
                 title=title,
@@ -406,23 +412,26 @@ class SectionReconstructor:
         level: int,
         para_classes: list[dict],
         para_idx: int,
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, bool]:
         """生成章节标题
 
         Returns:
-            (title, original_title)
+            (title, original_title, title_from_first)
+            - title: 章节标题文本
+            - original_title: 原始标题引用（来自 original_headings）
+            - title_from_first: title 是否从第一段内容派生（是则需排除第一段）
         """
         stripped = first_para.strip()
 
         # 如果已经是 Markdown 标题，提取标题文本
         m = re.match(r'^#{1,6}\s+(.+)$', stripped)
         if m:
-            return m.group(1).strip(), m.group(1).strip()
+            return m.group(1).strip(), m.group(1).strip(), False
 
         # 如果是编号标题，提取标题文本（必须有点号分隔）
         m = re.match(r'^(\d+(?:\.\d+)*)\.\s+(.+)$', stripped)
         if m:
-            return m.group(2).strip(), m.group(2).strip()
+            return m.group(2).strip(), m.group(2).strip(), False
 
         # 否则，基于内容生成标题
         # 查找该段落的语义类别
@@ -450,11 +459,11 @@ class SectionReconstructor:
             # 清理装饰性文字
             title = re.sub(r'[（\(][^)）]*[)）]', '', stripped)
             title = re.sub(r'[！!。.]+$', '', title)
-            return title.strip(), None
+            return title.strip(), None, True
 
         # 否则使用类别默认标题
         title = default_titles.get(para_class, '章节')
-        return title, None
+        return title, None, True
 
     def _map_attachments(
         self,
@@ -478,7 +487,11 @@ class SectionReconstructor:
         return attachment_map
 
     def _generate_markdown(self, sections: list[ReconstructedSection]) -> str:
-        """生成重构后的 Markdown 文本"""
+        """生成重构后的 Markdown 文本
+
+        关键：直接追加 section.content（段落间已用 \\n\\n 分隔），
+        保持段落完整性，避免 _parse_markdown 因额外空行断行膨胀。
+        """
         lines: list[str] = []
 
         for section in sections:
@@ -487,15 +500,8 @@ class SectionReconstructor:
             lines.append(f'{prefix} {section.title}')
             lines.append('')
 
-            # 添加章节内容（去掉第一行，因为第一行已经作为标题）
-            content_lines = section.content.split('\n')
-            if content_lines:
-                # 检查第一行是否是标题，如果是则跳过
-                first_line = content_lines[0].strip()
-                if not re.match(r'^#{1,6}\s', first_line) and not re.match(r'^\d+(?:\.\d+)*\.\s+', first_line):
-                    lines.append(content_lines[0])
-                lines.extend(content_lines[1:])
-
-            lines.append('')  # 章节间空行
+            # 直接追加 content（已排除标题段落，段落用 \n\n 分隔）
+            lines.append(section.content)
+            lines.append('')
 
         return '\n'.join(lines)

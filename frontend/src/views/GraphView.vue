@@ -17,6 +17,8 @@ import {
   NStatistic,
   NGrid,
   NGi,
+  NTab,
+  NTabPane,
   useMessage,
 } from 'naive-ui'
 import { VueFlow, useVueFlow, type Node, type Edge } from '@vue-flow/core'
@@ -44,6 +46,9 @@ import { useAppStore } from '@/stores/app'
 import { nodeTypeColor } from '@/utils/statusMap'
 import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
+import EntityPathAnalysis from '@/components/graph/EntityPathAnalysis.vue'
+import EntityBacklinkGraph from '@/components/graph/EntityBacklinkGraph.vue'
+import EntityHistoryTimeline from '@/components/graph/EntityHistoryTimeline.vue'
 
 const message = useMessage()
 const appStore = useAppStore()
@@ -122,6 +127,11 @@ const detailVisible = ref(false)
 const detailLoading = ref(false)
 const selectedEntity = ref<GraphEntityDetail | null>(null)
 const selectedNodeName = ref<string>('')
+
+// KNOW-16/17/18: 实体详情抽屉 Tab 状态
+const showPathAnalysis = ref(false)
+const pathAnalysisEntity = ref<string>('')
+const activeDetailTab = ref<'detail' | 'path' | 'backlink' | 'history'>('detail')
 
 // KNOW-14: 实体关联的 wiki 页面列表
 const relatedWikiPages = ref<Array<{ slug: string; title: string; match_type: string }>>([])
@@ -419,6 +429,10 @@ async function openEntityDetail(name: string) {
   detailLoading.value = true
   selectedEntity.value = null
   selectedNodeName.value = name
+  // KNOW-16/17/18: 重置 Tab 与子视图状态
+  activeDetailTab.value = 'detail'
+  showPathAnalysis.value = false
+  pathAnalysisEntity.value = name
   // KNOW-14: 重置关联 wiki 页面
   relatedWikiPages.value = []
   relatedWikiLoading.value = true
@@ -448,6 +462,17 @@ async function openEntityDetail(name: string) {
 
 function jumpToWikiPage(slug: string) {
   // 跳转到 wiki 编辑/查看页
+  router.push(`/wiki/${encodeURIComponent(slug)}`)
+}
+
+// KNOW-16: 路径分析节点点击时更新选中实体
+function handlePathAnalysisNodeClick(name: string) {
+  pathAnalysisEntity.value = name
+  selectedNodeName.value = name
+}
+
+// KNOW-17: Backlink 跳转
+function handleBacklinkNavigate(slug: string) {
   router.push(`/wiki/${encodeURIComponent(slug)}`)
 }
 
@@ -621,118 +646,144 @@ onUnmounted(() => {
     </n-card>
 
     <!-- 实体详情抽屉 -->
-    <n-drawer v-model:show="detailVisible" :width="720" placement="right">
+    <n-drawer v-model:show="detailVisible" :width="760" placement="right">
       <n-drawer-content :title="`实体详情: ${selectedNodeName}`" closable>
-        <n-space vertical :size="16">
-        <LoadingState v-if="detailLoading" />
-        <template v-else-if="selectedEntity">
-          <n-descriptions :column="1" bordered label-placement="left" size="small">
-            <n-descriptions-item label="名称">
-              <code>{{ selectedNodeName }}</code>
-            </n-descriptions-item>
-            <n-descriptions-item label="类型">
-              <n-tag
+        <n-tab v-model:value="activeDetailTab" type="line" animated>
+          <!-- 详情 Tab (保持原有功能) -->
+          <n-tab-pane name="detail" tab="详情">
+            <n-space vertical :size="16">
+            <LoadingState v-if="detailLoading" />
+            <template v-else-if="selectedEntity">
+              <n-descriptions :column="1" bordered label-placement="left" size="small">
+                <n-descriptions-item label="名称">
+                  <code>{{ selectedNodeName }}</code>
+                </n-descriptions-item>
+                <n-descriptions-item label="类型">
+                  <n-tag
+                    size="small"
+                    :style="{
+                      color: nodeTypeColor[selectedEntity.entity?.entity_type] || '#999',
+                      background: 'transparent',
+                    }"
+                    :bordered="false"
+                  >
+                    {{ selectedEntity.entity?.entity_type || '-' }}
+                  </n-tag>
+                </n-descriptions-item>
+                <n-descriptions-item v-if="selectedEntity.entity?.confidence != null" label="置信度">
+                  {{ (selectedEntity.entity.confidence * 100).toFixed(1) }}%
+                </n-descriptions-item>
+                <n-descriptions-item v-if="selectedEntity.entity?.source_doc_id" label="来源文档">
+                  <code>{{ selectedEntity.entity.source_doc_id }}</code>
+                </n-descriptions-item>
+                <n-descriptions-item v-if="selectedEntity.entity?.properties" label="属性">
+                  <pre style="font-size: 12px; margin: 0; white-space: pre-wrap">{{
+                    JSON.stringify(selectedEntity.entity.properties, null, 2)
+                  }}</pre>
+                </n-descriptions-item>
+              </n-descriptions>
+
+              <h4 style="margin-top: 20px; margin-bottom: 8px">
+                相关节点 ({{ selectedEntity.related?.length || 0 }})
+              </h4>
+              <n-empty v-if="!selectedEntity.related?.length" description="无相关节点" />
+              <n-space v-else vertical :size="6">
+                <n-card
+                  v-for="(rel, idx) in selectedEntity.related"
+                  :key="idx"
+                  size="small"
+                  :bordered="true"
+                >
+                  <n-space align="center" :size="8" wrap>
+                    <code style="font-size: 12px">{{ rel.source }}</code>
+                    <n-tag
+                      size="small"
+                      :bordered="false"
+                      :style="{
+                        color: relationColor[rel.relation] || '#999',
+                        background: 'transparent',
+                      }"
+                    >
+                      → {{ rel.relation }} →
+                    </n-tag>
+                    <n-button size="tiny" quaternary type="info" @click="openEntityDetail(rel.target)">
+                      {{ rel.target }}
+                    </n-button>
+                    <n-tag
+                      size="small"
+                      :bordered="false"
+                      :style="{
+                        color: nodeTypeColor[rel.target_type] || '#999',
+                        background: 'transparent',
+                      }"
+                    >
+                      {{ nodeTypeLabel[rel.target_type] || rel.target_type || '-' }}
+                    </n-tag>
+                    <n-tag v-if="rel.confidence != null" size="small" type="info">
+                      {{ (rel.confidence * 100).toFixed(0) }}%
+                    </n-tag>
+                  </n-space>
+                </n-card>
+              </n-space>
+
+              <!-- KNOW-14: 关联 Wiki 页面（wiki↔graph 双向关联可视化） -->
+              <h4 style="margin-top: 20px; margin-bottom: 8px">
+                关联 Wiki 页面 ({{ relatedWikiPages.length }})
+              </h4>
+              <LoadingState v-if="relatedWikiLoading" text="加载关联页面..." />
+              <n-empty v-else-if="!relatedWikiPages.length" description="无关联 Wiki 页面" />
+              <n-space v-else vertical :size="6">
+                <n-card
+                  v-for="page in relatedWikiPages"
+                  :key="page.slug"
+                  size="small"
+                  :bordered="true"
+                  hoverable
+                  @click="jumpToWikiPage(page.slug)"
+                >
+                  <n-space align="center" :size="8" wrap>
+                    <n-tag size="small" :bordered="false" type="success">
+                      {{ page.match_type === 'backlink' ? '反向链接' : page.match_type === 'title' ? '标题匹配' : '正文匹配' }}
+                    </n-tag>
+                    <span style="font-weight: 500">{{ page.title }}</span>
+                    <code style="font-size: 11px; color: #999">{{ page.slug }}</code>
+                  </n-space>
+                </n-card>
+              </n-space>
+
+              <n-button
+                type="error"
                 size="small"
-                :style="{
-                  color: nodeTypeColor[selectedEntity.entity?.entity_type] || '#999',
-                  background: 'transparent',
-                }"
-                :bordered="false"
+                style="margin-top: 16px"
+                @click="handleDeleteEntity(selectedNodeName)"
               >
-                {{ selectedEntity.entity?.entity_type || '-' }}
-              </n-tag>
-            </n-descriptions-item>
-            <n-descriptions-item v-if="selectedEntity.entity?.confidence != null" label="置信度">
-              {{ (selectedEntity.entity.confidence * 100).toFixed(1) }}%
-            </n-descriptions-item>
-            <n-descriptions-item v-if="selectedEntity.entity?.source_doc_id" label="来源文档">
-              <code>{{ selectedEntity.entity.source_doc_id }}</code>
-            </n-descriptions-item>
-            <n-descriptions-item v-if="selectedEntity.entity?.properties" label="属性">
-              <pre style="font-size: 12px; margin: 0; white-space: pre-wrap">{{
-                JSON.stringify(selectedEntity.entity.properties, null, 2)
-              }}</pre>
-            </n-descriptions-item>
-          </n-descriptions>
+                删除此实体
+              </n-button>
+            </template>
+            </n-space>
+          </n-tab-pane>
 
-          <h4 style="margin-top: 20px; margin-bottom: 8px">
-            相关节点 ({{ selectedEntity.related?.length || 0 }})
-          </h4>
-          <n-empty v-if="!selectedEntity.related?.length" description="无相关节点" />
-          <n-space v-else vertical :size="6">
-            <n-card
-              v-for="(rel, idx) in selectedEntity.related"
-              :key="idx"
-              size="small"
-              :bordered="true"
-            >
-              <n-space align="center" :size="8" wrap>
-                <code style="font-size: 12px">{{ rel.source }}</code>
-                <n-tag
-                  size="small"
-                  :bordered="false"
-                  :style="{
-                    color: relationColor[rel.relation] || '#999',
-                    background: 'transparent',
-                  }"
-                >
-                  → {{ rel.relation }} →
-                </n-tag>
-                <n-button size="tiny" quaternary type="info" @click="openEntityDetail(rel.target)">
-                  {{ rel.target }}
-                </n-button>
-                <n-tag
-                  size="small"
-                  :bordered="false"
-                  :style="{
-                    color: nodeTypeColor[rel.target_type] || '#999',
-                    background: 'transparent',
-                  }"
-                >
-                  {{ nodeTypeLabel[rel.target_type] || rel.target_type || '-' }}
-                </n-tag>
-                <n-tag v-if="rel.confidence != null" size="small" type="info">
-                  {{ (rel.confidence * 100).toFixed(0) }}%
-                </n-tag>
-              </n-space>
-            </n-card>
-          </n-space>
+          <!-- KNOW-16: 路径分析 Tab -->
+          <n-tab-pane v-if="selectedNodeName" name="path" tab="路径分析">
+            <EntityPathAnalysis
+              :entity-name="pathAnalysisEntity || selectedNodeName"
+              @node-click="handlePathAnalysisNodeClick"
+            />
+          </n-tab-pane>
 
-          <!-- KNOW-14: 关联 Wiki 页面（wiki↔graph 双向关联可视化） -->
-          <h4 style="margin-top: 20px; margin-bottom: 8px">
-            关联 Wiki 页面 ({{ relatedWikiPages.length }})
-          </h4>
-          <LoadingState v-if="relatedWikiLoading" text="加载关联页面..." />
-          <n-empty v-else-if="!relatedWikiPages.length" description="无关联 Wiki 页面" />
-          <n-space v-else vertical :size="6">
-            <n-card
-              v-for="page in relatedWikiPages"
-              :key="page.slug"
-              size="small"
-              :bordered="true"
-              hoverable
-              @click="jumpToWikiPage(page.slug)"
-            >
-              <n-space align="center" :size="8" wrap>
-                <n-tag size="small" :bordered="false" type="success">
-                  {{ page.match_type === 'backlink' ? '反向链接' : page.match_type === 'title' ? '标题匹配' : '正文匹配' }}
-                </n-tag>
-                <span style="font-weight: 500">{{ page.title }}</span>
-                <code style="font-size: 11px; color: #999">{{ page.slug }}</code>
-              </n-space>
-            </n-card>
-          </n-space>
+          <!-- KNOW-17: Backlink Tab -->
+          <n-tab-pane v-if="selectedNodeName" name="backlink" tab="Backlink">
+            <EntityBacklinkGraph
+              :entity-name="selectedNodeName"
+              @navigate="handleBacklinkNavigate"
+            />
+          </n-tab-pane>
 
-          <n-button
-            type="error"
-            size="small"
-            style="margin-top: 16px"
-            @click="handleDeleteEntity(selectedNodeName)"
-          >
-            删除此实体
-          </n-button>
-        </template>
-        </n-space>
+          <!-- KNOW-18: 历史演变 Tab -->
+          <n-tab-pane v-if="selectedNodeName" name="history" tab="历史演变">
+            <EntityHistoryTimeline :entity-name="selectedNodeName" />
+          </n-tab-pane>
+        </n-tab>
       </n-drawer-content>
     </n-drawer>
   </div>

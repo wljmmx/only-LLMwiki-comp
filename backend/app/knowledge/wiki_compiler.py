@@ -625,7 +625,23 @@ class WikiCompiler:
                         doc_id=doc_id,
                         format=meta.get("format", ""),
                     ):
-                        doc = parser.parse(meta["stored_path"], doc_id)
+                        # LLM 段落分类：优先使用异步 aparse，失败降级到同步 parse
+                        use_llm_cls = self.settings.paragraph_classify_use_llm
+                        if use_llm_cls and hasattr(parser, 'aparse'):
+                            try:
+                                doc = await parser.aparse(
+                                    meta["stored_path"], doc_id,
+                                    use_llm_classification=True,
+                                )
+                            except Exception as parse_err:
+                                logger.warning(
+                                    "async_parse_fallback_to_sync",
+                                    doc_id=doc_id,
+                                    error=str(parse_err),
+                                )
+                                doc = parser.parse(meta["stored_path"], doc_id)
+                        else:
+                            doc = parser.parse(meta["stored_path"], doc_id)
                     # 发送解析进度事件（逐元素进度）
                     total_elements = len(doc.elements)
                     total_headings = len(doc.heading_tree)
@@ -1128,7 +1144,8 @@ class WikiCompiler:
                         result.errors.append(f"{entity.name}: {e}")
 
                 _track("compile", "output", serialize_compile_result_summary(result))
-                _update_step("compile", "done")
+                # 注意：不在此标记 compile 为 done，因为 struct_compile 和 extract_compiled
+                # 仍是 compile 阶段的子步骤，必须等它们完成后再标记
 
                 _emit(ProgressEventType.STEP_DONE, {
                     "step": "compile",
@@ -1146,54 +1163,83 @@ class WikiCompiler:
                 #  - 在已有节点修改/补充/合并（已有目录存在相似页面 → 融合）
                 #  - 补充双向关联：wiki ↔ graph ↔ 实体 ↔ 原始文档
 
+                struct_compile_error = None
+                integration_report: dict[str, Any] = {
+                    "pages_created": 0,
+                    "pages_merged": 0,
+                    "pages_updated": 0,
+                    "pages_unchanged": 0,
+                    "graph_relations_added": 0,
+                    "review_needed": [],
+                    "stale_marked": [],
+                    "errors": [],
+                    "pages_integrated": len(result.slugs),
+                    "integration_detail": [],
+                }
+
                 _emit(ProgressEventType.STEP_START, {
                     "step": "struct_compile",
                     "message": f"开始结构集成，将 {len(result.slugs)} 个新页面融合到已有 Wiki 目录...",
                 })
                 _update_step("struct_compile", "running")
 
-                struct_result = WikiCompileResult(doc_id=doc.doc_id)
-                integration_report = await self._integrate_pages_into_wiki(
-                    new_slugs=list(result.slugs),
-                    source_entry=source_entry,
-                    entities=entities,
-                    para_entities_map=para_entities_map,
-                    doc=doc,
-                    force=force,
-                    on_progress=_emit,
-                    pipeline_run_id=pipeline_run_id,
-                )
+                try:
+                    struct_result = WikiCompileResult(doc_id=doc.doc_id)
+                    integration_report = await self._integrate_pages_into_wiki(
+                        new_slugs=list(result.slugs),
+                        source_entry=source_entry,
+                        entities=entities,
+                        para_entities_map=para_entities_map,
+                        doc=doc,
+                        force=force,
+                        on_progress=_emit,
+                        pipeline_run_id=pipeline_run_id,
+                    )
 
-                # 汇总结构编译结果
-                result.pages_created += integration_report.get("pages_created", 0)
-                result.pages_updated += integration_report.get("pages_updated", 0)
-                result.pages_unchanged += integration_report.get("pages_unchanged", 0)
-                result.review_needed.extend(integration_report.get("review_needed", []))
-                result.stale_marked.extend(integration_report.get("stale_marked", []))
-                result.errors.extend(integration_report.get("errors", []))
+                    # 汇总结构编译结果
+                    result.pages_created += integration_report.get("pages_created", 0)
+                    result.pages_updated += integration_report.get("pages_updated", 0)
+                    result.pages_unchanged += integration_report.get("pages_unchanged", 0)
+                    result.review_needed.extend(integration_report.get("review_needed", []))
+                    result.stale_marked.extend(integration_report.get("stale_marked", []))
+                    result.errors.extend(integration_report.get("errors", []))
 
-                # 记录结构集成事件
-                _track("struct_compile", "output", integration_report)
+                    # 记录结构集成事件
+                    _track("struct_compile", "output", integration_report)
+                    _update_step("struct_compile", "done")
 
-                _emit(ProgressEventType.STEP_DONE, {
-                    "step": "struct_compile",
-                    "pages_integrated": integration_report.get("pages_integrated", 0),
-                    "pages_created": integration_report.get("pages_created", 0),
-                    "pages_merged": integration_report.get("pages_merged", 0),
-                    "pages_updated": integration_report.get("pages_updated", 0),
-                    "graph_relations_added": integration_report.get("graph_relations_added", 0),
-                    "message": (
-                        f"结构集成完成：新增 {integration_report.get('pages_created', 0)} 页面，"
-                        f"合并 {integration_report.get('pages_merged', 0)} 页面，"
-                        f"更新 {integration_report.get('pages_updated', 0)} 页面，"
-                        f"图谱关联 {integration_report.get('graph_relations_added', 0)} 条"
-                    ),
-                })
+                    _emit(ProgressEventType.STEP_DONE, {
+                        "step": "struct_compile",
+                        "pages_integrated": integration_report.get("pages_integrated", 0),
+                        "pages_created": integration_report.get("pages_created", 0),
+                        "pages_merged": integration_report.get("pages_merged", 0),
+                        "pages_updated": integration_report.get("pages_updated", 0),
+                        "graph_relations_added": integration_report.get("graph_relations_added", 0),
+                        "message": (
+                            f"结构集成完成：新增 {integration_report.get('pages_created', 0)} 页面，"
+                            f"合并 {integration_report.get('pages_merged', 0)} 页面，"
+                            f"更新 {integration_report.get('pages_updated', 0)} 页面，"
+                            f"图谱关联 {integration_report.get('graph_relations_added', 0)} 条"
+                        ),
+                    })
+
+                except Exception as e:
+                    logger.exception("wiki_compiler_struct_compile_failed", doc_id=doc_id)
+                    struct_compile_error = str(e)
+                    result.errors.append(f"结构集成失败: {e}")
+                    _track("struct_compile", "output", {"error": struct_compile_error})
+                    _update_step("struct_compile", "error", error=struct_compile_error)
+                    _emit(ProgressEventType.STEP_DONE, {
+                        "step": "struct_compile",
+                        "error": struct_compile_error,
+                        "message": f"结构集成失败：{e}",
+                    })
 
                 # 4.5 从编译后内容重新抽取实体（独立运行，不依赖 struct_compile 成功）
                 # 使用 result.slugs（包含 compile 阶段产出的 + struct_compile 产出的）
                 if result.slugs:
                     _emit(ProgressEventType.STEP_START, {"step": "extract_compiled", "message": "从编译后 wiki 页面重新抽取实体..."})
+                    _update_step("extract_compiled", "running")
                     try:
                         compiled_entities = await self._extract_from_compiled_pages(
                             result.slugs, doc.doc_id, source_entry, _emit,
@@ -1206,6 +1252,12 @@ class WikiCompiler:
                                 if ce.name not in existing_entity_names:
                                     result.entities.append(ce)
                                     new_count += 1
+                            _track("extract_compiled", "output", {
+                                "entities": len(compiled_entities),
+                                "new_entities": new_count,
+                                "entity_names": [e.name for e in compiled_entities],
+                            })
+                            _update_step("extract_compiled", "done")
                             _emit(ProgressEventType.STEP_DONE, {
                                 "step": "extract_compiled",
                                 "entities": len(compiled_entities),
@@ -1214,17 +1266,22 @@ class WikiCompiler:
                                 "message": f"编译后抽取：{len(compiled_entities)} 个实体（{new_count} 个新增）",
                             })
                         else:
+                            _track("extract_compiled", "output", {"entities": 0, "new_entities": 0})
+                            _update_step("extract_compiled", "done")
                             _emit(ProgressEventType.STEP_DONE, {"step": "extract_compiled", "entities": 0})
                     except Exception as e:
                         logger.exception("wiki_compiler_extract_compiled_failed", doc_id=doc_id)
+                        _track("extract_compiled", "output", {"error": str(e)})
+                        _update_step("extract_compiled", "error", error=str(e))
                         _emit(ProgressEventType.STEP_DONE, {"step": "extract_compiled", "error": str(e)})
                 else:
                     # 无 slugs 时也标记 extract_compiled 为跳过
+                    _track("extract_compiled", "output", {"skipped": True, "reason": "无编译产物"})
+                    _update_step("extract_compiled", "done")
                     _emit(ProgressEventType.STEP_DONE, {"step": "extract_compiled", "entities": 0, "skipped": True, "message": "无编译产物，跳过编译后实体抽取"})
 
-                # compile 阶段输出已就绪，记录产物
-                _track("compile", "output", serialize_compile_result_summary(result))
-                _update_step("compile", "done")
+                # 注意：compile 的 _track/_update_step 在阶段 4 (index) 之前统一执行，
+                # 避免在 struct_compile/extract_compiled 完成前过早标记为 done
             else:
                 # start_from_stage == "index" — 加载 compile 输出以获取 slugs
                 compile_output = tracker.get_artifact(pipeline_run_id, "compile", "output")

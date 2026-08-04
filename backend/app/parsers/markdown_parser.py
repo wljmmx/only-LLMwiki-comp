@@ -104,6 +104,103 @@ class MarkdownParser:
             heading_tree=heading_tree,
         )
 
+    async def aparse(
+        self,
+        path: str,
+        doc_id: str,
+        clean_text: bool = True,
+        reconstruct_sections: bool = True,
+        use_llm_classification: bool = True,
+    ) -> ParsedDocument:
+        """异步解析 — 支持 LLM 段落分类
+
+        Args:
+            path: 文件路径
+            doc_id: 文档 ID
+            clean_text: 是否清洗文本
+            reconstruct_sections: 是否重构章节
+            use_llm_classification: 是否使用 LLM 段落分类
+
+        Returns:
+            ParsedDocument
+        """
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+
+        # 异步清洗（含 LLM 分类）
+        cleaned: CleanedDocument | None = None
+        if clean_text:
+            cleaned = await self.cleaner.aclean(
+                raw,
+                use_llm_classification=use_llm_classification,
+            )
+            text = cleaned.cleaned_text
+        else:
+            text = raw
+
+        # 章节重构
+        reconstructed: ReconstructedDocument | None = None
+        if reconstruct_sections and cleaned is not None:
+            reconstructed = self.reconstructor.reconstruct(
+                cleaned, original_headings=cleaned.detected_headings,
+            )
+            text = reconstructed.reconstructed_text
+        else:
+            if cleaned and cleaned.inferred_headings:
+                text = self._inject_inferred_headings(
+                    text, cleaned.paragraphs, cleaned.inferred_headings,
+                    existing_headings=cleaned.detected_headings,
+                )
+
+        checksum = hashlib.sha256(text.encode()).hexdigest()
+        title = self._extract_title(text)
+        elements, heading_tree = self._parse_markdown(text)
+
+        # metadata 注入（与同步版本一致）
+        if cleaned is not None:
+            for elem in elements:
+                if elem.metadata is None:
+                    elem.metadata = {}
+            if cleaned.detected_headings:
+                for elem in elements:
+                    elem.metadata.setdefault('cleaner_headings', cleaned.detected_headings)
+            if cleaned.paragraphs:
+                for elem in elements:
+                    elem.metadata.setdefault('cleaner_paragraph_count', len(cleaned.paragraphs))
+            if cleaned.inferred_headings:
+                for elem in elements:
+                    elem.metadata.setdefault('inferred_headings', cleaned.inferred_headings)
+            if cleaned.paragraph_classes:
+                for elem in elements:
+                    elem.metadata.setdefault('paragraph_classes', cleaned.paragraph_classes)
+
+            # LLM 分类标记
+            if cleaned.stats.get('llm_classification_used'):
+                for elem in elements:
+                    elem.metadata.setdefault('llm_classification_used', True)
+
+        if reconstructed is not None and elements:
+            first_elem = elements[0]
+            if first_elem.metadata is None:
+                first_elem.metadata = {}
+            first_elem.metadata['section_reconstruction'] = reconstructed.stats
+            first_elem.metadata['reconstructed_sections'] = len(reconstructed.sections)
+            if reconstructed.sections:
+                first_elem.metadata['section_titles'] = [
+                    {'title': s.title, 'level': s.level, 'original_title': s.original_title}
+                    for s in reconstructed.sections[:10]
+                ]
+
+        return ParsedDocument(
+            doc_id=doc_id,
+            source_path=path,
+            format="markdown",
+            checksum=checksum,
+            title=title,
+            elements=elements,
+            heading_tree=heading_tree,
+        )
+
     def _extract_title(self, text: str) -> str | None:
         m = re.match(r"^#\s+(.+)$", text, re.MULTILINE)
         if m:

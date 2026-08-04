@@ -260,3 +260,26 @@ export function recompileSection(params: {
     params,
   )
 }
+
+// ────────── KNOW-15: 章节目录树可视化 ──────────
+
+export interface HeadingTreeNode {
+  title: string
+  level: number
+  slug: string
+  children: HeadingTreeNode[]
+}
+
+export interface HeadingTreeResult {
+  slug: string
+  source_doc_id: string
+  heading_tree: HeadingTreeNode[]
+}
+
+/**
+ * KNOW-15: 获取 Wiki 页面的章节树结构
+ * GET /wiki/{slug}/heading-tree
+ */
+export function getWikiHeadingTree(slug: string) {
+  return api.get<unknown, HeadingTreeResult>(`/wiki/${slug}/heading-tree`)
+}

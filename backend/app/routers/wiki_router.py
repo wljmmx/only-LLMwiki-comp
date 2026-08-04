@@ -325,3 +325,69 @@ async def wiki_recompile_stream(request: Request, slug: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ────────── KNOW-15: 章节目录树可视化 ──────────
+
+
+@router.get("/wiki/{slug}/heading-tree")
+async def wiki_heading_tree(slug: str) -> dict:
+    """KNOW-15: 获取 Wiki 页面的章节树结构（基于原始文档的 heading_tree）
+
+    Returns:
+        {
+            "slug": "...",
+            "source_doc_id": "...",
+            "heading_tree": [
+                {
+                    "title": "...",
+                    "level": 1,
+                    "slug": "...",
+                    "children": [...]
+                }
+            ]
+        }
+    """
+    vc = get_version_control()
+    doc_key = f"wiki:{slug}"
+    latest = vc.get_latest(doc_key)
+    if not latest:
+        raise HTTPException(404, f"Wiki 文档不存在: {slug}")
+
+    # 从 frontmatter 解析 source doc_id
+    content = latest["content"]
+    source_doc_id = ""
+    if content.startswith("---"):
+        end = content.find("---", 3)
+        if end > 0:
+            try:
+                meta = yaml.safe_load(content[3:end]) or {}
+                sources = meta.get("sources") or []
+                if sources and isinstance(sources, list):
+                    first = sources[0]
+                    if isinstance(first, dict):
+                        source_doc_id = first.get("doc_id", "")
+            except Exception:
+                pass
+
+    heading_tree: list[dict] = []
+    if source_doc_id:
+        # 加载原始文档并解析
+        try:
+            from app.storage import get_document_store
+
+            store = get_document_store()
+            meta = store.get(source_doc_id)
+            if meta:
+                fmt = meta.get("format", "markdown")
+                parser = get_parser(fmt)
+                doc = parser.parse(meta.get("stored_path", ""), source_doc_id)
+                heading_tree = doc.get_heading_tree_dict()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("heading_tree_load_failed", slug=slug, error=str(e))
+
+    return {
+        "slug": slug,
+        "source_doc_id": source_doc_id,
+        "heading_tree": heading_tree,
+    }
