@@ -960,23 +960,40 @@ class WikiCompiler:
 
             # 收集需要编译的段落（按顺序）
             # 优先使用段落分类结果过滤，确保只编译被分类过的段落
+            # 使用分类产出的 structured_content 替代原始 content
             all_paragraphs: list[dict] = []
             for idx, elem in enumerate(doc.elements or []):
                 content = elem.content if hasattr(elem, 'content') else (elem.get('content', '') if isinstance(elem, dict) else '')
                 section = elem.section if hasattr(elem, 'section') else (elem.get('section', '') if isinstance(elem, dict) else '')
                 elem_type = elem.type.value if hasattr(elem, 'type') and hasattr(elem.type, 'value') else str(elem.type) if hasattr(elem, 'type') else 'paragraph'
-                if content and content.strip():
+
+                # 获取分类结果（优先从 lookup，其次从 metadata）
+                cls = classification_lookup.get(idx)
+                if not cls:
+                    cls = elem.metadata.get("classification") if hasattr(elem, 'metadata') else None
+
+                # 确定用于编译的内容：优先使用分类产出的 structured_content
+                compile_content = content
+                if cls:
+                    structured = cls.get("structured_content", "")
+                    if structured and structured.strip():
+                        compile_content = structured.strip()
+
+                if compile_content and compile_content.strip():
                     # 如果有分类结果，只保留被分类过的段落
                     if classified_indices and idx not in classified_indices:
                         continue
                     all_paragraphs.append({
                         'index': idx,
-                        'content': content.strip(),
-                        'section': section or '未分类',
+                        'content': compile_content,
+                        'raw_content': content.strip(),
+                        'section': section or (cls.get("label", "") if cls else "") or '未分类',
                         'type': elem_type,
+                        'classification': cls,
                     })
 
             total_paragraphs = len(all_paragraphs)
+            structured_count = sum(1 for p in all_paragraphs if p.get('classification', {}).get('structured_content'))
             logger.info(
                 "wiki_compiler_paragraph_selection",
                 doc_id=doc_id,
@@ -984,6 +1001,7 @@ class WikiCompiler:
                 classified_count=len(paragraph_classifications),
                 classified_indices_count=len(classified_indices),
                 compiled_paragraphs=total_paragraphs,
+                structured_content_used=structured_count,
             )
 
             if start_index <= 2:
@@ -1053,8 +1071,8 @@ class WikiCompiler:
                     })
 
                     try:
-                        # 获取段落分类信息（如果有的话）
-                        para_classification = classification_lookup.get(para['index'])
+                        # 从段落数据中获取分类信息（构建 all_paragraphs 时已附加）
+                        para_classification = para.get('classification')
 
                         compiled = await self._compile_paragraph_page(
                             para_content=para['content'],
@@ -1933,6 +1951,7 @@ H{level}
             "compiled_chars": len(compiled_content),
             "llm_error": llm_error,
             "processing_time_ms": int((t_end - t_start) * 1000),
+            "used_structured": bool(para_classification and para_classification.get("structured_content")),
         }
 
     async def _llm_compile_paragraph(
