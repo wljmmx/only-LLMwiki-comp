@@ -294,7 +294,6 @@ const getEntityTypeTag = (type: string) => {
           description="点击上方按钮开始分析"
         />
       </div>
-    </div>
   </div>
 </template>
 
