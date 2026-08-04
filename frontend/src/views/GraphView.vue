@@ -648,7 +648,7 @@ onUnmounted(() => {
     <!-- 实体详情抽屉 -->
     <n-drawer v-model:show="detailVisible" :width="760" placement="right">
       <n-drawer-content :title="`实体详情: ${selectedNodeName}`" closable>
-        <n-tab v-model:value="activeDetailTab" type="line" animated>
+        <n-tabs v-model:value="activeDetailTab" type="line" animated>
           <!-- 详情 Tab (保持原有功能) -->
           <n-tab-pane name="detail" tab="详情">
             <n-space vertical :size="16">
@@ -783,7 +783,7 @@ onUnmounted(() => {
           <n-tab-pane v-if="selectedNodeName" name="history" tab="历史演变">
             <EntityHistoryTimeline :entity-name="selectedNodeName" />
           </n-tab-pane>
-        </n-tab>
+        </n-tabs>
       </n-drawer-content>
     </n-drawer>
   </div>

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import {
-  NModal,
   NCard,
   NInput,
   NButton,
@@ -15,12 +14,10 @@ import { getShortestPath, getImpactPropagation } from '@/api/graph'
 import type { ShortestPathResult, ImpactPropagationResult } from '@/api/graph'
 
 const props = defineProps<{
-  visible: boolean
   entityName: string
 }>()
 
 const emit = defineEmits<{
-  (e: 'update:visible', value: boolean): void
   (e: 'node-click', nodeName: string): void
 }>()
 
@@ -53,15 +50,6 @@ const affectedEntities = computed(() => {
     (a, b) => a.distance - b.distance,
   )
 })
-
-const handleVisibleChange = (val: boolean) => {
-  emit('update:visible', val)
-  if (!val) {
-    pathResult.value = null
-    impactResult.value = null
-    targetEntity.value = ''
-  }
-}
 
 const handleNodeClick = (nodeName: string) => {
   emit('node-click', nodeName)
@@ -144,15 +132,10 @@ const getEntityTypeTag = (type: string) => {
 </script>
 
 <template>
-  <NModal
-    :show="visible"
-    preset="card"
-    title="图谱路径分析"
-    style="width: 560px; max-width: 90vw"
-    :mask-closable="false"
-    @update:show="handleVisibleChange"
-  >
-    <div class="entity-path-analysis">
+  <div class="entity-path-analysis">
+    <div class="header-row">
+      <span class="label">图谱路径分析</span>
+    </div>
       <div class="current-entity-row">
         <span class="label">当前实体：</span>
         <NTag v-if="entityName" :bordered="false" size="small" round>
@@ -312,11 +295,7 @@ const getEntityTypeTag = (type: string) => {
         />
       </div>
     </div>
-
-    <template #footer>
-      <NButton size="small" @click="handleVisibleChange(false)">关闭</NButton>
-    </template>
-  </NModal>
+  </div>
 </template>
 
 <style scoped>

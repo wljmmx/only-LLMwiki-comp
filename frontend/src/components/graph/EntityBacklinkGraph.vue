@@ -88,7 +88,7 @@ watch(() => props.entityName, () => {
         size="tiny"
         :loading="loading"
         :disabled="!entityName"
-        onClick="handleRefresh"
+        @click="handleRefresh"
       >
         刷新
       </NButton>
