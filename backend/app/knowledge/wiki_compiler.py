@@ -803,6 +803,7 @@ class WikiCompiler:
             # S1: 段落级 LLM 归类
             _emit(ProgressEventType.STEP_START, {"step": "classify", "message": "段落分类中..."})
             paragraph_classifications: list[dict] = []
+            classification_lookup: dict[int, dict] = {}
             try:
                 def _classify_progress(batch_idx: int, total_batches: int, done_count: int):
                     _emit(ProgressEventType.PROGRESS, {
@@ -848,6 +849,24 @@ class WikiCompiler:
                     "paragraph_classification_integrated",
                     doc_id=doc_id,
                     count=result.paragraph_count,
+                )
+
+                # 将分类结果写回 doc.elements.metadata，作为后续图谱和 Wiki 编译的基准
+                for pc in paragraph_classifications:
+                    idx = pc.get("index")
+                    if idx is not None and 0 <= idx < len(doc.elements):
+                        doc.elements[idx].metadata["classification"] = {
+                            "label": pc.get("label", ""),
+                            "summary": pc.get("summary", ""),
+                            "structured_content": pc.get("structured_content", ""),
+                            "confidence": pc.get("confidence", 0),
+                        }
+                        classification_lookup[idx] = pc
+                logger.info(
+                    "paragraph_classification_written_to_elements",
+                    doc_id=doc_id,
+                    written=len(classification_lookup),
+                    total_elements=len(doc.elements),
                 )
             except Exception as e:
                 logger.warning(
@@ -1034,6 +1053,9 @@ class WikiCompiler:
                     })
 
                     try:
+                        # 获取段落分类信息（如果有的话）
+                        para_classification = classification_lookup.get(para['index'])
+
                         compiled = await self._compile_paragraph_page(
                             para_content=para['content'],
                             para_index=para['index'],
@@ -1041,6 +1063,7 @@ class WikiCompiler:
                             para_type=para['type'],
                             source_entry=source_entry,
                             related_entities=related_ents,
+                            para_classification=para_classification,
                             on_chunk=chunk_cb,
                         )
                         compiled_paragraphs.append(compiled)
@@ -1854,6 +1877,7 @@ H{level}
         para_type: str = "paragraph",
         source_entry: dict | None = None,
         related_entities: list[dict] | None = None,
+        para_classification: dict | None = None,
         on_chunk: Any | None = None,
     ) -> dict:
         """将单个段落编译为 wiki 结构化内容。
@@ -1862,6 +1886,7 @@ H{level}
         - 逐段处理（doc.elements 顺序），不管段落是否有关联实体
         - 将段落内容作为原始内容传入 LLM
         - LLM 生成 wiki 结构化内容（含 [[wikilink]]）
+        - 段落分类信息（para_classification）用于增强编译上下文
         - 返回编译结果，用于对比视图和后续 wiki 页面生成
 
         Returns:
@@ -1884,6 +1909,7 @@ H{level}
                 para_section=para_section,
                 para_type=para_type,
                 related_entities=related_entities,
+                para_classification=para_classification,
                 on_chunk=on_chunk,
             )
         except Exception as e:
@@ -1915,6 +1941,7 @@ H{level}
         para_section: str,
         para_type: str,
         related_entities: list[dict] | None,
+        para_classification: dict | None,
         on_chunk: Any | None,
     ) -> str:
         """调用 LLM 将单段内容编译为 wiki 结构化 Markdown。"""
@@ -1932,6 +1959,19 @@ H{level}
             if entity_lines:
                 entity_context = "\n\n本段涉及的实体：\n" + "\n".join(entity_lines)
 
+        # 构建分类上下文
+        classification_context = ""
+        if para_classification:
+            cls_label = para_classification.get("label", "")
+            cls_summary = para_classification.get("summary", "")
+            cls_confidence = para_classification.get("confidence", 0)
+            if cls_label:
+                classification_context += f"\n\n段落分类：{cls_label}"
+            if cls_summary:
+                classification_context += f"\n段落摘要：{cls_summary}"
+            if cls_confidence:
+                classification_context += f"\n分类置信度：{cls_confidence:.0%}"
+
         section_hint = f"（所属章节：{para_section}）" if para_section else ""
 
         system_prompt = f"""你是 Wiki 编译器。将给定的段落内容编译为结构化 Markdown Wiki 内容。
@@ -1944,6 +1984,7 @@ H{level}
 5. 直接输出编译后的 Markdown 内容，不要加前言或解释
 
 段落类型：{para_type}{section_hint}
+{classification_context}
 {entity_context}"""
 
         user_message = f"""请将以下段落内容编译为 Wiki 结构化 Markdown：
