@@ -931,13 +931,25 @@ class WikiCompiler:
                         "confidence": ent.confidence,
                     })
 
-            # 收集所有非空段落（按顺序）
+            # 收集段落分类后的有效段落索引（如果有分类结果）
+            classified_indices: set[int] = set()
+            if paragraph_classifications:
+                for pc in paragraph_classifications:
+                    idx = pc.get("index")
+                    if idx is not None:
+                        classified_indices.add(idx)
+
+            # 收集需要编译的段落（按顺序）
+            # 优先使用段落分类结果过滤，确保只编译被分类过的段落
             all_paragraphs: list[dict] = []
             for idx, elem in enumerate(doc.elements or []):
                 content = elem.content if hasattr(elem, 'content') else (elem.get('content', '') if isinstance(elem, dict) else '')
                 section = elem.section if hasattr(elem, 'section') else (elem.get('section', '') if isinstance(elem, dict) else '')
                 elem_type = elem.type.value if hasattr(elem, 'type') and hasattr(elem.type, 'value') else str(elem.type) if hasattr(elem, 'type') else 'paragraph'
                 if content and content.strip():
+                    # 如果有分类结果，只保留被分类过的段落
+                    if classified_indices and idx not in classified_indices:
+                        continue
                     all_paragraphs.append({
                         'index': idx,
                         'content': content.strip(),
@@ -946,6 +958,14 @@ class WikiCompiler:
                     })
 
             total_paragraphs = len(all_paragraphs)
+            logger.info(
+                "wiki_compiler_paragraph_selection",
+                doc_id=doc_id,
+                total_elements=len(doc.elements or []),
+                classified_count=len(paragraph_classifications),
+                classified_indices_count=len(classified_indices),
+                compiled_paragraphs=total_paragraphs,
+            )
 
             if start_index <= 2:
                 _emit(ProgressEventType.STEP_START, {
