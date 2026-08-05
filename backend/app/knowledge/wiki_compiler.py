@@ -932,6 +932,8 @@ class WikiCompiler:
                 "doc_id": doc_id,
                 "title": meta.get("title") or meta.get("filename", doc_id),
                 "checksum": meta.get("checksum", ""),
+                "source_path": doc.source_path,
+                "format": doc.format,
             }
 
             # ── 阶段 3: compile — 按段落顺序编译 ──
@@ -959,8 +961,8 @@ class WikiCompiler:
                         classified_indices.add(idx)
 
             # 收集需要编译的段落（按顺序）
-            # 优先使用段落分类结果过滤，确保只编译被分类过的段落
-            # 使用分类产出的 structured_content 替代原始 content
+            # 关键原则：原始 content 是不可变基准，structured_content 是增强指引
+            # LLM 编译时必须同时参考两者，以原始内容为准，结构化版本为辅助
             all_paragraphs: list[dict] = []
             for idx, elem in enumerate(doc.elements or []):
                 content = elem.content if hasattr(elem, 'content') else (elem.get('content', '') if isinstance(elem, dict) else '')
@@ -972,24 +974,17 @@ class WikiCompiler:
                 if not cls:
                     cls = elem.metadata.get("classification") if hasattr(elem, 'metadata') else None
 
-                # 确定用于编译的内容：优先使用分类产出的 structured_content
-                compile_content = content
-                if cls:
-                    structured = cls.get("structured_content", "")
-                    if structured and structured.strip():
-                        compile_content = structured.strip()
-
-                if compile_content and compile_content.strip():
+                # 使用原始内容作为编译基准（不可变原则）
+                if content and content.strip():
                     # 如果有分类结果，只保留被分类过的段落
                     if classified_indices and idx not in classified_indices:
                         continue
                     all_paragraphs.append({
                         'index': idx,
-                        'content': compile_content,
-                        'raw_content': content.strip(),
-                        'section': section or (cls.get("label", "") if cls else "") or '未分类',
+                        'content': content.strip(),         # 原始完整内容（不可变基准）
+                        'section': section or '未分类',
                         'type': elem_type,
-                        'classification': cls,
+                        'classification': cls,               # 分类结果（含 structured_content）
                     })
 
             total_paragraphs = len(all_paragraphs)
@@ -1928,6 +1923,7 @@ H{level}
                 para_type=para_type,
                 related_entities=related_entities,
                 para_classification=para_classification,
+                source_entry=source_entry,
                 on_chunk=on_chunk,
             )
         except Exception as e:
@@ -1961,7 +1957,8 @@ H{level}
         para_type: str,
         related_entities: list[dict] | None,
         para_classification: dict | None,
-        on_chunk: Any | None,
+        source_entry: dict | None = None,
+        on_chunk: Any | None = None,
     ) -> str:
         """调用 LLM 将单段内容编译为 wiki 结构化 Markdown。"""
         from app.core.llm import ChatMessage
@@ -1980,44 +1977,77 @@ H{level}
 
         # 构建分类上下文
         classification_context = ""
+        structured_reference = ""
         if para_classification:
             cls_label = para_classification.get("label", "")
             cls_summary = para_classification.get("summary", "")
+            cls_structured = para_classification.get("structured_content", "")
             cls_confidence = para_classification.get("confidence", 0)
             if cls_label:
-                classification_context += f"\n\n段落分类：{cls_label}"
+                classification_context += f"\n- 分类标签：{cls_label}"
             if cls_summary:
-                classification_context += f"\n段落摘要：{cls_summary}"
+                classification_context += f"\n- 分类摘要：{cls_summary}"
             if cls_confidence:
-                classification_context += f"\n分类置信度：{cls_confidence:.0%}"
+                classification_context += f"\n- 分类置信度：{cls_confidence:.0%}"
+            # 结构化正文作为参考（不是替代原始内容）
+            if cls_structured:
+                structured_reference = f"""
+
+## 参考版本（分类阶段生成，仅供参考结构组织）
+{cls_structured}
+
+注意：以上参考版本是对原文的精炼重写，可能不完整。编译时必须以原始段落内容为准。"""
 
         section_hint = f"（所属章节：{para_section}）" if para_section else ""
 
+        # 构建原始文档引用信息
+        source_ref = ""
+        if source_entry:
+            src_title = source_entry.get("title", "")
+            src_path = source_entry.get("source_path", "")
+            src_format = source_entry.get("format", "")
+            src_checksum = source_entry.get("checksum", "")
+            source_ref = f"""
+
+## 原始文档引用
+- 文档标题：{src_title}
+- 存储路径：{src_path}
+- 文档格式：{src_format}
+- 校验和：{src_checksum[:16]}...
+注意：此文档为不可变基准，所有编译必须以文档原始内容为准。"""
+
         system_prompt = f"""你是 Wiki 编译器。将给定的段落内容编译为结构化 Markdown Wiki 内容。
 
-要求：
-1. 保留原始信息，按 Wiki 结构重新组织
-2. 识别并标注关键实体和概念，使用 [[wikilink]] 语法（如 [[entity-name]]）
-3. 添加适当的小标题和分层
-4. 保持内容的专业性和可读性
-5. 直接输出编译后的 Markdown 内容，不要加前言或解释
+## 核心原则
+1. **以原始内容为准**：保留所有原始信息，不得遗漏或编造
+2. **参考结构化版本**：如果提供了参考版本，可借鉴其结构组织，但信息必须以原始内容为准
+3. **标注实体**：识别关键实体和概念，使用 [[wikilink]] 语法（如 [[entity-name]]）
+4. **保持专业**：添加适当的小标题和分层，保持内容的专业性和可读性
+5. **信息溯源**：Wiki 页面必须引用原始文档作为来源
+
+## 输出要求
+- 直接输出编译后的 Markdown 内容，不要加前言或解释
+- 如果内容包含操作步骤，使用有序列表
+- 如果内容包含定义或说明，使用清晰的段落结构
+- 在页面底部添加来源引用
 
 段落类型：{para_type}{section_hint}
 {classification_context}
-{entity_context}"""
+{entity_context}
+{source_ref}"""
 
-        user_message = f"""请将以下段落内容编译为 Wiki 结构化 Markdown：
+        user_message = f"""请将以下段落内容编译为 Wiki 结构化 Markdown。
 
----段落开始---
+---原始段落内容（以此为准，完整保留所有信息）---
 {para_content}
----段落结束---
+---原始段落结束---{structured_reference}
 
 编译要求：
-- 保留所有原始信息，不要遗漏
+- 必须以原始段落内容为唯一信息来源，不得添加原文没有的信息
+- 参考版本仅用于帮助组织结构，不能替代原始内容
+- 保留所有原始信息，不要遗漏任何细节
 - 识别并标注关键术语和实体为 [[wikilink]]
-- 添加合适的小节标题
-- 如果内容包含操作步骤，使用有序列表
-- 如果内容包含定义或说明，使用清晰的段落结构"""
+- 添加合适的小节标题"""
 
         messages = [
             ChatMessage(role="system", content=system_prompt),
