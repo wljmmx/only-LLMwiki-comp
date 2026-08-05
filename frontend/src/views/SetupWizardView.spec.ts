@@ -31,37 +31,63 @@ vi.mock('naive-ui', () => ({
   useMessage: () => ({ success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }))
 
+vi.mock('@/api/setup', () => ({
+  getSetupStatus: vi.fn().mockResolvedValue({
+    llm_backend: 'openai_compat',
+    neo4j_uri: 'bolt://localhost:7687',
+    llm_configured: false,
+    neo4j_configured: false,
+    auth_configured: false,
+    ready: false,
+    missing: ['llm', 'neo4j'],
+  }),
+  testLLM: vi.fn().mockResolvedValue({ ok: true, latency_ms: 100, model: 'test' }),
+  testNeo4j: vi.fn().mockResolvedValue({ ok: true, version: '5.0', latency_ms: 50 }),
+  generateCommand: vi.fn().mockResolvedValue({
+    env_file_content: 'TEST=1',
+    command: 'docker run test',
+  }),
+}))
+
 import SetupWizardView from '@/views/SetupWizardView.vue'
+import i18n from '@/i18n'
 import '@/test/setup'
 
 describe('SetupWizardView', () => {
+  let pinia: ReturnType<typeof createPinia>
+
   beforeEach(() => {
-    setActivePinia(createPinia())
+    pinia = createPinia()
+    setActivePinia(pinia)
   })
 
+  function mountView() {
+    return mount(SetupWizardView, { global: { plugins: [pinia, i18n] } })
+  }
+
   it('组件可挂载', () => {
-    const wrapper = mount(SetupWizardView, { global: { plugins: [] } })
+    const wrapper = mountView()
     expect(wrapper.exists()).toBe(true)
   })
 
   it('渲染包含步骤向导', () => {
-    const wrapper = mount(SetupWizardView, { global: { plugins: [] } })
+    const wrapper = mountView()
     expect(wrapper.html()).toBeTruthy()
     expect(wrapper.html().length).toBeGreaterThan(0)
   })
 
   it('初始步骤为 0', () => {
-    const wrapper = mount(SetupWizardView, { global: { plugins: [] } })
+    const wrapper = mountView()
     expect(wrapper.vm).toBeTruthy()
   })
 
   it('包含配置表单区域', () => {
-    const wrapper = mount(SetupWizardView, { global: { plugins: [] } })
+    const wrapper = mountView()
     expect(wrapper.find('.n-card').exists() || wrapper.find('.n-steps').exists()).toBe(true)
   })
 
   it('能正确卸载', () => {
-    const wrapper = mount(SetupWizardView, { global: { plugins: [] } })
+    const wrapper = mountView()
     wrapper.unmount()
     expect(true).toBe(true)
   })

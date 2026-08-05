@@ -432,8 +432,8 @@ describe('PipelineView.vue', () => {
     expect(vm.phase).toBe('compiling')
     expect(vm.compiling).toBe(false)
     expect(mockMessage.error).toHaveBeenCalledWith('编译失败：LLM 调用失败')
-    expect(vm.compileSteps[2].status).toBe('error')
-    expect(vm.compileSteps[2].error).toBe('LLM 调用失败')
+    expect(vm.compileSteps[3].status).toBe('error')
+    expect(vm.compileSteps[3].error).toBe('LLM 调用失败')
   })
 
   it('SSEonError 编译中保持 compiling 阶段，显示 warning', async () => {
@@ -459,7 +459,7 @@ describe('PipelineView.vue', () => {
     ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
     const wrapper = mountView()
     const vm = wrapper.vm as any
-    expect(vm.compileSteps).toHaveLength(6)
+    expect(vm.compileSteps).toHaveLength(8)
     vm.compileSteps.forEach((step: any) => {
       expect(step.status).toBe('pending')
     })
@@ -471,10 +471,12 @@ describe('PipelineView.vue', () => {
     const vm = wrapper.vm as any
     expect(vm.compileSteps[0].label).toBe('解析文档')
     expect(vm.compileSteps[1].label).toBe('知识抽取')
-    expect(vm.compileSteps[2].label).toBe('LLM 编译 Wiki')
-    expect(vm.compileSteps[3].label).toBe('结构编译（章节处理）')
-    expect(vm.compileSteps[4].label).toBe('编译后实体抽取')
-    expect(vm.compileSteps[5].label).toBe('重建索引')
+    expect(vm.compileSteps[2].label).toBe('段落分类')
+    expect(vm.compileSteps[3].label).toBe('LLM 编译 Wiki')
+    expect(vm.compileSteps[4].label).toBe('结构集成')
+    expect(vm.compileSteps[5].label).toBe('编译后实体抽取')
+    expect(vm.compileSteps[6].label).toBe('重建索引')
+    expect(vm.compileSteps[7].label).toBe('健康检查（Lint）')
   })
 
   it('SSE step_start 更新步骤状态为 running', async () => {
@@ -548,15 +550,15 @@ describe('PipelineView.vue', () => {
       type: 'page_start',
       data: { index: 0, total: 3, entity: 'nginx-502' },
     })
-    expect(vm.compileSteps[2].subProgress).toEqual({
+    expect(vm.compileSteps[3].subProgress).toEqual({
       current: 0,
       total: 3,
       currentEntity: 'nginx-502',
     })
 
-    capturedOnEvent!({ type: 'page_done', data: { index: 0 } })
-    expect(vm.compileSteps[2].subProgress!.current).toBe(1)
-    expect(vm.compileSteps[2].subProgress!.currentEntity).toBe('')
+    capturedOnEvent!({ type: 'page_done', data: { index: 0, entity: 'nginx-502' } })
+    expect(vm.compileSteps[3].subProgress!.current).toBe(0)
+    expect(vm.compileSteps[3].subProgress!.currentEntity).toBe('✅ nginx-502 完成')
   })
 
   it('SSE progress 事件更新 compileProgress', async () => {
@@ -569,8 +571,8 @@ describe('PipelineView.vue', () => {
 
     capturedOnEvent!({ type: 'step_start', data: { step: 'compile' } })
     capturedOnEvent!({ type: 'progress', data: { percent: 50 } })
-    // compileProgress = 40 + (50/100) * 20 = 50
-    expect(vm.compileProgress).toBeCloseTo(50)
+    // compileProgress = ((runningIdx * 100 + percent) / 8) = ((3 * 100 + 50) / 8) = 43.75
+    expect(vm.compileProgress).toBeCloseTo(43.75)
   })
 
   // ========== 7. 编译完成后加载 trace 数据 ==========

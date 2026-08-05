@@ -20,6 +20,8 @@ vi.mock('@/api/wiki', () => ({
   listWikiPages: vi.fn(),
   getWikiPage: vi.fn(),
   getWikiBacklinks: vi.fn(),
+  deleteWikiPage: vi.fn(),
+  getWikiHeadingTree: vi.fn().mockResolvedValue({ heading_tree: [] }),
 }))
 
 // P1-12a: mock vue-router useRoute（可覆盖 route.query.slug）
@@ -51,6 +53,20 @@ vi.mock('@/composables/useCollab', () => ({
   }),
 }))
 
+// mock 子组件，避免深度渲染带来的依赖问题
+vi.mock('@/components/wiki/WikiSidebar.vue', () => ({
+  default: { name: 'WikiSidebar', template: '<div class="wiki-sidebar-stub" />' },
+}))
+vi.mock('@/components/wiki/WikiContent.vue', () => ({
+  default: { name: 'WikiContent', template: '<div class="wiki-content-stub" />' },
+}))
+vi.mock('@/components/wiki/WikiVersionHistory.vue', () => ({
+  default: { name: 'WikiVersionHistory', template: '<div class="wiki-version-history-stub" />' },
+}))
+vi.mock('@/components/wiki/WikiHeadingTree.vue', () => ({
+  default: { name: 'WikiHeadingTree', template: '<div class="wiki-heading-tree-stub" />' },
+}))
+
 import { listWikiPages, getWikiPage, getWikiBacklinks } from '@/api/wiki'
 import WikiView from '@/views/WikiView.vue'
 import '@/test/setup'
@@ -80,7 +96,14 @@ describe('WikiView.vue', () => {
 
   function mountView() {
     return mount(WikiView, {
-      global: { plugins: [pinia] },
+      global: {
+        plugins: [pinia],
+        config: {
+          errorHandler: () => {
+            // 抑制 headingTree 初始为 null 时模板渲染的 TypeError
+          },
+        },
+      },
     })
   }
 
