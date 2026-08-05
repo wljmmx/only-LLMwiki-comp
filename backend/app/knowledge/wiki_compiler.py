@@ -1177,6 +1177,18 @@ class WikiCompiler:
                         result.errors.append(f"章节 {section} 保存失败: {e}")
 
                 # ── Phase 3: 保留实体级 Wiki 页面编译（实体浏览入口） ──
+                total_entities = len(entities)
+                entity_compiled = 0
+                if total_entities > 0:
+                    _emit(ProgressEventType.PROGRESS, {
+                        "step": "compile",
+                        "percent": 0,
+                        "current": 0,
+                        "total": total_entities,
+                        "message": f"开始编译实体页面：0/{total_entities}",
+                        "phase": "entity_compile",
+                    })
+
                 for entity in entities:
                     try:
                         page = await self._compile_entity_page(
@@ -1196,8 +1208,27 @@ class WikiCompiler:
                                 result.pages_unchanged += 1
                             if page.review_status == "review_needed":
                                 result.review_needed.append(page.slug)
+                        entity_compiled += 1
+                        # 发送实体编译进度
+                        _emit(ProgressEventType.PROGRESS, {
+                            "step": "compile",
+                            "percent": int((entity_compiled / total_entities) * 100) if total_entities > 0 else 100,
+                            "current": entity_compiled,
+                            "total": total_entities,
+                            "message": f"编译实体：{entity.name} ({entity_compiled}/{total_entities})",
+                            "phase": "entity_compile",
+                        })
                     except Exception as e:
                         result.errors.append(f"{entity.name}: {e}")
+                        entity_compiled += 1
+                        _emit(ProgressEventType.PROGRESS, {
+                            "step": "compile",
+                            "percent": int((entity_compiled / total_entities) * 100) if total_entities > 0 else 100,
+                            "current": entity_compiled,
+                            "total": total_entities,
+                            "message": f"编译实体失败：{entity.name} ({entity_compiled}/{total_entities})",
+                            "phase": "entity_compile",
+                        })
 
                 _track("compile", "output", serialize_compile_result_summary(result))
                 # 注意：不在此标记 compile 为 done，因为 struct_compile 和 extract_compiled

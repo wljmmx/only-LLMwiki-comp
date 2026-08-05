@@ -162,7 +162,7 @@ interface PipelineStep {
   status: 'pending' | 'running' | 'done' | 'error' | 'skipped'
   duration_ms?: number | null
   error?: string | null
-  subProgress?: { current: number; total: number; currentEntity: string } | null
+  subProgress?: { current: number; total: number; currentEntity: string; phase?: string } | null
   details?: string | null
   // 每个环节的产出数据
   output?: {
@@ -833,13 +833,22 @@ function startCompile() {
         const percent = data.percent as number | undefined
         const current = data.current as number | undefined
         const total = data.total as number | undefined
+        const phase = data.phase as string | undefined
         // 更新当前运行步骤的 subProgress
         const runningIdx = compileSteps.value.findIndex(s => s.status === 'running')
         if (runningIdx >= 0 && typeof current === 'number') {
-          compileSteps.value[runningIdx].subProgress = {
+          const step = compileSteps.value[runningIdx]
+          step.subProgress = {
             current: current,
             total: total ?? 0,
             currentEntity: data.message as string ?? '',
+            phase: phase ?? '',
+          }
+          // 更新步骤详情显示
+          if (phase === 'entity_compile' && step.name === 'compile') {
+            step.details = `编译实体页面中：${current}/${total}`
+          } else if (step.name === 'compile' && total && total > 0) {
+            step.details = `编译中 ${current}/${total}`
           }
         }
         if (typeof percent === 'number' && percent > 0 && runningIdx >= 0) {
@@ -1479,7 +1488,16 @@ watch(sourceTab, (val) => {
                 v-if="step.status === 'running' && step.subProgress && step.subProgress.total > 0"
               >
                 <span class="primary-text">
-                  {{ step.name === 'struct_compile' ? '章节' : '编译' }}中 {{ step.subProgress.current }}/{{ step.subProgress.total }}
+                  <!-- 根据阶段显示不同的前缀 -->
+                  <template v-if="step.subProgress.phase === 'entity_compile'">
+                    编译实体页面中 {{ step.subProgress.current }}/{{ step.subProgress.total }}
+                  </template>
+                  <template v-else-if="step.name === 'struct_compile'">
+                    章节处理中 {{ step.subProgress.current }}/{{ step.subProgress.total }}
+                  </template>
+                  <template v-else>
+                    {{ step.name === 'compile' ? '编译' : '处理' }}中 {{ step.subProgress.current }}/{{ step.subProgress.total }}
+                  </template>
                   <span v-if="step.subProgress.currentEntity">
                     — {{ step.subProgress.currentEntity }}
                   </span>
