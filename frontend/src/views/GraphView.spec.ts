@@ -11,7 +11,13 @@ const mockMessage = {
 
 vi.mock('naive-ui', async (importOriginal) => {
   const actual = await importOriginal<typeof import('naive-ui')>()
-  return { ...actual, useMessage: () => mockMessage }
+  return {
+    ...actual,
+    useMessage: () => mockMessage,
+    // stub NTabs/NTabPane 避免 naive-ui 严格的父子注入校验在 jsdom 中抛出未处理错误
+    NTabs: { name: 'NTabs', template: '<div class="n-tabs-stub"><slot /></div>' },
+    NTabPane: { name: 'NTabPane', template: '<div class="n-tab-pane-stub"><slot /></div>' },
+  }
 })
 
 // mock @vue-flow 模块（避免实际渲染图、CSS 加载与 d3 依赖）
@@ -37,12 +43,15 @@ vi.mock('@vue-flow/minimap', () => ({
   MiniMap: { name: 'MiniMap', template: '<div class="minimap-mock" />' },
 }))
 
-// mock @/api/graph 模块
+// mock @/api/graph 模块（补全组件实际使用的全部函数，避免 undefined 调用）
 vi.mock('@/api/graph', () => ({
   getGraphVisualize: vi.fn(),
   getGraphStats: vi.fn(),
   searchGraph: vi.fn(),
   getGraphEntity: vi.fn(),
+  getGraphEntityWikiPages: vi.fn().mockResolvedValue({ wiki_pages: [] }),
+  deleteGraphEntity: vi.fn().mockResolvedValue({}),
+  clearGraph: vi.fn().mockResolvedValue({}),
 }))
 
 import {
@@ -322,7 +331,7 @@ describe('GraphView.vue', () => {
     expect(edges[0].animated).toBe(true) // RELATED_TO
     expect(edges[1].animated).toBe(false) // USES
     expect(edges[0].style.stroke).toBe('var(--opskg-relation-related-to)') // RELATED_TO color
-    expect(edges[1].style.stroke).toBe('#18a058') // USES color
+    expect(edges[1].style.stroke).toBe('var(--opskg-relation-uses)') // USES color
   })
 
   it('watch entityTypeFilter 触发 loadGraph（带类型参数）', async () => {

@@ -96,12 +96,12 @@ describe('DocumentsView.vue', () => {
     )
   })
 
-  it('fetchDocuments 失败时 message.error', async () => {
+  it('fetchDocuments 失败时设置 error 状态', async () => {
     ;(listDocuments as any).mockRejectedValue(new Error('network'))
     const wrapper = mountView()
     const vm = wrapper.vm as any
     await vm.fetchDocuments()
-    expect(mockMessage.error).toHaveBeenCalledWith('获取文档列表失败')
+    expect(vm.error).toBe('获取文档列表失败：network')
     expect(vm.loading).toBe(false)
   })
 

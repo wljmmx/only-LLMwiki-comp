@@ -363,7 +363,7 @@ onMounted(() => {
           </NButton>
         </div>
         <WikiHeadingTree
-          :tree="headingTree!.heading_tree"
+          :tree="headingTree?.heading_tree ?? []"
           :loading="headingTreeLoading"
           @select="handleHeadingSelect"
         />
