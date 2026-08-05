@@ -135,13 +135,11 @@ class CompiledKnowledgeExtractor:
             if isinstance(node, dict):
                 title = node.get('title', '')
                 children = node.get('children', [])
-                level = node.get('level', 0)
                 start_idx = node.get('element_start_index')
                 end_idx = node.get('element_end_index')
             else:
                 title = getattr(node, 'title', '')
                 children = getattr(node, 'children', [])
-                level = getattr(node, 'level', 0)
                 start_idx = getattr(node, 'element_start_index', None)
                 end_idx = getattr(node, 'element_end_index', None)
 

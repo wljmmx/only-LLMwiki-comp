@@ -301,7 +301,6 @@ def _parse_llm_response(text: str) -> list[dict]:
         pass
 
     # 尝试从 markdown 代码块中提取
-    json_match = None
     for pattern in [
         r'```json\s*\n?(.*?)\n?```',
         r'```\s*\n?(.*?)\n?```',

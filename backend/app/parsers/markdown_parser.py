@@ -17,8 +17,8 @@ import hashlib
 import re
 
 from app.parsers.base import ElementType, HeadingNode, ParsedDocument, ParsedElement
-from app.parsers.text_cleaner import CleanedDocument, TextCleaner
 from app.parsers.section_reconstructor import ReconstructedDocument, SectionReconstructor
+from app.parsers.text_cleaner import CleanedDocument, TextCleaner
 
 
 class MarkdownParser:

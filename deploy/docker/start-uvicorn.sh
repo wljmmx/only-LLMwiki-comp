@@ -35,7 +35,9 @@ fi
 
 echo "[uvicorn-start] 启动 uvicorn..."
 # 使用环境变量 LOG_LEVEL（默认 info），确保 .env 中的 debug 设置生效
-UVICORN_LOG_LEVEL="${LOG_LEVEL:-info}"
+# 注：uvicorn --log-level 仅接受小写值（critical/error/warning/info/debug/trace），
+# LOG_LEVEL 环境变量可能为大写（如 Dockerfile ENV LOG_LEVEL=INFO），需转小写
+UVICORN_LOG_LEVEL=$(echo "${LOG_LEVEL:-info}" | tr '[:upper:]' '[:lower:]')
 exec /usr/local/bin/python3 -m uvicorn app.main:app \
     --host 127.0.0.1 \
     --port 8000 \
