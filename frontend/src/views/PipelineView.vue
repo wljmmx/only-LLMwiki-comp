@@ -256,11 +256,14 @@ interface EntityProgressItem {
 const extractEntities = ref<EntityProgressItem[]>([])
 // LLM 编译 Wiki 环节的实体进度（step 3）
 const compileEntities = ref<EntityProgressItem[]>([])
+// 结构集成环节的章节进度（step 5）
+const structCompileItems = ref<EntityProgressItem[]>([])
 const compileStepStartTime = ref<number>(0)
 
 // ── 步骤总项数追踪（用于进度条正确计算百分比）──
 const extractTotalItems = ref(0)
 const compileTotalItems = ref(0)
+const structCompileTotalItems = ref(0)
 
 // ── 乱序事件缓存：page_done 先到但实体尚未创建时暂存于此 ──
 // key: 步骤名 + 实体名，value: page_done 事件数据 + 接收时间戳
@@ -302,6 +305,7 @@ const currentCompileEntity = computed(() => {
 function getStepEntityList(step: typeof compileSteps.value[0]): EntityProgressItem[] {
   if (step.name === 'extract') return extractEntities.value
   if (step.name === 'compile') return compileEntities.value
+  if (step.name === 'struct_compile') return structCompileItems.value
   return []
 }
 
@@ -312,6 +316,9 @@ function getStepTotalItems(step: typeof compileSteps.value[0]): number {
   }
   if (step.name === 'compile') {
     return compileTotalItems.value || compileEntities.value.length
+  }
+  if (step.name === 'struct_compile') {
+    return structCompileTotalItems.value || structCompileItems.value.length
   }
   return 0
 }
@@ -456,6 +463,13 @@ function startCompile() {
             compileSteps.value[idx].details = '正在连接 LLM 服务，准备编译 Wiki 页面...'
             for (const k of pendingDoneMap.value.keys()) {
               if (k.startsWith('compile:')) pendingDoneMap.value.delete(k)
+            }
+          } else if (step === 'struct_compile') {
+            structCompileItems.value = []
+            structCompileTotalItems.value = 0
+            compileSteps.value[idx].details = '准备结构集成...'
+            for (const k of pendingDoneMap.value.keys()) {
+              if (k.startsWith('struct_compile:')) pendingDoneMap.value.delete(k)
             }
           }
         }
@@ -765,7 +779,8 @@ function startCompile() {
         // ── 按步骤路由更新 ──
         const targetList: EntityProgressItem[] | null =
           stepName === 'extract' ? extractEntities.value :
-          stepName === 'compile' ? compileEntities.value : null
+          stepName === 'compile' ? compileEntities.value :
+          stepName === 'struct_compile' ? structCompileItems.value : null
 
         const itemName = data.entity || data.section
         if (targetList && itemName) {
@@ -810,11 +825,33 @@ function startCompile() {
             // 清理可能存在的 pending
             pendingDoneMap.value.delete(pendingKey)
           } else {
-            // 找不到实体：page_done 先到，存入乱序缓存，等 page_start 到了再应用
-            pendingDoneMap.value.set(pendingKey, {
-              data,
-              receivedAt: Date.now(),
-            })
+            // 找不到实体：对于 struct_compile 步骤，动态添加新条目
+            if (stepName === 'struct_compile') {
+              const nowMs = Date.now()
+              const newItem: EntityProgressItem = {
+                name: itemName,
+                status: data.status === 'error' ? 'error' : 'done',
+                started_at: nowMs,
+                done_at: nowMs,
+                processing_time_ms: data.processing_time_ms || 0,
+                extra: {
+                  action: data.action,
+                  matched_existing: data.matched_existing,
+                  slug: data.slug,
+                },
+              }
+              targetList.push(newItem)
+              // 更新总项数
+              if (structCompileTotalItems.value === 0 && data.total) {
+                structCompileTotalItems.value = data.total
+              }
+            } else {
+              // 其他步骤：存入乱序缓存，等 page_start 到了再应用
+              pendingDoneMap.value.set(pendingKey, {
+                data,
+                receivedAt: Date.now(),
+              })
+            }
           }
         }
 
@@ -827,6 +864,10 @@ function startCompile() {
           const done = targetList.filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length
           const total = targetList.length
           runningStep.details = `抽取进度：${done}/${total} 个实体完成`
+        } else if (stepName === 'struct_compile' && targetList) {
+          const done = targetList.filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length
+          const total = targetList.length
+          runningStep.details = `结构集成进度：${done}/${total} 个页面完成`
         }
       } else if (evt.type === 'progress') {
         const data = evt.data
@@ -1504,8 +1545,8 @@ watch(sourceTab, (val) => {
                 </span>
               </template>
 
-              <!-- ── 实体/章节进度卡片（知识抽取 + LLM 编译 Wiki 通用） ── -->
-              <template v-if="(step.name === 'extract' && extractEntities.length > 0) || (step.name === 'compile' && compileEntities.length > 0)">
+              <!-- ── 实体/章节进度卡片（知识抽取 + LLM 编译 Wiki + 结构集成 通用） ── -->
+              <template v-if="(step.name === 'extract' && extractEntities.length > 0) || (step.name === 'compile' && compileEntities.length > 0) || (step.name === 'struct_compile' && structCompileItems.length > 0)">
                 <div class="compile-entities-panel">
                   <!-- 进度条 -->
                   <div class="compile-entities-progress">
@@ -1518,7 +1559,7 @@ watch(sourceTab, (val) => {
                       :color="getStepEntityList(step).some(e => e.status === 'error') ? '#f0a020' : '#18a058'"
                     />
                     <span class="meta-text" style="font-size: 11px; margin-top: 2px">
-                      {{ getStepEntityList(step).filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length }}/{{ getStepTotalItems(step) }} {{ step.name === 'extract' ? '个实体' : '个页面' }}
+                      {{ getStepEntityList(step).filter(e => e.status === 'done' || e.status === 'error' || e.status === 'skipped').length }}/{{ getStepTotalItems(step) }} {{ step.name === 'extract' ? '个实体' : (step.name === 'struct_compile' ? '个页面' : '个页面') }}
                     </span>
                   </div>
                   <!-- 实体/章节列表 -->
@@ -1564,6 +1605,13 @@ watch(sourceTab, (val) => {
                       </span>
                       <span v-if="item.extra?.entity_type" class="entity-type-tag">
                         {{ item.extra.entity_type }}
+                      </span>
+                      <!-- 结构集成环节：操作类型标签 -->
+                      <span v-if="item.extra?.action && step.name === 'struct_compile'" class="entity-type-tag" :class="`action-${item.extra.action}`">
+                        {{ item.extra.action === 'created' ? '新增' : item.extra.action === 'merged' ? '合并' : item.extra.action === 'updated' ? '更新' : '不变' }}
+                      </span>
+                      <span v-if="item.extra?.matched_existing && step.name === 'struct_compile'" class="entity-extra meta-text" :title="`匹配到已有页面: ${item.extra.matched_existing}`">
+                        → {{ item.extra.matched_existing }}
                       </span>
                       <!-- 耗时 -->
                       <span v-if="(item.status === 'done' || item.status === 'error' || item.status === 'skipped') && getEntityDoneTime(item)" class="entity-time meta-text">
