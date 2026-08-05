@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from typing import Any
 
 import structlog
 
@@ -277,7 +278,7 @@ class KnowledgeExtractor:
 
         # 记录处理路径：LLM 主路径还是 fallback
         processing_path = "llm"
-        
+
         if llm_error:
             if on_progress:
                 try:
@@ -675,7 +676,7 @@ class KnowledgeExtractor:
                     })
                 except Exception:
                     pass
-            
+
             resp = await asyncio.wait_for(
                 self.llm.chat(
                     messages=[
@@ -688,7 +689,7 @@ class KnowledgeExtractor:
                 timeout=call_timeout,
             )
             data = self._parse_json(resp.text)
-            
+
             if not isinstance(data, list):
                 logger.warning("entity_name_clean_invalid_response", response_type=type(data).__name__)
                 # LLM 返回无效格式，使用规则清理兜底
@@ -722,7 +723,7 @@ class KnowledgeExtractor:
                 used_llm=True,
             )
             return entities, True
-            
+
         except asyncio.TimeoutError:
             logger.warning("entity_name_clean_timeout", timeout=call_timeout)
             if on_progress:

@@ -12,17 +12,14 @@ from __future__ import annotations
 import asyncio
 import json
 
-import pytest
-
 from app.parsers.paragraph_classifier import (
+    KEYWORD_CLASSIFIERS,
     ClassifiedParagraph,
     _parse_llm_response,
+    classify_paragraphs_with_llm,
     keyword_classify,
     to_cleaned_dict,
-    classify_paragraphs_with_llm,
-    KEYWORD_CLASSIFIERS,
 )
-
 
 # ═══════════════ 关键词分类 ═══════════════
 

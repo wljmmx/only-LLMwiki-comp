@@ -380,6 +380,7 @@ async def wiki_heading_tree(slug: str) -> dict:
             meta = store.get(source_doc_id)
             if meta:
                 fmt = meta.get("format", "markdown")
+                from app.parsers.registry import get_parser
                 parser = get_parser(fmt)
                 doc = parser.parse(meta.get("stored_path", ""), source_doc_id)
                 heading_tree = doc.get_heading_tree_dict()

@@ -24,7 +24,6 @@ from app.realtime.graph_wiki_sync import (
     _to_kebab,
 )
 
-
 # ────────── _to_kebab ──────────
 
 

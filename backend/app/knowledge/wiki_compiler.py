@@ -45,7 +45,6 @@ from app.knowledge.pipeline_helpers import (
 )
 from app.knowledge.wiki_compiler_types import (
     _MAX_LLM_RETRIES,
-    _QUALITY_REVIEW_THRESHOLD,
     _REQUIRED_SECTIONS,
     _RETRY_BASE_DELAY,
     _TEMPLATE_PLACEHOLDER_RE,
@@ -1271,7 +1270,6 @@ class WikiCompiler:
                 _update_step("struct_compile", "running")
 
                 try:
-                    struct_result = WikiCompileResult(doc_id=doc.doc_id)
                     integration_report = await self._integrate_pages_into_wiki(
                         new_slugs=list(result.slugs),
                         source_entry=source_entry,
@@ -2113,7 +2111,6 @@ H{level}
 
         # 根据段落类型选择模板
         if para_type in ('heading', 'header'):
-            level = 2
             return f"## {para_content}\n\n> 本节内容待 LLM 增强\n\n<!-- LLM fallback: heading -->"
 
         if '步骤' in para_content or '步骤' in para_section:
@@ -2217,7 +2214,6 @@ H{level}
 
             if matched_existing is None:
                 # 新增分支节点：已有目录不存在此页面
-                action = "created"
                 report["pages_created"] += 1
                 action_detail["action"] = "created"
                 action_detail["note"] = "新增分支节点"
@@ -2237,7 +2233,6 @@ H{level}
 
                 if similarity >= 0.85:
                     # 高度相似 → 更新（补充/修改）
-                    action = "updated"
                     report["pages_updated"] += 1
                     action_detail["action"] = "updated"
                     action_detail["note"] = f"更新已有节点（相似度 {similarity:.0%}）"
@@ -2252,7 +2247,6 @@ H{level}
 
                 else:
                     # 中度相似 → 合并（融合内容）
-                    action = "merged"
                     report["pages_merged"] += 1
                     action_detail["action"] = "merged"
                     action_detail["note"] = f"合并到已有节点（相似度 {similarity:.0%}）"
@@ -2555,7 +2549,7 @@ H{level}
                 new_authoritative=new_authoritative,
             )
 
-        except Exception as e:
+        except Exception:
             logger.exception("wiki_page_merge_failed", slug=existing_slug)
 
     def _compute_authority_score(self, page: WikiPage) -> float:
@@ -2589,7 +2583,8 @@ H{level}
             latest = self.vc.get_latest(_key_from_slug(page.slug))
             if latest and latest.get("updated_at"):
                 # 解析时间戳，计算距今的小时数，24h内=1.0，7天=0.5，30天=0.2
-                from datetime import datetime, timezone as _tz
+                from datetime import datetime
+                from datetime import timezone as _tz
                 updated_str = latest["updated_at"]
                 # 兼容多种时间格式
                 try:
@@ -2623,9 +2618,6 @@ H{level}
 
     def _merge_content_update(self, existing: str, new: str) -> str:
         """补充模式：将新内容中已有页面不存在的段落追加进去"""
-        existing_paragraphs = [
-            p.strip() for p in existing.split("\n\n") if p.strip()
-        ]
         new_paragraphs = [
             p.strip() for p in new.split("\n\n") if p.strip()
         ]
