@@ -212,6 +212,12 @@ class SectionReconstructor:
         """
         stripped = para.strip()
 
+        # 代码块围栏（``` 开头）不应作为章节起始，
+        # 否则闭合围栏会被误判为章节标题，导致代码块结构破坏
+        # （_parse_markdown 会将后续列表/表格吞入未闭合的代码块）
+        if stripped.startswith('```'):
+            return False, 0
+
         # 规则 1: 显式标题标记（# 开头）
         if re.match(r'^#{1,6}\s', stripped):
             m = re.match(r'^(#{1,6})\s', stripped)
@@ -491,17 +497,21 @@ class SectionReconstructor:
 
         关键：直接追加 section.content（段落间已用 \\n\\n 分隔），
         保持段落完整性，避免 _parse_markdown 因额外空行断行膨胀。
+        当 content 已以标题开头时，不再重复添加标题行（避免标题重复）。
         """
         lines: list[str] = []
 
         for section in sections:
-            # 添加章节标题
-            prefix = '#' * section.level
-            lines.append(f'{prefix} {section.title}')
-            lines.append('')
+            content_stripped = section.content.lstrip()
+            # 内容已以标题开头时（# 标题或编号标题），不再重复添加标题行
+            if content_stripped and not re.match(
+                r'^(#{1,6}\s|\d+(?:\.\d+)*\.\s+\S)', content_stripped,
+            ):
+                prefix = '#' * section.level
+                lines.append(f'{prefix} {section.title}')
+                lines.append('')
 
             # 直接追加 content（已排除标题段落，段落用 \n\n 分隔）
             lines.append(section.content)
-            lines.append('')
 
         return '\n'.join(lines)

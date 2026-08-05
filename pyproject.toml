@@ -50,3 +50,8 @@ known-first-party = ["app"]
 # 与现有代码风格一致（双引号、空格缩进）
 quote-style = "double"
 indent-style = "space"
+
+# pytest 配置 — pytest-asyncio 自动模式
+# 详见 https://docs.pytest.org/en/stable/reference/customize.html
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

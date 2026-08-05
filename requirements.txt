@@ -306,6 +306,8 @@ pypdfium2==5.11.0
     #   unstructured-client
 pytest==9.1.1
     # via -r requirements.in
+pytest-asyncio==1.4.0
+    # via -r requirements.in
 python-dateutil==2.9.0.post0
     # via pandas
 python-dotenv==1.2.2
