@@ -176,6 +176,17 @@ async def llm_wiki_ingest(file: UploadFile = File(...)) -> dict:
             "index_rebuilt": result.index_rebuilt,
             "errors": result.errors,
         },
+        # 步骤 5: 结构集成详情
+        "struct_compile": result.struct_compile_report if result.struct_compile_report else {
+            "executed": False,
+            "message": "结构集成未执行（可能无已有 Wiki 目录或无新页面需要集成）",
+        },
+        # 步骤 6: 编译后实体抽取详情
+        "extract_compiled": {
+            "executed": result.compiled_entities_count > 0,
+            "entities_count": result.compiled_entities_count,
+            "entities": result.compiled_entities[:50],
+        },
     }
 
 
@@ -196,6 +207,17 @@ async def llm_wiki_recompile(doc_id: str, force: bool = True) -> dict:
         "stale_marked": result.stale_marked,
         "errors": result.errors,
         "index_rebuilt": result.index_rebuilt,
+        # 步骤 5: 结构集成详情
+        "struct_compile": result.struct_compile_report if result.struct_compile_report else {
+            "executed": False,
+            "message": "结构集成未执行",
+        },
+        # 步骤 6: 编译后实体抽取详情
+        "extract_compiled": {
+            "executed": result.compiled_entities_count > 0,
+            "entities_count": result.compiled_entities_count,
+            "entities": result.compiled_entities[:50],
+        },
     }
 
 
@@ -449,6 +471,12 @@ async def llm_wiki_recompile_stream(
                         "errors": result.errors,
                         "index_rebuilt": result.index_rebuilt,
                         "graph_compiled": result.graph_compiled,
+                        "struct_compile": result.struct_compile_report if result.struct_compile_report else {},
+                        "extract_compiled": {
+                            "executed": result.compiled_entities_count > 0,
+                            "entities_count": result.compiled_entities_count,
+                            "entities": result.compiled_entities[:50],
+                        },
                         "pipeline_trace": pt_data,
                     })
                     break
@@ -564,6 +592,17 @@ async def llm_wiki_ingest_all(
             "index_rebuilt": result.index_rebuilt,
             "graph_compiled": result.graph_compiled,
             "errors": result.errors,
+        },
+        # 步骤 5: 结构集成详情
+        "struct_compile": result.struct_compile_report if result.struct_compile_report else {
+            "executed": False,
+            "message": "结构集成未执行（可能无已有 Wiki 目录或无新页面需要集成）",
+        },
+        # 步骤 6: 编译后实体抽取详情
+        "extract_compiled": {
+            "executed": result.compiled_entities_count > 0,
+            "entities_count": result.compiled_entities_count,
+            "entities": result.compiled_entities[:50],
         },
     }
 

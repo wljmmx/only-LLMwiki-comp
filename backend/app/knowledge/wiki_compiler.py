@@ -1292,6 +1292,8 @@ class WikiCompiler:
                     # 记录结构集成事件
                     _track("struct_compile", "output", integration_report)
                     _update_step("struct_compile", "done")
+                    # 保存结构集成报告到 result，供 API 响应暴露
+                    result.struct_compile_report = integration_report
 
                     _emit(ProgressEventType.STEP_DONE, {
                         "step": "struct_compile",
@@ -1337,6 +1339,12 @@ class WikiCompiler:
                                 if ce.name not in existing_entity_names:
                                     result.entities.append(ce)
                                     new_count += 1
+                            # 保存到 result，供 API 响应暴露
+                            result.compiled_entities = [
+                                {"name": e.name, "type": e.entity_type, "confidence": e.confidence}
+                                for e in compiled_entities
+                            ]
+                            result.compiled_entities_count = len(compiled_entities)
                             _track("extract_compiled", "output", {
                                 "entities": len(compiled_entities),
                                 "new_entities": new_count,

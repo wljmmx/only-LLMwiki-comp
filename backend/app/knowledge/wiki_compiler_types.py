@@ -120,6 +120,11 @@ class WikiCompileResult:
     paragraph_count: int = 0
     # Pipeline trace: 章节级管道追踪
     pipeline_trace: PipelineTrace | None = None
+    # 步骤 5: 结构集成报告
+    struct_compile_report: dict | None = None
+    # 步骤 6: 编译后实体抽取结果
+    compiled_entities: list = field(default_factory=list)
+    compiled_entities_count: int = 0
 
 
 @dataclass
