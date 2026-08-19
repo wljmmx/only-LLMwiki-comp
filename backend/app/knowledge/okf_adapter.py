@@ -88,8 +88,9 @@ class OKFConcept:
 
     @property
     def concept_id(self) -> str:
-        """OKF concept ID = 文件路径去 .md 后缀"""
-        return self.rel_path[:-3] if self.rel_path.endswith(".md") else self.rel_path
+        """OKF concept ID = 文件路径去 .md 后缀（统一正斜杠）"""
+        path = self.rel_path.replace("\\", "/")
+        return path[:-3] if path.endswith(".md") else path
 
     @property
     def type(self) -> str:
@@ -754,7 +755,7 @@ def list_bundle_concepts(bundle_dir: Path | str) -> list[OKFConcept]:
         try:
             content = f.read_text(encoding="utf-8")
             meta, body = _split_frontmatter(content)
-            rel = str(f.relative_to(bundle_dir))
+            rel = str(f.relative_to(bundle_dir)).replace("\\", "/")
             concepts.append(
                 OKFConcept(rel_path=rel, frontmatter=meta, body=body)
             )

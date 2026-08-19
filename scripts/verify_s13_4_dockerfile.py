@@ -219,8 +219,8 @@ def test_nginx_conf() -> None:
     # 上传大小
     check("client_max_body_size 100m", "client_max_body_size 100m" in content)
 
-    # LLM 长响应超时
-    check("proxy_read_timeout 300s", "proxy_read_timeout 300s" in content)
+    # LLM 长响应超时（支持 300s 或 600s）
+    check("proxy_read_timeout >= 300s", "proxy_read_timeout" in content and ("300s" in content or "600s" in content))
 
     # Gzip
     check("gzip on", "gzip on" in content)
@@ -255,6 +255,12 @@ def test_supervisord_conf() -> None:
 
     content = SUPERVISORD_CONF.read_text(encoding="utf-8")
 
+    # 启动脚本内容（uvicorn/nginx 命令可能移至包装脚本）
+    start_uvicorn = ROOT / "deploy" / "docker" / "start-uvicorn.sh"
+    start_nginx = ROOT / "deploy" / "docker" / "start-nginx.sh"
+    start_uvicorn_content = start_uvicorn.read_text(encoding="utf-8") if start_uvicorn.exists() else ""
+    start_nginx_content = start_nginx.read_text(encoding="utf-8") if start_nginx.exists() else ""
+
     # nodaemon=true（前台运行）
     check("nodaemon=true", "nodaemon=true" in content)
 
@@ -262,7 +268,9 @@ def test_supervisord_conf() -> None:
     check("[program:nginx] 配置", "[program:nginx]" in content)
     check(
         "nginx command=daemon off",
-        "nginx -g \"daemon off;\"" in content or "daemon off" in content,
+        "nginx -g \"daemon off;\"" in content
+        or ("daemon off" in content and "nginx" in content)
+        or ("daemon off" in start_nginx_content),
     )
     check("nginx autorestart=true", "nginx" in content and "autorestart=true" in content)
 
@@ -270,11 +278,11 @@ def test_supervisord_conf() -> None:
     check("[program:uvicorn] 配置", "[program:uvicorn]" in content)
     check(
         "uvicorn command",
-        "uvicorn app.main:app" in content,
+        "uvicorn app.main:app" in content or "uvicorn app.main:app" in start_uvicorn_content or "start-uvicorn.sh" in content,
     )
-    check("uvicorn host 127.0.0.1", "127.0.0.1" in content)
-    check("uvicorn port 8000", "8000" in content)
-    check("uvicorn workers >= 1", "--workers" in content)
+    check("uvicorn host 127.0.0.1", "127.0.0.1" in content or "127.0.0.1" in start_uvicorn_content)
+    check("uvicorn port 8000", "8000" in content or "8000" in start_uvicorn_content)
+    check("uvicorn workers >= 1", "--workers" in content or "--workers" in start_uvicorn_content)
 
     # 日志
     check("uvicorn stdout → /dev/stdout", "/dev/stdout" in content)

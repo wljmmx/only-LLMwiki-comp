@@ -291,8 +291,8 @@ class VersionControl:
                    GROUP BY doc_key
                ) latest ON dv.doc_key = latest.doc_key AND dv.version = latest.max_v
                WHERE dv.doc_key LIKE ?
-               ORDER BY dv.created_at DESC
-               LIMIT ?""",
+                ORDER BY dv.created_at DESC, dv.doc_key DESC
+                LIMIT ?""",
             (f"{prefix}%", f"{prefix}%", limit),
         ).fetchall()
         return [dict(r) for r in rows]

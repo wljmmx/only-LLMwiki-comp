@@ -418,7 +418,7 @@ class DocumentStore:
         """获取文档最近的流水线执行记录"""
         conn = _get_db()
         row = conn.execute(
-            "SELECT * FROM pipeline_runs WHERE doc_id=? ORDER BY created_at DESC LIMIT 1",
+            "SELECT * FROM pipeline_runs WHERE doc_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
             (doc_id,),
         ).fetchone()
         if not row:

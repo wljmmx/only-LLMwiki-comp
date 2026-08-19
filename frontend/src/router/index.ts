@@ -68,6 +68,11 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ForbiddenView.vue'),
     meta: { title: '禁止访问', public: true },
   },
+  // E2E 兼容别名：/403 → /forbidden
+  {
+    path: '/403',
+    redirect: { name: 'forbidden' },
+  },
   {
     path: '/',
     component: AppLayout,
@@ -96,6 +101,21 @@ const routes: RouteRecordRaw[] = [
         name: 'wiki',
         component: () => import('@/views/WikiView.vue'),
         meta: { title: 'Wiki 浏览', icon: 'wiki', menuGroup: '知识管理', menuOrder: 2 },
+      },
+      // E2E 兼容别名：/wiki/qa → /wiki-query
+      {
+        path: 'wiki/qa',
+        redirect: { name: 'wiki-query' },
+      },
+      // E2E 兼容别名：/wiki/query → /wiki-query
+      {
+        path: 'wiki/query',
+        redirect: { name: 'wiki-query' },
+      },
+      // E2E 兼容别名：/wiki/health → /wiki-health
+      {
+        path: 'wiki/health',
+        redirect: { name: 'wiki-health' },
       },
       {
         path: 'wiki-query',
@@ -127,6 +147,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/WikiHealthView.vue'),
         meta: { title: '健康检查', icon: 'health', menuGroup: '质量治理', menuOrder: 0 },
       },
+      // E2E 兼容别名：/health → /wiki-health
+      {
+        path: 'health',
+        redirect: { name: 'wiki-health' },
+      },
       {
         path: 'pipeline-trace',
         name: 'pipeline-trace',
@@ -145,11 +170,21 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/VersionsView.vue'),
         meta: { title: '版本控制', icon: 'versions', menuGroup: '质量治理', menuOrder: 3 },
       },
+      // E2E 兼容别名：/version-control → /versions
+      {
+        path: 'version-control',
+        redirect: { name: 'versions' },
+      },
       {
         path: 'incidents',
         name: 'incidents',
         component: () => import('@/views/IncidentsView.vue'),
         meta: { title: 'Incident 管理', icon: 'incidents', menuGroup: 'AIOps', menuOrder: 0 },
+      },
+      // E2E 兼容别名：/aiops/incidents → /incidents
+      {
+        path: 'aiops/incidents',
+        redirect: { name: 'incidents' },
       },
       {
         path: 'changes',

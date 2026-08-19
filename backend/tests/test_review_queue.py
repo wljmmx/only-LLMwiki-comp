@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import os
 import sys
-import tempfile
-from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import sqlite3
 
 import pytest
 
@@ -21,21 +21,23 @@ from app.knowledge import review_queue as rq_module
 
 
 @pytest.fixture
-def temp_db():
-    """使用临时 DB 文件，避免污染开发环境"""
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        tmp_path = Path(f.name)
-    original = rq_module.DB_PATH
-    rq_module.DB_PATH = tmp_path
-    # Reset singleton
+def temp_db(monkeypatch):
+    """使用内存 SQLite 数据库，避免文件权限问题（Windows 兼容）"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    rq_module._init_schema(conn)
     rq_module._queue = None
+
+    def _patched_get_db():
+        return conn
+
+    monkeypatch.setattr(rq_module, "_get_db", _patched_get_db)
+
     try:
-        yield tmp_path
+        yield conn
     finally:
-        rq_module.DB_PATH = original
         rq_module._queue = None
-        if tmp_path.exists():
-            tmp_path.unlink()
+        conn.close()
 
 
 @pytest.fixture

@@ -32,6 +32,22 @@ router = APIRouter()
 # ────────── HTTP 状态查询 ──────────
 
 
+@router.get("/realtime/status")
+async def realtime_status() -> dict:
+    """全局实时协作状态摘要（E2E 兼容端点）
+
+    返回在线房间数和总连接数，供前端 / E2E 测试探测协作服务是否可用。
+    """
+    hub = get_collab_hub()
+    rooms = hub.list_rooms()
+    total_conns = sum(r.get("online_count", 0) for r in rooms)
+    return {
+        "status": "ok",
+        "rooms": len(rooms),
+        "connections": total_conns,
+    }
+
+
 @router.get("/realtime/rooms")
 async def list_rooms() -> dict:
     """列出所有协作房间状态（监控 / 调试用）"""
@@ -48,6 +64,12 @@ async def get_room(slug: str) -> dict:
     if not state:
         raise HTTPException(404, f"房间不存在或无人在线: {slug}")
     return state
+
+
+@router.get("/realtime/room/{slug}/state")
+async def get_room_state_compat(slug: str) -> dict:
+    """兼容 E2E 测试的房间状态端点（单数路径别名）"""
+    return await get_room(slug)
 
 
 # ────────── HTTP 历史事件查询（S16-6） ──────────
