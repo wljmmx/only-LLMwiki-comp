@@ -1,8 +1,27 @@
+---
+AIGC:
+  ContentProducer: '001191110102MAD55U9H0F10002'
+  ContentPropagator: '001191110102MAD55U9H0F10002'
+  Label: '1'
+  ProduceID: '9aca6aa6-8a58-49ca-9258-ac37689b98f9'
+  PropagateID: '9aca6aa6-8a58-49ca-9258-ac37689b98f9'
+  ReservedCode1: '48dc21ab-d259-4c62-b0c0-3bd0f9f2921f'
+  ReservedCode2: '48dc21ab-d259-4c62-b0c0-3bd0f9f2921f'
+---
+
 # OpsKG Changelog
 
 本文件记录 OpsKG 所有用户可见的 API 变更、功能更新和破坏性改动。
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+
+---
+
+## [Unreleased]
+
+### 文档一致性修正（ENG-6）
+- README.md：测试数字更新为实际值（pytest 61 → 1428 用例，Vitest 742/49 → 838/53 用例/文件，verify 470 验证点 → 40 个脚本）
+- docs/路线图实现偏差核对与下一步演进计划.md：将 SEC-1~6、PROD-1~6、AGENT-1~6、KNOW-15~18、SAML/LDAP 的状态从"❌ 待实施"修正为"✅ 已完成"（2026-09-03 代码核实）
 
 ---
 

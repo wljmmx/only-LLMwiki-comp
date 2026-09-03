@@ -1,3 +1,14 @@
+---
+AIGC:
+  ContentProducer: '001191110102MAD55U9H0F10002'
+  ContentPropagator: '001191110102MAD55U9H0F10002'
+  Label: '1'
+  ProduceID: '0de3ec4e-9eb4-49ac-bc66-224c4f8fa59c'
+  PropagateID: '0de3ec4e-9eb4-49ac-bc66-224c4f8fa59c'
+  ReservedCode1: '460dcf7b-9532-4c6a-95f5-6621e716df44'
+  ReservedCode2: '460dcf7b-9532-4c6a-95f5-6621e716df44'
+---
+
 # OpsKG — LLM 驱动的运维知识图谱
 
 > 基于 Karpathy LLM Wiki 范式的运维知识管理系统：把 raw 文档编译为结构化 Markdown Wiki，建立双向链接，维护知识网络健康。
@@ -58,7 +69,7 @@ docker run -d --name opskg \
 | 存储 | SQLite（WAL）+ Neo4j 5（知识图谱）|
 | LLM | DeepSeek / Ollama / vLLM（OpenAI 兼容协议）|
 | 可观测性 | Prometheus + OpenTelemetry（OTLP）|
-| 测试 | pytest（61 用例）+ Vitest（742 用例 / 49 文件）+ 40 个 verify 脚本（470 验证点）|
+| 测试 | pytest（1428 用例）+ Vitest（838 用例 / 53 文件）+ 40 个 verify 脚本 |
 
 ## 快速开始
 
@@ -141,7 +152,7 @@ curl http://localhost:8080/health          # OpsKG 健康检查
 │   │   ├── observability/         # Prometheus 指标 + OpenTelemetry 追踪
 │   │   ├── webhooks/              # 事件分发（HMAC 签名 + 指数退避重试）
 │   │   └── ha/                    # 高可用（liveness/readiness 探针）
-│   ├── tests/                     # pytest 61 用例
+│   ├── tests/                     # pytest 1428 用例
 │   └── data/                      # SQLite 数据库 + uploads
 ├── frontend/
 │   ├── src/
@@ -151,7 +162,7 @@ curl http://localhost:8080/health          # OpsKG 健康检查
 │   │   └── components/            # 布局 + 错误边界 + 引导
 │   └── package.json
 ├── scripts/
-│   ├── verify_*.py                # 40 个验证脚本（470 验证点）
+│   ├── verify_*.py                # 40 个验证脚本
 │   ├── backup.sh / restore.sh     # 备份恢复
 │   └── smoke_*.py                 # 端到端冒烟测试
 ├── docs/                          # 审计报告 + 演进路线 + 设计文档
@@ -215,11 +226,11 @@ curl http://localhost:8080/health          # OpsKG 健康检查
 
 ```bash
 # 后端
-cd backend && python -m pytest tests/                    # 61 用例
-cd .. && python scripts/verify_*.py                       # 470 验证点
+cd backend && python -m pytest tests/                    # 1428 用例
+cd .. && python scripts/verify_*.py                       # 40 个验证脚本
 
 # 前端
-cd frontend && npm test                                    # 742 用例
+cd frontend && npm test                                    # 838 用例
 cd frontend && npm run typecheck                           # vue-tsc 0 错误
 cd frontend && npm run build                               # 生产构建
 
