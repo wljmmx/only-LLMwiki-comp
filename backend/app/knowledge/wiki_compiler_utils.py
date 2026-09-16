@@ -16,7 +16,8 @@ _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 # ────────── 命名约定（AGENTS.md §五）──────────
 
-_SLUG_SAFE_RE = re.compile(r"[^a-zA-Z0-9\-_]")
+# 保留 CJK 字符（\u4e00-\u9fff）使中文标题生成可读 slug
+_SLUG_SAFE_RE = re.compile(r"[^a-zA-Z0-9\u4e00-\u9fff\-_]")
 
 
 # ────────── M1: 相似度检测工具函数 ──────────

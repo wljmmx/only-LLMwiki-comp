@@ -1291,18 +1291,10 @@ async def llm_wiki_maintenance_overview() -> dict:
     - review_needed_count: 标记为 review_needed 的页面数
     - by_type: 按类型分组的页面数
     """
-    from app.storage.version_control import get_version_control
-    vc = get_version_control()
+    # 列出所有 wiki 页面（使用 list_wiki_pages 获取含 frontmatter 解析的完整信息）
+    content_pages = list_wiki_pages(limit=2000)
 
-    # 列出所有 wiki 页面
-    all_pages = vc.list_by_prefix("wiki:", limit=2000)
-    # 排除保留页面 index/log
-    content_pages = [
-        p for p in all_pages
-        if p["doc_key"] not in ("wiki:index", "wiki:log")
-    ]
-
-    all_slugs = {p["doc_key"].removeprefix("wiki:") for p in content_pages}
+    all_slugs = {p["slug"] for p in content_pages}
 
     # 孤岛页面（无入链）
     orphan_slugs = get_orphan_slugs(all_slugs - {"index"})
@@ -1313,15 +1305,14 @@ async def llm_wiki_maintenance_overview() -> dict:
     # stale 页面
     stale_pages = list_stale_pages()
 
-    # 按类型分组
+    # 按类型分组（从 frontmatter type 字段统计）
     by_type: dict[str, int] = {}
     review_needed_count = 0
     for p in content_pages:
-        # 解析 frontmatter 中的 type 与 review_status
-        meta, _ = _split_frontmatter(p.get("title", "") or "")
-        # 注：vc.list_by_prefix 返回的 title 字段不含完整 frontmatter
-        # 这里简化处理，仅按 doc_key 计数
-        by_type["_unknown"] = by_type.get("_unknown", 0) + 1
+        page_type = p.get("type", "concept")
+        by_type[page_type] = by_type.get(page_type, 0) + 1
+        if p.get("review_status") == "review_needed":
+            review_needed_count += 1
 
     return {
         "total_pages": len(content_pages),

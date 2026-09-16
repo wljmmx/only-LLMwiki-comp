@@ -191,7 +191,7 @@ def okf_link_to_wikilink(md: str) -> str:
     """
     # 匹配 bundle-relative 链接：[display](/{dir}/{slug}.md)
     pattern = re.compile(
-        r"\[([^\]]+)\]\(/([a-zA-Z0-9_\-]+)\/([a-zA-Z0-9_\-]+)\.md\)"
+        r"\[([^\]]+)\]\(/([a-zA-Z0-9\u4e00-\u9fff_\-]+)\/([a-zA-Z0-9\u4e00-\u9fff_\-]+)\.md\)"
     )
 
     def replace(m: re.Match) -> str:

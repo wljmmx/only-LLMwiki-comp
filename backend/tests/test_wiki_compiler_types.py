@@ -274,14 +274,48 @@ class TestSlugify:
         assert slugify("Hello, World!") == "hello-world"
 
     def test_slugify_chinese(self):
-        """纯中文被 strip 后返回 unnamed（_SLUG_SAFE_RE 仅保留 ASCII）"""
+        """纯中文保留 CJK 字符生成可读 slug（支持中文文档）"""
         result = slugify("故障排查")
-        assert result == "unnamed"
+        assert result == "故障排查"
+
+    def test_slugify_mixed_cn_en(self):
+        """中英混合标题生成可读 slug"""
+        assert slugify("Nginx 故障排查") == "nginx-故障排查"
+        assert slugify("OSPF 协议详解") == "ospf-协议详解"
+
+    def test_slugify_chinese_with_punctuation(self):
+        """中文含标点：标点被移除，中文保留"""
+        assert slugify("路由优先级（高优先）") == "路由优先级高优先"
+        assert slugify("1.2 子网掩码") == "12-子网掩码"
 
     def test_slugify_empty(self):
         """空字符串返回 unnamed"""
         assert slugify("") == "unnamed"
         assert slugify("   ") == "unnamed"
+
+    def test_wikilink_re_matches_chinese_slug(self):
+        """WIKILINK_RE 能正确匹配中文 slug 的 [[wikilink]]"""
+        from app.knowledge.wikilink import WIKILINK_RE
+
+        # 纯中文 slug
+        m = WIKILINK_RE.search("参见 [[故障排查]] 了解详情")
+        assert m is not None
+        assert m.group(1) == "故障排查"
+
+        # 中文 slug 带显示文本
+        m = WIKILINK_RE.search("参见 [[故障排查|故障处理流程]]")
+        assert m is not None
+        assert m.group(1) == "故障排查"
+        assert m.group(2) == "故障处理流程"
+
+        # 中英混合 slug
+        m = WIKILINK_RE.search("[[nginx-故障排查]]")
+        assert m is not None
+        assert m.group(1) == "nginx-故障排查"
+
+        # # 锚点不匹配
+        m = WIKILINK_RE.search("[[#附录]]")
+        assert m is None
 
 
 class TestMakeSlug:
@@ -311,6 +345,7 @@ class TestMakeSlug:
         slug = make_slug("Incident", "Nginx 故障排查")
         # 名称含 "故障" 不追加
         assert "troubleshoot" not in slug
+        assert slug == "nginx-故障排查"
 
     def test_make_slug_runbook(self):
         """Procedure 类型 → runbook-{name}"""

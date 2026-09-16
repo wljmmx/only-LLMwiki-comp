@@ -298,6 +298,14 @@ def patched_wiki_funcs(monkeypatch):
     monkeypatch.setattr(lr_module, "list_stale_pages", lambda: [])
     monkeypatch.setattr(lr_module, "rebuild_index", lambda: {"saved": True, "pages": 2})
 
+    # Patch list_wiki_pages（maintenance/overview 使用它获取含 frontmatter 的页面信息）
+    fake_wiki_pages = [
+        {"slug": "nginx", "title": "Nginx", "type": "concept", "review_status": "auto", "version": 1, "doc_key": "wiki:nginx"},
+        {"slug": "redis", "title": "Redis", "type": "concept", "review_status": "auto", "version": 1, "doc_key": "wiki:redis"},
+        {"slug": "orphan-page", "title": "Orphan", "type": "concept", "review_status": "auto", "version": 1, "doc_key": "wiki:orphan-page"},
+    ]
+    monkeypatch.setattr(lr_module, "list_wiki_pages", lambda limit=2000: fake_wiki_pages)
+
     # Patch VersionControl
     class _FakeVC:
         def list_by_prefix(self, prefix, limit=2000):
@@ -347,6 +355,10 @@ class TestWikiMaintenanceOverview:
         assert data["deadlink_count"] == 0
         assert data["stale_count"] == 0
         assert "orphan-page" in data["orphans"]
+        # by_type 应从 frontmatter type 字段统计，不再恒为 _unknown
+        assert data["by_type"].get("concept") == 3
+        assert "_unknown" not in data["by_type"]
+        assert data["review_needed_count"] == 0
 
 
 class TestWikiMaintenanceBulkDelete:

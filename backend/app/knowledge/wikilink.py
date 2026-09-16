@@ -25,7 +25,8 @@ DB_PATH = Path(__file__).parent.parent.parent / "data" / "events.db"
 
 # [[slug]] 或 [[slug|显示文本]]
 # 不匹配 [[#锚点]]（页面内跳转，不跨页）
-WIKILINK_RE = re.compile(r"\[\[([a-zA-Z0-9][a-zA-Z0-9\-_]*)(?:\|([^\]]+))?\]\]")
+# slug 字符集与 slugify() 对齐：含 CJK 字符（\u4e00-\u9fff）
+WIKILINK_RE = re.compile(r"\[\[([a-zA-Z0-9\u4e00-\u9fff][a-zA-Z0-9\u4e00-\u9fff\-_]*)(?:\|([^\]]+))?\]\]")
 
 
 @dataclass

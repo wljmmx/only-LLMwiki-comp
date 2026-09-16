@@ -18,20 +18,20 @@ export function listWikiPages() {
 }
 
 export function getWikiPage(slug: string) {
-  return api.get<unknown, WikiPage>(`/llm-wiki/page/${slug}`)
+  return api.get<unknown, WikiPage>(`/llm-wiki/page/${encodeURIComponent(slug)}`)
 }
 
 // S16-2：用户直接编辑 wiki page
 export function updateWikiPage(slug: string, payload: WikiPageUpdatePayload) {
-  return api.put<any, WikiPageUpdateResult>(`/llm-wiki/page/${slug}`, payload)
+  return api.put<any, WikiPageUpdateResult>(`/llm-wiki/page/${encodeURIComponent(slug)}`, payload)
 }
 
 export function getWikiBacklinks(slug: string) {
-  return api.get<unknown, BacklinkItem[]>(`/llm-wiki/backlinks/${slug}`)
+  return api.get<unknown, BacklinkItem[]>(`/llm-wiki/backlinks/${encodeURIComponent(slug)}`)
 }
 
 export function deleteWikiPage(slug: string) {
-  return api.delete<unknown, { deleted: boolean; slug: string }>(`/llm-wiki/page/${slug}`)
+  return api.delete<unknown, { deleted: boolean; slug: string }>(`/llm-wiki/page/${encodeURIComponent(slug)}`)
 }
 
 export function getWikiOrphans() {
@@ -281,5 +281,5 @@ export interface HeadingTreeResult {
  * GET /wiki/{slug}/heading-tree
  */
 export function getWikiHeadingTree(slug: string) {
-  return api.get<unknown, HeadingTreeResult>(`/wiki/${slug}/heading-tree`)
+  return api.get<unknown, HeadingTreeResult>(`/wiki/${encodeURIComponent(slug)}/heading-tree`)
 }
