@@ -94,8 +94,8 @@ def list_wiki_pages(limit: int = 500) -> list[dict]:
                 "title": meta.get("title") or r.get("title") or slug,
                 "type": meta.get("type", "concept"),
                 "tags": meta.get("tags", []),
-                "created_at": meta.get("created_at") or r["created_at"],
-                "updated_at": meta.get("updated_at") or r["created_at"],
+                "created_at": str(meta.get("created_at") or r["created_at"]),
+                "updated_at": str(meta.get("updated_at") or r["created_at"]),
                 "review_status": meta.get("review_status", "auto"),
             }
         )
