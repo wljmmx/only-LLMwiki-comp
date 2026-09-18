@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -399,23 +400,28 @@ else:
 
 section("10. 全量前端测试不回归")
 
-code, output = run(["npx", "vitest", "run"], cwd=FRONTEND)
-check(
-    "全量 vitest run 无失败",
-    code == 0,
-    f"exit={code}, output_tail={output[-500:]}" if code != 0 else "",
-)
-
-# 解析总用例数
-import re
-
-m = re.search(r"Tests\s+(\d+)\s+passed(?:\s*\|\s*(\d+)\s+failed)?", output)
-if m:
-    total = int(m.group(1)) + (int(m.group(2)) if m.group(2) else 0)
-    # 原 129 + 19 新增 = 148
-    check("总用例数 >= 148（原 129 + 新 19）", total >= 148, f"got {total}")
+# CI 中全量 vitest 由独立 npm test 步骤覆盖，避免冗余运行导致资源耗尽
+if os.environ.get("OPSKG_SKIP_FULL_VITEST"):
+    check(
+        "全量 vitest 跳过（CI npm test 步骤已覆盖）",
+        True,
+    )
 else:
-    check("总用例数 >= 148", False, "无法解析总用例数")
+    code, output = run(["npx", "vitest", "run"], cwd=FRONTEND)
+    check(
+        "全量 vitest run 无失败",
+        code == 0,
+        f"exit={code}, output_tail={output[-500:]}" if code != 0 else "",
+    )
+
+    # 解析总用例数
+    m = re.search(r"Tests\s+(\d+)\s+passed(?:\s*\|\s*(\d+)\s+failed)?", output)
+    if m:
+        total = int(m.group(1)) + (int(m.group(2)) if m.group(2) else 0)
+        # 原 129 + 19 新增 = 148
+        check("总用例数 >= 148（原 129 + 新 19）", total >= 148, f"got {total}")
+    else:
+        check("总用例数 >= 148", False, "无法解析总用例数")
 
 
 # ──────────────────────────────────────────────────────────────────

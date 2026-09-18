@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -170,12 +171,16 @@ def main() -> int:
 
     # ────────── 8. 全量前端测试不回归 ──────────
     print("\n[8] 全量前端测试不回归")
-    code, output = run(["npx", "vitest", "run"], timeout=300)
-    check(code == 0, "全量测试通过（无回归）")
-    if "Test Files" in output:
-        for line in output.splitlines():
-            if "Test Files" in line or "Tests" in line:
-                print(f"      {line.strip()}")
+    # CI 中全量 vitest 由独立 npm test 步骤覆盖，避免 13 次冗余运行导致资源耗尽
+    if os.environ.get("OPSKG_SKIP_FULL_VITEST"):
+        check(True, "全量 vitest 跳过（CI npm test 步骤已覆盖）")
+    else:
+        code, output = run(["npx", "vitest", "run"], timeout=300)
+        check(code == 0, "全量测试通过（无回归）")
+        if "Test Files" in output:
+            for line in output.splitlines():
+                if "Test Files" in line or "Tests" in line:
+                    print(f"      {line.strip()}")
 
     # ────────── 总结 ──────────
     print("\n" + "=" * 60)

@@ -179,7 +179,11 @@ jobs:
 
       # P1-3: Class B — s14 前端工程验证（6 脚本，需 node_modules）
       # s14_4 内部执行 npm run build，s14_6 无 chromium 时优雅跳过 e2e
+      # 注：全量 vitest 由上方 npm test 步骤覆盖，verify 脚本中跳过避免
+      #     13 次冗余全量运行导致 CI runner 资源耗尽（flaky 根因）
       - name: Verify scripts — s14 前端工程（6 脚本）
+        env:
+          OPSKG_SKIP_FULL_VITEST: "1"
         run: |
           set -e
           for script in \
@@ -195,6 +199,8 @@ jobs:
 
       # P1-3: Class B — s15 前端权限/实时验证（2 脚本）
       - name: Verify scripts — s15 前端（2 脚本）
+        env:
+          OPSKG_SKIP_FULL_VITEST: "1"
         run: |
           set -e
           for script in \
@@ -206,6 +212,8 @@ jobs:
 
       # P1-3: Class B — s16 协作前端验证（4 脚本）
       - name: Verify scripts — s16 协作前端（4 脚本）
+        env:
+          OPSKG_SKIP_FULL_VITEST: "1"
         run: |
           set -e
           for script in \

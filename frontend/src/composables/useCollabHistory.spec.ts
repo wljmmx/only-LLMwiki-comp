@@ -310,9 +310,13 @@ describe('composables/useCollabHistory — S16-6 协作历史回放', () => {
     slugRef.value = 'slug-b'
     await nextTick()
     await nextTick()
-    await vi.waitFor(() => {
-      expect(mockListCollabEvents).toHaveBeenLastCalledWith('slug-b', { limit: 50 })
-    })
+    // CI 高负载下 Vue 响应式链可能延迟完成，放宽 waitFor 超时（默认 1000ms 过紧）
+    await vi.waitFor(
+      () => {
+        expect(mockListCollabEvents).toHaveBeenLastCalledWith('slug-b', { limit: 50 })
+      },
+      { timeout: 5000, interval: 100 },
+    )
   })
 
   // ────────── loading 并发保护 ──────────

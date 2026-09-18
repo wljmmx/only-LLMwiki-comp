@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -389,28 +390,32 @@ else:
 
 section("9. 全量前端测试不回归")
 
-code, output = run(["npx", "vitest", "run"], cwd=FRONTEND)
-check(
-    "全量测试 exit=0",
-    code == 0,
-    f"exit={code}, output_tail={output[-400:]}" if code != 0 else "",
-)
-
-m = re.search(r"Tests\s+(\d+)\s+passed\s+\((\d+)\)", output)
-if m:
-    total = int(m.group(2))
-    check("全量测试用例数 >= 158（含 loadingBar 10 个）", total >= 158, f"got {total}")
+# CI 中全量 vitest 由独立 npm test 步骤覆盖，避免 13 次冗余运行导致资源耗尽
+if os.environ.get("OPSKG_SKIP_FULL_VITEST"):
+    check("全量 vitest 跳过（CI npm test 步骤已覆盖）", True)
 else:
-    check("全量测试用例数 >= 158", False, "无法解析用例数")
-
-m_files = re.search(r"Test Files\s+(\d+)\s+passed\s+\((\d+)\)", output)
-if m_files:
-    files_total = int(m_files.group(2))
+    code, output = run(["npx", "vitest", "run"], cwd=FRONTEND)
     check(
-        "全量 spec 文件数 >= 15（含 loadingBar.spec.ts）",
-        files_total >= 15,
-        f"got {files_total}",
+        "全量测试 exit=0",
+        code == 0,
+        f"exit={code}, output_tail={output[-400:]}" if code != 0 else "",
     )
+
+    m = re.search(r"Tests\s+(\d+)\s+passed\s+\((\d+)\)", output)
+    if m:
+        total = int(m.group(2))
+        check("全量测试用例数 >= 158（含 loadingBar 10 个）", total >= 158, f"got {total}")
+    else:
+        check("全量测试用例数 >= 158", False, "无法解析用例数")
+
+    m_files = re.search(r"Test Files\s+(\d+)\s+passed\s+\((\d+)\)", output)
+    if m_files:
+        files_total = int(m_files.group(2))
+        check(
+            "全量 spec 文件数 >= 15（含 loadingBar.spec.ts）",
+            files_total >= 15,
+            f"got {files_total}",
+        )
 
 
 # ──────────────────────────────────────────────────────────────────

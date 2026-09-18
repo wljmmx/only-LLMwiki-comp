@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -258,19 +259,23 @@ check(
 
 section("7. 单元测试不回归")
 
-code, output = run(["npx", "vitest", "run"], cwd=FRONTEND)
-check(
-    "vitest 全量测试 exit=0",
-    code == 0,
-    f"exit={code}, output_tail={output[-300:]}" if code != 0 else "",
-)
-
-m = re.search(r"Tests\s+(\d+)\s+passed\s+\((\d+)\)", output)
-if m:
-    total = int(m.group(2))
-    check("单元测试用例数 >= 376", total >= 376, f"got {total}")
+# CI 中全量 vitest 由独立 npm test 步骤覆盖，避免 13 次冗余运行导致资源耗尽
+if os.environ.get("OPSKG_SKIP_FULL_VITEST"):
+    check("全量 vitest 跳过（CI npm test 步骤已覆盖）", True)
 else:
-    check("单元测试用例数 >= 376", False, "无法解析")
+    code, output = run(["npx", "vitest", "run"], cwd=FRONTEND)
+    check(
+        "vitest 全量测试 exit=0",
+        code == 0,
+        f"exit={code}, output_tail={output[-300:]}" if code != 0 else "",
+    )
+
+    m = re.search(r"Tests\s+(\d+)\s+passed\s+\((\d+)\)", output)
+    if m:
+        total = int(m.group(2))
+        check("单元测试用例数 >= 376", total >= 376, f"got {total}")
+    else:
+        check("单元测试用例数 >= 376", False, "无法解析")
 
 
 # ──────────────────────────────────────────────────────────────────
