@@ -76,7 +76,7 @@ docker run -d --name opskg \
 ### 前置要求
 
 - Python 3.11+
-- Node.js 20+
+- Node.js 26+
 - Neo4j 5+（可选，缺失时图功能降级）
 
 ### 一、克隆与配置

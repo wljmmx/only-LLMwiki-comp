@@ -21,7 +21,7 @@ ARG OPSKG_VERSION=0.0.1
 ARG OPSKG_IMAGE_REF=ghcr.io/wljmmx/only-llmwiki-comp
 
 # ────────── Stage 1: 前端构建 ──────────
-FROM node:20-slim AS frontend-builder
+FROM node:26-slim AS frontend-builder
 
 WORKDIR /build
 

@@ -21,7 +21,7 @@
 | 组件 | 最低版本 | 用途 | 是否必需 |
 |------|---------|------|---------|
 | Python | 3.11 | 后端运行时 | ✅ 必需 |
-| Node.js | 20 | 前端构建 | ✅ 必需 |
+| Node.js | 26 | 前端构建 | ✅ 必需 |
 | npm | 10 | 前端依赖管理 | ✅ 必需 |
 | Neo4j | 5.0 | 知识图谱存储 | ⚠️ 可选（缺失时图功能降级） |
 | Docker | 24 | 容器化部署 | ⚠️ 可选 |
@@ -170,7 +170,7 @@ docker run -d --name opskg \
 ### 1. 构建单镜像（已内含前端构建）
 
 ```bash
-# Dockerfile 多阶段构建会先在 Stage 1（node:20-slim）中 npm ci + npm run build，
+# Dockerfile 多阶段构建会先在 Stage 1（node:26-slim）中 npm ci + npm run build，
 # 再把 dist 拷贝到 Stage 2（python:3.12-slim）的 nginx 静态目录。
 # 因此生产部署无需在宿主机单独构建前端。
 docker build -t opskg:latest .

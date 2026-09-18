@@ -3,7 +3,7 @@
 
 验证内容：
 1. Dockerfile 多阶段构建结构（frontend-builder + runtime）
-2. 前端构建阶段：node:20 + npm ci + npm run build
+2. 前端构建阶段：node:26 + npm ci + npm run build
 3. 运行时阶段：python:3.12-slim + nginx + supervisor
 4. nginx.conf 路由规则（/api strip + /auth 不 strip + SPA fallback）
 5. supervisord.conf 双进程管理（nginx + uvicorn）
@@ -73,8 +73,8 @@ def test_dockerfile_multistage() -> None:
         any("frontend-builder" in s for s in stages),
     )
     check(
-        "Stage 1 基于 node:20-slim",
-        any("node:20-slim" in s for s in stages),
+        "Stage 1 基于 node:26-slim",
+        any("node:26-slim" in s for s in stages),
     )
 
     # Stage 2: runtime

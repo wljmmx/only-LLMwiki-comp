@@ -48,7 +48,7 @@ spec:
       containers:
         - name: frontend
           # 镜像将在 S13-4 构建为 opskg-frontend:latest
-          # 多阶段构建：node:20 build → nginx:stable serve
+          # 多阶段构建：node:26 build → nginx:stable serve
           image: opskg-frontend:latest
           imagePullPolicy: IfNotPresent
           ports:

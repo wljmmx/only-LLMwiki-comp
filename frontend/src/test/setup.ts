@@ -72,5 +72,21 @@ config.global.stubs = {
   NText: true,
 }
 
+// jsdom 在特定 Node/URL 配置下（如 Node 26 + jsdom 场景）可能不暴露 localStorage，
+// 提供内存态兜底实现，避免依赖 localStorage 的模块在测试加载时崩溃（Reading 'clear' of undefined）。
+if (typeof window !== 'undefined' && !window.localStorage) {
+  const store = new Map<string, string>()
+  window.localStorage = {
+    getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+    setItem: (k: string, v: string) => void store.set(k, String(v)),
+    removeItem: (k: string) => void store.delete(k),
+    clear: () => store.clear(),
+    key: (i: number) => [...store.keys()][i] ?? null,
+    get length() {
+      return store.size
+    },
+  } as Storage
+}
+
 // 副作用导入，导出为空
 export {}
