@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { getAuthToken } from '@/api/index'
 import {
   NCard,
   NTag,
@@ -145,7 +146,7 @@ let graphWsReconnectTimer: number | null = null
 function connectGraphWs() {
   // 构造 WebSocket URL（与 SSE 同源，复用 token）
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const token = localStorage.getItem('opskg_token') || ''
+  const token = getAuthToken() || ''
   const url = `${proto}://${window.location.host}/realtime/graph?token=${encodeURIComponent(token)}`
   try {
     graphWs = new WebSocket(url)

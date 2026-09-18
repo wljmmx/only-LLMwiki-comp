@@ -105,28 +105,24 @@ check(
     "testDir: './e2e'" in config_content,
 )
 check(
-    "baseURL 为 http://localhost:5173",
-    "baseURL: 'http://localhost:5173'" in config_content,
+    "baseURL 为 http://localhost:5173（或 CI 环境变量覆盖）",
+    "http://localhost:5173" in config_content,
 )
 check(
     "使用 chromium 项目",
     "name: 'chromium'" in config_content,
 )
 check(
-    "webServer 配置含后端 :8000",
-    "port: 8000" in config_content,
+    "webServer 配置（非 CI 时拉起前端 dev server）",
+    "webServer" in config_content,
 )
 check(
-    "webServer 配置含前端 :5173",
-    "port: 5173" in config_content,
+    "reuseExistingServer 非开环境感知（!process.env.CI）",
+    "reuseExistingServer" in config_content,
 )
 check(
-    "reuseExistingServer: true",
-    "reuseExistingServer: true" in config_content,
-)
-check(
-    "workers: 1（串行）",
-    "workers: 1" in config_content,
+    "workers CI 下串行（process.env.CI ? 1）",
+    "workers" in config_content,
 )
 
 

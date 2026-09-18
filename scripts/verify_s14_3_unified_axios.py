@@ -102,11 +102,12 @@ check(
 )
 check(
     "apiRaw response 拦截器返回完整 response（不解包 data）",
-    "return response" in api_content.split("const apiRaw")[1],
+    "applyResponseInterceptor(apiRaw, true)" in api_content
+    and "return raw ? response : response.data" in api_content,
 )
 check(
     "api 标准 response 拦截器返回 response.data",
-    "return response.data" in api_content.split("const api =")[1].split("const apiRaw")[0],
+    "applyResponseInterceptor(api, false)" in api_content,
 )
 
 
