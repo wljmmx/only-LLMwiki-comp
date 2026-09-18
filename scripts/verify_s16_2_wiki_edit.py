@@ -10,7 +10,7 @@
 7. 前端 WikiEditor 组件存在与关键 props/emits
 8. 前端 updateWikiPage API 封装
 9. 前端 types/api.ts WikiPageUpdatePayload / WikiPageUpdateResult 类型
-10. WikiView 集成 WikiEditor（编辑按钮 + 条件渲染）
+10. WikiView/WikiContent 集成 WikiEditor（编辑按钮 + 条件渲染，P0 重构后两层集成）
 11. CollabPanel @lock-change emit（锁状态上抛）
 12. 前端 typecheck 通过
 13. 前端 WikiEditor 单元测试通过
@@ -238,20 +238,31 @@ def main() -> int:
         "WikiPageUpdateResult 接口",
     )
 
-    print("\n[7] WikiView 集成 WikiEditor")
+    print("\n[7] WikiView/WikiContent 集成 WikiEditor")
     view_path = FRONTEND_DIR / "src" / "views" / "WikiView.vue"
     view_content = view_path.read_text(encoding="utf-8")
+    # P0 重构：WikiView 内容区抽为 WikiContent 子组件，WikiEditor 集成移入其中
+    content_path = FRONTEND_DIR / "src" / "components" / "wiki" / "WikiContent.vue"
+    content_component = content_path.read_text(encoding="utf-8")
     check(
-        "import WikiEditor from '@/components/wiki/WikiEditor.vue'" in view_content,
-        "WikiView 导入 WikiEditor",
+        "import WikiContent from '@/components/wiki/WikiContent.vue'" in view_content,
+        "WikiView 导入 WikiContent（P0 重构：内容区子组件）",
     )
     check(
-        "v-if=\"isEditing && currentPage\"" in view_content,
+        "import WikiEditor from '@/components/wiki/WikiEditor.vue'" in content_component,
+        "WikiContent 导入 WikiEditor",
+    )
+    check(
+        ':is-editing="isEditing"' in view_content and ':has-lock="hasLock"' in view_content,
+        "WikiView 传递 isEditing / hasLock 给 WikiContent",
+    )
+    check(
+        'v-if="isEditing && currentPage"' in content_component,
         "WikiEditor 条件渲染（isEditing）",
     )
     check(
         "@lock-change=\"handleLockChange\"" in view_content,
-        "CollabPanel @lock-change 监听",
+        "CollabPanel @lock-change 监听（经 WikiContent 上抛）",
     )
     check(
         "function handleLockChange(payload:" in view_content,
@@ -270,7 +281,7 @@ def main() -> int:
         "handleSaved 保存成功回调",
     )
     check(
-        ":disabled=\"!hasLock\"" in view_content,
+        ":disabled=\"!hasLock\"" in content_component,
         "编辑按钮 disabled 由 hasLock 控制",
     )
 
