@@ -174,8 +174,10 @@ jobs:
       - name: Type check (vue-tsc)
         run: npm run typecheck
 
-      - name: Vitest
-        run: npm test
+      - name: Vitest (with coverage)
+        # 使用 --coverage 生成 coverage-summary.json，供 s14_5 覆盖率门禁使用
+        # （若用 npm test 则无 coverage 产物，verify_s14_5 第 4 部分会失败）
+        run: npm run test:coverage
 
       # P1-3: Class B — s14 前端工程验证（6 脚本，需 node_modules）
       # s14_4 内部执行 npm run build，s14_6 无 chromium 时优雅跳过 e2e
