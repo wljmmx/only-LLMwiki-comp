@@ -111,10 +111,12 @@ vi.mock('@/api/wiki', () => ({
   getCompileTrace: vi.fn(),
   recompileSection: vi.fn(),
   updateWikiPage: vi.fn(),
+  pauseCompile: vi.fn(),
+  resumeCompile: vi.fn(),
 }))
 
-import { listDocuments } from '@/api/documents'
-import { getCompileTrace } from '@/api/wiki'
+import { listDocuments, parseDocument } from '@/api/documents'
+import { getCompileTrace, pauseCompile, resumeCompile } from '@/api/wiki'
 import PipelineView from '@/views/PipelineView.vue'
 
 const sampleDoc = {
@@ -734,5 +736,172 @@ describe('PipelineView.vue', () => {
       expect(step.status).toBe('pending')
     })
     expect(vm.compileProgress).toBe(0)
+  })
+
+  // ========== 11. 上传处理 ==========
+
+  it('handleUpload 成功：解析后自动选择文档并启动编译', async () => {
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
+    ;(parseDocument as any).mockResolvedValue({ doc_id: 'new-1' })
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    const onFinish = vi.fn()
+    const onError = vi.fn()
+    vm.handleUpload({
+      file: { name: 'guide.md', file: new File(['x'], 'guide.md') },
+      onFinish,
+      onError,
+    })
+    await flushPromises()
+    expect(parseDocument).toHaveBeenCalledWith('markdown', expect.any(FormData))
+    expect(onFinish).toHaveBeenCalled()
+    expect(vm.selectedDocId).toBe('new-1')
+    expect(mockMessage.success).toHaveBeenCalledWith('上传成功')
+    expect(vm.phase).toBe('compiling')
+  })
+
+  it('handleUpload 成功：非 md 扩展名映射为对应格式', async () => {
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
+    ;(parseDocument as any).mockResolvedValue({ doc_id: 'new-2' })
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.handleUpload({
+      file: { name: 'ops.txt', file: new File(['x'], 'ops.txt') },
+      onFinish: vi.fn(),
+      onError: vi.fn(),
+    })
+    await flushPromises()
+    expect(parseDocument).toHaveBeenCalledWith('txt', expect.any(FormData))
+  })
+
+  it('handleUpload 失败：调用 onError 并提示上传失败', async () => {
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
+    ;(parseDocument as any).mockRejectedValue(new Error('bad'))
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    const onFinish = vi.fn()
+    const onError = vi.fn()
+    vm.handleUpload({
+      file: { name: 'guide.md', file: new File(['x'], 'guide.md') },
+      onFinish,
+      onError,
+    })
+    await flushPromises()
+    expect(onError).toHaveBeenCalled()
+    expect(onFinish).not.toHaveBeenCalled()
+    expect(mockMessage.error).toHaveBeenCalledWith('上传失败')
+    expect(vm.uploadLoading).toBe(false)
+  })
+
+  // ========== 12. 取消编译 ==========
+
+  it('cancelCompile 将运行中步骤标记为 error 并提示取消', async () => {
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.compileSteps[0].status = 'running'
+    vm.compileSteps[0].name = 'parse'
+    vm.cancelCompile()
+    expect(vm.compiling).toBe(false)
+    expect(vm.isPaused).toBe(false)
+    expect(vm.compileSteps[0].status).toBe('error')
+    expect(vm.compileSteps[0].error).toBe('用户取消')
+    expect(mockMessage.info).toHaveBeenCalledWith('编译已取消')
+  })
+
+  // ========== 13. 从指定阶段重跑 ==========
+
+  it('restartFromStage 构建 start_from_stage URL 并跳过前置阶段', async () => {
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [sampleDoc], total: 1 } })
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.selectedDocId = 'd1'
+    vm.restartFromStage('compile')
+    expect(mockSubscribe).toHaveBeenCalledWith(
+      '/llm-wiki/recompile/d1/stream?force=true&start_from_stage=compile',
+      expect.anything(),
+    )
+    // startFromStage 在 startCompile 末尾被重置
+    expect(vm.startFromStage).toBeNull()
+    // compile 之前的 3 个阶段标记为 skipped
+    expect(vm.compileSteps[0].status).toBe('skipped')
+    expect(vm.compileSteps[1].status).toBe('skipped')
+    expect(vm.compileSteps[2].status).toBe('skipped')
+    expect(vm.compileSteps[3].status).toBe('pending')
+  })
+
+  // ========== 14. 暂停 / 继续 ==========
+
+  it('doPause 无 runId 时静默返回，不调用 API', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.pipelineRunId = null
+    await vm.doPause()
+    expect(pauseCompile).not.toHaveBeenCalled()
+  })
+
+  it('doPause 成功：isPaused 置 true 并提示', async () => {
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
+    ;(pauseCompile as any).mockResolvedValue({})
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.pipelineRunId = 'run-1'
+    await vm.doPause()
+    expect(pauseCompile).toHaveBeenCalledWith('run-1')
+    expect(vm.isPaused).toBe(true)
+    expect(mockMessage.info).toHaveBeenCalledWith('编译已暂停')
+  })
+
+  it('doPause 失败：提示暂停失败', async () => {
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
+    ;(pauseCompile as any).mockRejectedValue(new Error('boom'))
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.pipelineRunId = 'run-1'
+    await vm.doPause()
+    expect(mockMessage.error).toHaveBeenCalledWith('暂停失败：boom')
+    expect(vm.isPaused).toBe(false)
+  })
+
+  it('doResume 无 runId 时静默返回', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.pipelineRunId = null
+    await vm.doResume()
+    expect(resumeCompile).not.toHaveBeenCalled()
+  })
+
+  it('doResume 成功：isPaused 置 false 并提示', async () => {
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
+    ;(resumeCompile as any).mockResolvedValue({})
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.pipelineRunId = 'run-1'
+    vm.isPaused = true
+    await vm.doResume()
+    expect(resumeCompile).toHaveBeenCalledWith('run-1')
+    expect(vm.isPaused).toBe(false)
+    expect(mockMessage.success).toHaveBeenCalledWith('编译已继续')
+  })
+
+  it('doResume 失败：提示继续失败', async () => {
+    ;(listDocuments as any).mockResolvedValue({ data: { items: [], total: 0 } })
+    ;(resumeCompile as any).mockRejectedValue(new Error('boom'))
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.pipelineRunId = 'run-1'
+    await vm.doResume()
+    expect(mockMessage.error).toHaveBeenCalledWith('继续失败：boom')
   })
 })

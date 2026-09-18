@@ -189,13 +189,17 @@ class WebhookManager:
                     err=str(e),
                 )
                 continue
-            # 后台投递，不阻塞当前请求
+            # 后台投递，不阻塞当前请求。
+            # 使用 get_running_loop() 检测运行中的事件环：在同步上下文（无运行环）
+            # 时不再创建永不执行的死任务（避免 "coroutine never awaited" 泄漏），
+            # 也避免 get_event_loop() 在 3.12+ 的 DeprecationWarning。
             try:
-                asyncio.get_event_loop().create_task(
-                    self._deliver(sub, deliv, envelope)
-                )
+                loop = asyncio.get_running_loop()
             except RuntimeError:
-                # 没有 event loop（同步代码上下文）→ 同步执行一次尝试
+                loop = None
+            if loop is not None:
+                loop.create_task(self._deliver(sub, deliv, envelope))
+            else:
                 logger.warning(
                     "webhook.dispatch.no_loop",
                     sub_id=sub["id"],

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+<script lang="ts">
 /**
  * 全局 Toast 通知组件
  *
@@ -11,6 +11,10 @@
  *   toast.error('操作失败')
  *   toast.warning('请注意')
  *   toast.info('提示信息')
+ *
+ * 注意：useToast 使用 inject 获取 message 实例，只能在组件 setup 上下文中
+ * 调用（调用方自身需位于 <n-message-provider> 内）。故将其置于普通
+ * <script> 模块块中导出，而非 <script setup>（后者不支持 ES module export）。
  */
 
 import { useMessage } from 'naive-ui'
@@ -51,6 +55,10 @@ export function useToast(): ToastInstance {
     },
   }
 }
+</script>
+
+<script setup lang="ts">
+// 组件本身无需任何逻辑，仅作为挂载点存在
 </script>
 
 <template>
