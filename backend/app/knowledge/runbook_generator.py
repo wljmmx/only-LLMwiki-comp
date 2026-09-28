@@ -90,13 +90,15 @@ class RunbookGenerator:
             raise ValueError("symptom 不能为空")
 
         # 1. 构造检索查询
-        # FTS5 默认 AND；用 OR 连接各关键词以提高召回，再按 score 排序
+        # 用统一分词器（与索引侧一致），OR 连接各关键词提高召回
+        from app.search.tokenizer import tokenize as _tokenize_unified
+
         keywords: list[str] = []
-        keywords.extend(self._tokenize(symptom))
+        keywords.extend(_tokenize_unified(symptom))
         if service:
-            keywords.extend(self._tokenize(service))
+            keywords.extend(_tokenize_unified(service))
         if host:
-            keywords.extend(self._tokenize(host))
+            keywords.extend(_tokenize_unified(host))
         # 去重 + 转义 FTS5 特殊字符
         seen: set[str] = set()
         unique_kw: list[str] = []
@@ -113,8 +115,8 @@ class RunbookGenerator:
             unique_kw.append(f'"{kw}"')
         query = " OR ".join(unique_kw) if unique_kw else symptom
 
-        # 2. 检索相关文档（仅关键字检索，不依赖向量）
-        search_results = self.search.search(query, limit=max_docs)
+        # 2. 检索相关文档（raw_query=True 透传已构造的 OR 语法，避免二次分词破坏）
+        search_results = self.search.search(query, limit=max_docs, raw_query=True)
         logger.info(
             "runbook_search_done",
             query=query,
@@ -345,15 +347,6 @@ class RunbookGenerator:
         return "\n".join(parts)
 
     @staticmethod
-    def _tokenize(text: str) -> list[str]:
-        """简单分词：按空白/标点切分，保留中英文混合词"""
-        import re
-
-        # 中英文+数字+短横线
-        tokens = re.findall(r"[A-Za-z][A-Za-z0-9_-]+|[一-鿿]+|\d+", text)
-        return tokens
-
-    @staticmethod
     def _collect_entity(entity, sources: RunbookSources) -> None:
         et = entity.entity_type
         if et == "Command":
@@ -463,9 +456,11 @@ class RunbookGenerator:
         title = f"故障处理 Runbook: {symptom}"
 
         # tags：从 symptom/service/host 分词 + 固定标签
+        from app.search.tokenizer import tokenize as _tokenize_unified
+
         tags: list[str] = ["runbook", "troubleshooting"]
         for text in (symptom, service, host):
-            for tok in self._tokenize(text):
+            for tok in _tokenize_unified(text):
                 tok_low = tok.lower()
                 if tok_low not in tags and len(tok_low) >= 2:
                     tags.append(tok_low)

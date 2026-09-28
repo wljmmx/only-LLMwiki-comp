@@ -194,10 +194,14 @@ class SearchEngine:
 
     # P1: 全量重建索引（保留旧表作为备份，重建完成后再丢弃）
     def rebuild_index(self) -> int:
-        """P1: 全量重建索引，保留旧表备份防止重建失败数据丢失"""
+        """P1: 全量重建索引，保留旧表备份防止重建失败数据丢失
+
+        优化：从 doc_snippets 的原始内容重新分词（而非备份恢复旧 token），
+        确保 jieba 词典/版本更新后索引同步刷新。
+        """
         conn = _get_db()
         try:
-            # Step 1: 备份旧表
+            # Step 1: 备份旧数据（docs_fts 分词文本 + doc_snippets 原文 + embeddings）
             conn.executescript("""
                 DROP TABLE IF EXISTS docs_fts_backup;
                 DROP TABLE IF EXISTS doc_snippets_backup;
@@ -206,9 +210,24 @@ class SearchEngine:
                 CREATE TABLE doc_snippets_backup AS SELECT * FROM doc_snippets;
                 CREATE TABLE doc_embeddings_backup AS SELECT * FROM doc_embeddings;
             """)
-            backup_count = conn.execute("SELECT COUNT(*) as cnt FROM docs_fts_backup").fetchone()["cnt"]
+            backup_count = conn.execute("SELECT COUNT(*) as cnt FROM doc_snippets_backup").fetchone()["cnt"]
 
-            # Step 2: 删除旧表并重建 schema
+            # Step 2: 读取原始内容并重新分词
+            mode = get_settings().search_tokenizer
+            rows = conn.execute(
+                "SELECT doc_id, title, content, format FROM doc_snippets_backup"
+            ).fetchall()
+            reindexed = [
+                (
+                    r["doc_id"],
+                    tokenize_to_string(r["title"] or "", mode=mode),
+                    tokenize_to_string((r["content"] or "")[:50000], mode=mode),
+                    r["format"] or "",
+                )
+                for r in rows
+            ]
+
+            # Step 3: 删除旧表并重建 schema
             conn.executescript("""
                 DROP TABLE IF EXISTS docs_fts;
                 DROP TABLE IF EXISTS doc_snippets;
@@ -216,21 +235,29 @@ class SearchEngine:
             """)
             _init_schema(conn)
 
-            # Step 3: 从备份恢复数据
+            # Step 4: 写入重新分词后的数据
+            conn.executemany(
+                "INSERT INTO docs_fts (doc_id, title, content, format) VALUES (?, ?, ?, ?)",
+                reindexed,
+            )
             conn.executescript("""
-                INSERT INTO docs_fts SELECT * FROM docs_fts_backup;
                 INSERT INTO doc_snippets SELECT * FROM doc_snippets_backup;
                 INSERT INTO doc_embeddings SELECT * FROM doc_embeddings_backup;
             """)
 
-            # Step 4: 丢弃备份表
+            # Step 5: 丢弃备份表
             conn.executescript("""
                 DROP TABLE IF EXISTS docs_fts_backup;
                 DROP TABLE IF EXISTS doc_snippets_backup;
                 DROP TABLE IF EXISTS doc_embeddings_backup;
             """)
             conn.commit()
-            logger.info("search_index_rebuilt", count=backup_count)
+            logger.info(
+                "search_index_rebuilt",
+                count=backup_count,
+                reindexed=len(reindexed),
+                tokenizer_mode=mode,
+            )
             return backup_count
         except Exception as e:
             logger.error("search_index_rebuild_failed", error=str(e))
@@ -266,11 +293,13 @@ class SearchEngine:
         *,
         fusion: FusionStrategy = "rrf",
         rrf_k: int = 60,
+        raw_query: bool = False,
     ) -> list[dict]:
         """混合检索
 
         Args:
             query: 搜索关键词
+            limit: 最大结果数
             query_embedding: 查询向量（可选，提供时启用向量检索）
             weight_keyword: 关键词权重（仅 fusion="weighted" 时生效）
             weight_vector: 向量权重（仅 fusion="weighted" 时生效）
@@ -278,10 +307,11 @@ class SearchEngine:
                 - "rrf"（默认）：Reciprocal Rank Fusion，对两路结果按 rank 倒数求和
                 - "weighted"：加权线性（旧版兼容）
             rrf_k: RRF 平滑常数，默认 60（业界经验值）
+            raw_query: True 时直接透传 FTS5 MATCH 语法（不重复分词）
         """
         # 拉取更多候选以保证 RRF 融合后的 top-K 质量
         candidate_limit = max(limit * 3, 30)
-        keyword_results = self._keyword_search(query, candidate_limit)
+        keyword_results = self._keyword_search(query, candidate_limit, raw_query=raw_query)
         vector_results = (
             self._vector_search(query_embedding, candidate_limit) if query_embedding else {}
         )
@@ -388,8 +418,15 @@ class SearchEngine:
             )
         return merged
 
-    def _keyword_search(self, query: str, limit: int) -> dict[str, dict]:
-        """FTS5 关键词检索"""
+    def _keyword_search(self, query: str, limit: int, *, raw_query: bool = False) -> dict[str, dict]:
+        """FTS5 关键词检索
+
+        Args:
+            query: 搜索关键词
+            limit: 返回数量上限
+            raw_query: True 时跳过预分词，直接使用传入的 FTS5 MATCH 语法
+                （用于已构造好 OR/phrase 查询的调用方，避免二次分词破坏语法）
+        """
         if not query.strip():
             return {}
         conn = _get_db()
@@ -399,7 +436,11 @@ class SearchEngine:
         tokens = tokenize(query, mode=mode)
         if not tokens:
             return {}
-        safe_query = " ".join(tokens)
+        if raw_query:
+            # 透传：调用方已构造好 FTS5 语法（OR/phrase），不再重复分词
+            safe_query = query
+        else:
+            safe_query = " ".join(tokens)
         try:
             # docs_fts 中 title/content 已是分词文本，无需在 SELECT 中取展示用字段
             rows = conn.execute(
