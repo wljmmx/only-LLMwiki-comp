@@ -138,21 +138,23 @@ class TestReviewAPI:
 class TestGraphAPI:
     def test_graph_stats(self):
         r = client.get("/graph/stats")
-        assert r.status_code == 200
-        # Neo4j 未连接时返回 error 字段
-        data = r.json()
-        assert "error" in data or "entities" in data
+        # Neo4j 未连接时返回 503（快速失败），已连接时返回 200
+        assert r.status_code in (200, 503)
+        if r.status_code == 200:
+            data = r.json()
+            assert "entities" in data or "total_entities" in data
 
     def test_graph_visualize(self):
         r = client.get("/graph/visualize")
-        assert r.status_code == 200
-        data = r.json()
-        assert "nodes" in data
-        assert "links" in data
+        assert r.status_code in (200, 503)
+        if r.status_code == 200:
+            data = r.json()
+            assert "nodes" in data
+            assert "links" in data
 
     def test_graph_search(self):
         r = client.get("/graph/search", params={"q": "test"})
-        assert r.status_code == 200
+        assert r.status_code in (200, 503)
 
 
 # ────────── 认证 API ──────────

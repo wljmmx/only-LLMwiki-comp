@@ -226,9 +226,11 @@ def s18():
 @step("19. graph stats (Neo4j graceful)")
 def s19():
     r = requests.get(f"{BASE}/graph/stats", timeout=TIMEOUT)
-    assert r.status_code == 200
+    # Neo4j 未连接时返回 503（快速失败），已连接时返回 200
+    assert r.status_code in (200, 503)
+    if r.status_code == 503:
+        return f"neo4j_unavailable (503): {r.text[:60]}"
     data = r.json()
-    # Neo4j 未连接时返回 error 字段，这是预期优雅降级
     if "error" in data:
         return f"neo4j_unavailable (graceful): {data['error'][:60]}"
     return json.dumps(data, ensure_ascii=False)

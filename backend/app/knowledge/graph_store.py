@@ -12,7 +12,7 @@ from typing import Any
 
 import structlog
 from neo4j import Driver, GraphDatabase
-from neo4j.exceptions import Neo4jError
+from neo4j.exceptions import Neo4jError, ServiceUnavailable
 from neo4j.time import Date, DateTime, Duration, Time
 
 from app.config import get_settings
@@ -82,6 +82,9 @@ class GraphStore:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._driver: Driver | None = None
+        self._driver_failed = False  # 连接失败标记，避免反复重试
+        self._driver_failed_at: float = 0  # 失败时间戳
+        self._driver_retry_delay: float = 30.0  # 失败后 30 秒内不再重试
         # 只读查询的 TTL 缓存，减少重复 Neo4j 查询开销
         # key → (expires_at, value)；写操作全量失效（一致性优先于性能）
         self._cache: dict[str, tuple[float, Any]] = {}
@@ -91,11 +94,37 @@ class GraphStore:
     @property
     def driver(self) -> Driver:
         if self._driver is None:
-            self._driver = GraphDatabase.driver(
-                self.settings.neo4j_uri,
-                auth=(self.settings.neo4j_user, self.settings.neo4j_password),
-            )
-            self._init_indexes()
+            # 失败冷却期内直接快速失败，不重试连接
+            if self._driver_failed and (time.time() - self._driver_failed_at) < self._driver_retry_delay:
+                raise ServiceUnavailable(
+                    f"Neo4j 连接不可用（{self._driver_retry_delay}s 内不再重试），"
+                    f"URI={self.settings.neo4j_uri}"
+                )
+            try:
+                self._driver = GraphDatabase.driver(
+                    self.settings.neo4j_uri,
+                    auth=(self.settings.neo4j_user, self.settings.neo4j_password),
+                    connection_timeout=3,          # 3 秒连接超时，避免 Neo4j 不可用时阻塞
+                    max_connection_lifetime=3600,  # 连接最大生命周期 1 小时
+                    connection_acquisition_timeout=5,  # 获取连接最多等 5 秒
+                )
+                self._init_indexes()
+                self._driver_failed = False  # 连接成功，清除失败标记
+            except (ServiceUnavailable, OSError, ConnectionError) as e:
+                # 关键：失败时必须重置 _driver，否则惰性创建的 driver 对象
+                # 仍存在，后续调用会绕过冷却检查直接使用坏连接
+                if self._driver is not None:
+                    try:
+                        self._driver.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._driver = None
+                self._driver_failed = True
+                self._driver_failed_at = time.time()
+                logger.warning("neo4j_connect_failed", uri=self.settings.neo4j_uri, error=str(e))
+                raise ServiceUnavailable(
+                    f"Neo4j 连接失败: {e}。URI={self.settings.neo4j_uri}"
+                ) from e
         return self._driver
 
     def _init_indexes(self) -> None:

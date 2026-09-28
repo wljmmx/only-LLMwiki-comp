@@ -43,6 +43,14 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
+def _neo4j_unavailable(e: Exception) -> HTTPException:
+    """Neo4j 不可用时统一返回 503，避免客户端误判 200"""
+    return HTTPException(
+        503,
+        detail={"error": str(e), "hint": "Neo4j 未连接或不可用"},
+    )
+
+
 @router.post("/graph/upload", dependencies=[Depends(verify_token)])
 async def graph_upload(file: UploadFile = File(...)) -> dict:
     """解析文档 → 抽取知识 → 编译 → 写入图谱（全流水线）"""
@@ -190,7 +198,7 @@ async def graph_stats() -> dict:
         store = get_graph_store()
         return store.get_stats()
     except Exception as e:
-        return {"error": str(e), "hint": "Neo4j 未连接或不可用"}
+        raise _neo4j_unavailable(e)
 
 
 @router.get("/graph/entity/{name}")
@@ -206,7 +214,7 @@ async def graph_entity(name: str) -> dict:
     except HTTPException:
         raise
     except Exception as e:
-        return {"error": str(e), "hint": "Neo4j 未连接或不可用"}
+        raise _neo4j_unavailable(e)
 
 
 @router.get("/graph/entity/{name}/wiki-pages")
@@ -289,7 +297,7 @@ async def graph_search(q: str = Query(..., min_length=1), limit: int = 20) -> di
         results = store.search_entities(q, limit)
         return {"query": q, "results": results, "count": len(results)}
     except Exception as e:
-        return {"error": str(e), "hint": "Neo4j 未连接或不可用"}
+        raise _neo4j_unavailable(e)
 
 
 @router.get("/graph/by-type/{entity_type}")
@@ -300,7 +308,7 @@ async def graph_by_type(entity_type: str, limit: int = 50) -> dict:
         results = store.query_by_type(entity_type, limit)
         return {"entity_type": entity_type, "results": results, "count": len(results)}
     except Exception as e:
-        return {"error": str(e), "hint": "Neo4j 未连接或不可用"}
+        raise _neo4j_unavailable(e)
 
 
 @router.get("/graph/visualize")
@@ -371,12 +379,7 @@ async def graph_visualize(entity_type: str | None = None, limit: int = 100) -> d
                 "link_count": len(links),
             }
     except Exception as e:
-        return {
-            "error": str(e),
-            "hint": "Neo4j 未连接或不可用",
-            "nodes": [],
-            "links": [],
-        }
+        raise _neo4j_unavailable(e)
 
 
 def _entity_group(entity_type: str) -> int:
@@ -483,14 +486,7 @@ async def graph_maintenance_overview(
             "sample_duplicates": duplicates,
         }
     except Exception as e:
-        return {
-            "error": str(e),
-            "hint": "Neo4j 未连接或不可用",
-            "stats": {},
-            "orphan_count": 0,
-            "low_confidence_count": 0,
-            "duplicate_count": 0,
-        }
+        raise _neo4j_unavailable(e)
 
 
 @router.get(
@@ -509,7 +505,7 @@ async def graph_maintenance_orphan_entities(
             "entities": entities,
         }
     except Exception as e:
-        return {"error": str(e), "hint": "Neo4j 未连接或不可用", "count": 0, "entities": []}
+        raise _neo4j_unavailable(e)
 
 
 @router.get(
@@ -532,7 +528,7 @@ async def graph_maintenance_low_confidence(
             "entities": entities,
         }
     except Exception as e:
-        return {"error": str(e), "hint": "Neo4j 未连接或不可用", "count": 0, "entities": []}
+        raise _neo4j_unavailable(e)
 
 
 @router.get(
@@ -550,7 +546,7 @@ async def graph_maintenance_by_source(doc_id: str) -> dict:
             "entities": entities,
         }
     except Exception as e:
-        return {"error": str(e), "hint": "Neo4j 未连接或不可用", "count": 0, "entities": []}
+        raise _neo4j_unavailable(e)
 
 
 @router.get(
@@ -569,7 +565,7 @@ async def graph_maintenance_duplicates(
             "duplicates": duplicates,
         }
     except Exception as e:
-        return {"error": str(e), "hint": "Neo4j 未连接或不可用", "count": 0, "duplicates": []}
+        raise _neo4j_unavailable(e)
 
 
 @router.post(
@@ -694,7 +690,7 @@ async def graph_shortest_path(
         store = get_graph_store()
         return store.shortest_path(from_entity, to_entity, max_depth)
     except Exception as e:
-        return {"error": str(e), "hint": "Neo4j 未连接或不可用", "found": False, "path": []}
+        raise _neo4j_unavailable(e)
 
 
 @router.get("/graph/impact-propagation")
@@ -710,7 +706,7 @@ async def graph_impact_propagation(
         store = get_graph_store()
         return store.impact_propagation(entity, depth)
     except Exception as e:
-        return {"error": str(e), "hint": "Neo4j 未连接或不可用", "entity": entity, "affected_count": 0}
+        raise _neo4j_unavailable(e)
 
 
 # ────────── KNOW-18: 实体时间演变回放 ──────────
@@ -729,12 +725,7 @@ async def graph_entity_history(
         store = get_graph_store()
         return store.get_entity_history(name, limit)
     except Exception as e:
-        return {
-            "error": str(e),
-            "hint": "Neo4j 未连接或不可用",
-            "entity_name": name,
-            "history": [],
-        }
+        raise _neo4j_unavailable(e)
 
 
 # ────────── KNOW-17: backlink 关系图 API ──────────
