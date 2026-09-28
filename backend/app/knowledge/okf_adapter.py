@@ -32,6 +32,8 @@ import re
 import shutil
 import tarfile
 import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,12 +44,24 @@ import yaml
 
 from app.knowledge.wiki_index import (
     _key_from_slug,
-    list_wiki_pages,
+    _parse_frontmatter,
+    _slug_from_key,
 )
 from app.knowledge.wikilink import WIKILINK_RE
 from app.storage.version_control import get_version_control
 
 logger = structlog.get_logger()
+
+# ── 内存缓存（TTL，线程安全）──
+# preview 和 export 是只读操作，wiki 内容变更后 TTL 到期自动刷新
+_preview_cache: dict[str, Any] | None = None
+_preview_cache_at: float = 0
+_preview_cache_lock = threading.Lock()
+_PREVIEW_TTL: float = 60.0  # 60 秒缓存
+
+_tarball_cache: tuple[float, bytes, dict] | None = None  # (expires_at, bytes, headers)
+_tarball_cache_lock = threading.Lock()
+_TARBALL_TTL: float = 60.0
 
 # OKF v0.1 规范版本
 OKF_VERSION = "0.1"
@@ -334,11 +348,98 @@ def normalize_frontmatter_for_okf(
 # ────────── 导出：DB wiki → OKF bundle ──────────
 
 
+def _fetch_all_wiki_content() -> list[dict]:
+    """批量获取所有 wiki 页面内容（2 次 SQL 替代 2N+1 次）
+
+    Returns:
+        [{slug, doc_key, content, meta, ...}]  含 content 和解析后的 frontmatter
+    """
+    vc = get_version_control()
+    rows = vc.list_by_prefix("wiki:", 100000)
+    # 排除保留文件
+    wiki_rows = [r for r in rows if _slug_from_key(r["doc_key"]) not in ("index", "log")]
+    if not wiki_rows:
+        return []
+
+    # 批量获取最新版本（1 次 SQL 替代 N 次 get_latest）
+    doc_keys = [r["doc_key"] for r in wiki_rows]
+    latest_map = vc.get_latest_batch(doc_keys)
+
+    pages = []
+    for r in wiki_rows:
+        slug = _slug_from_key(r["doc_key"])
+        latest = latest_map.get(r["doc_key"])
+        if not latest:
+            continue
+        content = latest["content"]
+        meta, _ = _parse_frontmatter(content)
+        pages.append({
+            "slug": slug,
+            "doc_key": r["doc_key"],
+            "content": content,
+            "meta": meta,
+            "type": meta.get("type", "concept"),
+            "title": meta.get("title") or slug,
+            "tags": meta.get("tags", []),
+            "version": r["version"],
+        })
+    return pages
+
+
+def preview_bundle_summary() -> dict:
+    """内存预览 bundle 摘要（无磁盘 IO，2 次 SQL）
+
+    替代旧的 export_bundle + bundle_summary 流程（2N+1 SQL + 磁盘读写）。
+
+    Returns:
+        {total, by_type, has_index, has_log, with_description, with_resource, okf_version}
+    """
+    global _preview_cache, _preview_cache_at
+
+    with _preview_cache_lock:
+        if _preview_cache is not None and (time.time() - _preview_cache_at) < _PREVIEW_TTL:
+            return _preview_cache
+
+    pages = _fetch_all_wiki_content()
+
+    by_type: dict[str, int] = {}
+    with_desc = 0
+    with_resource = 0
+
+    for p in pages:
+        meta = p["meta"]
+        t = meta.get("type") or "concept"
+        by_type[t] = by_type.get(t, 0) + 1
+        if meta.get("description"):
+            with_desc += 1
+        if meta.get("resource"):
+            with_resource += 1
+
+    summary = {
+        "total": len(pages),
+        "by_type": by_type,
+        "has_index": True,   # index.md 总是生成
+        "has_log": True,     # log.md 总是生成
+        "with_description": with_desc,
+        "with_resource": with_resource,
+        "okf_version": OKF_VERSION,
+    }
+
+    with _preview_cache_lock:
+        _preview_cache = summary
+        _preview_cache_at = time.time()
+
+    return summary
+
+
 def export_bundle(out_dir: Path | str, *, include_log: bool = True) -> ExportResult:
     """把整个 wiki 导出为 OKF bundle 目录树
 
+    优化：使用 get_latest_batch() 批量获取（2 次 SQL 替代 2N+1 次），
+    frontmatter 只解析一次。
+
     流程：
-    1. 列出所有 wiki 页面（list_wiki_pages）
+    1. 批量获取所有 wiki 页面（_fetch_all_wiki_content）
     2. 构建 slug → type 映射（用于双链转换）
     3. 逐页导出为 {type_dir}/{slug}.md（frontmatter 规范化 + 链接转换）
     4. 生成根 index.md
@@ -359,8 +460,8 @@ def export_bundle(out_dir: Path | str, *, include_log: bool = True) -> ExportRes
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    vc = get_version_control()
-    pages = list_wiki_pages(limit=100000)
+    # 批量获取所有 wiki 页面（2 次 SQL 替代 2N+1 次）
+    pages = _fetch_all_wiki_content()
 
     if not pages:
         logger.info("okf_export_empty")
@@ -379,16 +480,11 @@ def export_bundle(out_dir: Path | str, *, include_log: bool = True) -> ExportRes
     for p in pages:
         by_type.setdefault(p["type"], []).append(p)
 
-    # 逐页导出
+    # 逐页导出（content 已在批量获取中读取，无需再次查询 DB）
     for p in pages:
         slug = p["slug"]
         try:
-            latest = vc.get_latest(_key_from_slug(slug))
-            if not latest:
-                result.skipped.append(slug)
-                continue
-
-            meta, body = _split_frontmatter(latest["content"])
+            meta, body = _split_frontmatter(p["content"])
             # 规范化 frontmatter
             okf_meta = normalize_frontmatter_for_okf(meta, body, slug)
             # 转换双链
@@ -451,6 +547,43 @@ def export_bundle_tarball(out_path: Path | str) -> tuple[Path, ExportResult]:
         with tarfile.open(out_path, "w:gz") as tar:
             tar.add(bundle_dir, arcname="okf-bundle")
     return out_path, result
+
+
+def export_bundle_tarball_cached() -> tuple[bytes, dict]:
+    """带缓存的 tarball 导出（60s TTL）
+
+    缓存命中时直接返回内存中的 tarball 字节，
+    缓存未命中时执行完整导出并缓存结果。
+
+    Returns:
+        (tarball_bytes, headers_dict)
+    """
+    global _tarball_cache
+
+    with _tarball_cache_lock:
+        if _tarball_cache is not None:
+            expires_at, cached_bytes, headers = _tarball_cache
+            if time.time() < expires_at:
+                return cached_bytes, headers
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tarball_path = Path(tmp) / "opskg-okf-bundle.tar.gz"
+        saved_path, result = export_bundle_tarball(tarball_path)
+        content = saved_path.read_bytes()
+
+    headers = {
+        "Content-Disposition": 'attachment; filename="opskg-okf-bundle.tar.gz"',
+        "X-OKF-Pages-Exported": str(result.pages_exported),
+        "X-OKF-Index-Written": str(int(result.index_written)),
+        "X-OKF-Log-Written": str(int(result.log_written)),
+        "X-OKF-Errors": str(len(result.errors)),
+        "X-OKF-Cache": "MISS",
+    }
+
+    with _tarball_cache_lock:
+        _tarball_cache = (time.time() + _TARBALL_TTL, content, headers)
+
+    return content, headers
 
 
 def _render_okf_index(

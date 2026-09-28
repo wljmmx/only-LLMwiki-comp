@@ -23,11 +23,10 @@ from pydantic import BaseModel, Field
 from app.auth import require_role, verify_token
 from app.knowledge import (
     OKF_VERSION,
-    bundle_summary,
-    export_bundle,
-    export_bundle_tarball,
+    export_bundle_tarball_cached,
     import_bundle,
     import_bundle_tarball,
+    preview_bundle_summary,
 )
 from app.knowledge.okf_validator import (
     validate_bundle as validate_okf_bundle,
@@ -80,46 +79,27 @@ async def export_okf_bundle() -> Response:
     - log.md（变更审计日志）
     - {incidents,runbooks,services,hosts,concepts,entities}/{slug}.md
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        tarball_path = Path(tmp) / "opskg-okf-bundle.tar.gz"
-        try:
-            saved_path, result = export_bundle_tarball(tarball_path)
-        except Exception as e:
-            raise HTTPException(500, f"OKF 导出失败: {e}")
-
-        if result.errors:
-            # 错误不阻断导出，但在响应头中提示
-            pass
-
-        content = saved_path.read_bytes()
+    try:
+        content, headers = export_bundle_tarball_cached()
+        headers = dict(headers)  # 复制以免修改缓存
+        headers["X-OKF-Cache"] = "HIT"
         return Response(
             content=content,
             media_type="application/gzip",
-            headers={
-                "Content-Disposition": (
-                    'attachment; filename="opskg-okf-bundle.tar.gz"'
-                ),
-                "X-OKF-Pages-Exported": str(result.pages_exported),
-                "X-OKF-Index-Written": str(int(result.index_written)),
-                "X-OKF-Log-Written": str(int(result.log_written)),
-                "X-OKF-Errors": str(len(result.errors)),
-            },
+            headers=headers,
         )
+    except Exception as e:
+        raise HTTPException(500, f"OKF 导出失败: {e}")
 
 
 @router.get("/okf/preview", dependencies=[Depends(verify_token)])
 async def preview_okf_bundle() -> dict:
     """预览导出 bundle 的摘要统计（不实际下载）
 
+    优化：直接从 DB 内存计算统计，不执行磁盘导出。
     返回概念数、类型分布、index/log 是否存在、字段完整度。
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        bundle_dir = Path(tmp) / "preview-bundle"
-        result = export_bundle(bundle_dir)
-        summary = bundle_summary(bundle_dir)
-        summary["export_errors"] = result.errors
-        summary["pages_exported"] = result.pages_exported
-        return summary
+    return preview_bundle_summary()
 
 
 @router.post("/okf/import", dependencies=[Depends(verify_token)])
