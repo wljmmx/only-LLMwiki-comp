@@ -34,7 +34,8 @@ class Settings(BaseSettings):
     # 并发限流（同时进行的 LLM 请求数）
     llm_concurrency_limit: int = 10
     # P0-1: Wiki 编译时实体编译并发数（限制同时进行的 LLM 调用数）
-    compile_concurrency: int = 3
+    # P3-7: 段落编译并行化后同时生效；本地 Ollama 推荐 4-8
+    compile_concurrency: int = 4
     # P2-2: Token Bucket 限流（req/s，0 表示不限流）
     llm_rate_limit: float = 0.0
     # 降级后端链（逗号分隔，如 "ollama,vllm"）

@@ -590,6 +590,29 @@ class WikiCompiler:
                 _finish_run("error")
                 return result
 
+            # P3-7: 文档级增量短路 — 内容未变且已有编译产物时跳过全部阶段
+            # （force=True 或 start_from_stage 指定时强制全量）
+            if not force and not start_from_stage:
+                try:
+                    from app.knowledge.wiki_drift import get_compiled_checksum
+
+                    old_checksum = get_compiled_checksum(doc_id)
+                    new_checksum = meta.get("checksum", "")
+                    if old_checksum and old_checksum == new_checksum:
+                        logger.info(
+                            "wiki_compile_skipped_unchanged",
+                            doc_id=doc_id, checksum=new_checksum[:12],
+                        )
+                        self.store.update_status(doc_id, "compiled")
+                        _emit(ProgressEventType.STEP_DONE, {
+                            "step": "compile", "skipped": True,
+                            "message": f"文档内容未变化（checksum {new_checksum[:12]}），跳过编译",
+                        })
+                        result.pages_unchanged = 1
+                        return result
+                except Exception:  # noqa: BLE001
+                    pass  # 检测失败不阻断编译
+
             # 设置 format 属性（span 对象可能为 None，需容错）
             try:
                 if _sp is not None:
@@ -1014,11 +1037,69 @@ class WikiCompiler:
                     "total_entities": len(entities),
                 })
 
-                # ── Phase 1: 逐段顺序编译 ──
+                # ── Phase 1: 逐段并行编译（Semaphore 限流，结果按顺序处理） ──
                 compiled_paragraphs: list[dict] = []
                 section_groups: dict[str, list[dict]] = {}
 
-                for idx, para in enumerate(all_paragraphs):
+                if _check_cancel():
+                    _emit(ProgressEventType.STEP_DONE, {
+                        "step": "cancelled",
+                        "message": "编译已取消",
+                    })
+                    cancel_pause(pipeline_run_id)
+                    _finish_run("cancelled")
+                    return result
+
+                await _check_paused(pipeline_run_id)
+
+                # 并行度：compile_concurrency（.env 可调，建议 4-8）
+                para_sem = asyncio.Semaphore(
+                    max(int(getattr(self.settings, "compile_concurrency", 3)), 2)
+                )
+
+                async def _compile_one(idx: int, para: dict) -> tuple[int, dict | None, str | None]:
+                    """编译单个段落（并发执行，返回原始序号）"""
+                    related_ents = para_entities_map.get(para["index"], [])
+                    try:
+                        compiled = await self._compile_paragraph_page(
+                            para_content=para["content"],
+                            para_index=para["index"],
+                            para_section=para["section"],
+                            para_type=para["type"],
+                            source_entry=source_entry,
+                            related_entities=related_ents,
+                            para_classification=para.get("classification"),
+                            on_chunk=None,  # 并行模式不传 chunk 回调（避免 SSE 乱序）
+                        )
+                        return idx, compiled, None
+                    except Exception as e:  # noqa: BLE001
+                        logger.exception(
+                            "wiki_compiler_paragraph_failed", para_index=para["index"],
+                        )
+                        return idx, None, f"段落 {para['index']} 编译失败: {e}"
+
+                async def _limited(idx: int, para: dict) -> tuple[int, dict | None, str | None]:
+                    async with para_sem:
+                        return await _compile_one(idx, para)
+
+                # 并行编译所有段落（结果按输入顺序返回）
+                compile_results = await asyncio.gather(
+                    *(_limited(idx, para) for idx, para in enumerate(all_paragraphs))
+                )
+
+                # 按顺序处理结果（进度事件保持有序）
+                for idx, compiled, error in compile_results:
+                    if error:
+                        result.errors.append(error)
+                        _emit(ProgressEventType.PAGE_DONE, {
+                            "entity": f"段落-{idx+1}",
+                            "index": idx + 1,
+                            "total": total_paragraphs,
+                            "status": "error",
+                            "error": error,
+                        })
+                        continue
+
                     if _check_cancel():
                         _emit(ProgressEventType.STEP_DONE, {
                             "step": "cancelled",
@@ -1030,30 +1111,16 @@ class WikiCompiler:
 
                     await _check_paused(pipeline_run_id)
 
-                    related_ents = para_entities_map.get(para['index'], [])
-                    display_name = related_ents[0]['name'] if related_ents else f"段落-{idx+1}"
-
-                    para_chunk_buffer: list[str] = []
-
-                    def _make_para_chunk_cb(pi: int):
-                        def _cb(chunk_text: str) -> None:
-                            para_chunk_buffer.append(chunk_text)
-                            _emit(ProgressEventType.PAGE_CHUNK, {
-                                "para_index": pi,
-                                "chunk": chunk_text,
-                                "buffer_length": sum(len(c) for c in para_chunk_buffer),
-                            })
-                        return _cb
-
-                    chunk_cb = _make_para_chunk_cb(para['index'])
+                    related_ents = para_entities_map.get(all_paragraphs[idx]["index"], [])
+                    display_name = related_ents[0]["name"] if related_ents else f"段落-{idx+1}"
 
                     _emit(ProgressEventType.PAGE_START, {
                         "entity": display_name,
                         "index": idx + 1,
                         "total": total_paragraphs,
-                        "raw_content": para['content'][:500],
-                        "entity_type": para['type'],
-                        "section": para['section'],
+                        "raw_content": all_paragraphs[idx]["content"][:500],
+                        "entity_type": all_paragraphs[idx]["type"],
+                        "section": all_paragraphs[idx]["section"],
                         "para_index": idx + 1,
                         "related_entity_count": len(related_ents),
                     })
@@ -1064,57 +1131,32 @@ class WikiCompiler:
                         "step": "compile",
                     })
 
-                    try:
-                        # 从段落数据中获取分类信息（构建 all_paragraphs 时已附加）
-                        para_classification = para.get('classification')
+                    compiled_paragraphs.append(compiled)
 
-                        compiled = await self._compile_paragraph_page(
-                            para_content=para['content'],
-                            para_index=para['index'],
-                            para_section=para['section'],
-                            para_type=para['type'],
-                            source_entry=source_entry,
-                            related_entities=related_ents,
-                            para_classification=para_classification,
-                            on_chunk=chunk_cb,
-                        )
-                        compiled_paragraphs.append(compiled)
+                    section = compiled["section"]
+                    if section not in section_groups:
+                        section_groups[section] = []
+                    section_groups[section].append(compiled)
 
-                        section = compiled['section']
-                        if section not in section_groups:
-                            section_groups[section] = []
-                        section_groups[section].append(compiled)
-
-                        _emit(ProgressEventType.PAGE_DONE, {
-                            "entity": display_name,
-                            "index": idx + 1,
-                            "total": total_paragraphs,
-                            "status": "error" if compiled['llm_error'] else "done",
-                            "processing_time_ms": compiled['processing_time_ms'],
-                            "llm_error": compiled['llm_error'],
-                        })
-                        _emit(ProgressEventType.PAGE_COMPLETE, {
-                            "entity": display_name,
-                            "raw_content": compiled['raw_content'],
-                            "compiled_content": compiled['compiled_content'],
-                            "compiled_chars": compiled['compiled_chars'],
-                            "processing_time_ms": compiled['processing_time_ms'],
-                            "llm_error": compiled['llm_error'],
-                            "section": para['section'],
-                            "related_entity_count": len(related_ents),
-                            "para_index": idx + 1,
-                        })
-
-                    except Exception as e:
-                        logger.exception("wiki_compiler_paragraph_failed", para_index=para['index'])
-                        result.errors.append(f"段落 {para['index']} 编译失败: {e}")
-                        _emit(ProgressEventType.PAGE_DONE, {
-                            "entity": display_name,
-                            "index": idx + 1,
-                            "total": total_paragraphs,
-                            "status": "error",
-                            "error": str(e),
-                        })
+                    _emit(ProgressEventType.PAGE_DONE, {
+                        "entity": display_name,
+                        "index": idx + 1,
+                        "total": total_paragraphs,
+                        "status": "error" if compiled["llm_error"] else "done",
+                        "processing_time_ms": compiled["processing_time_ms"],
+                        "llm_error": compiled["llm_error"],
+                    })
+                    _emit(ProgressEventType.PAGE_COMPLETE, {
+                        "entity": display_name,
+                        "raw_content": compiled["raw_content"],
+                        "compiled_content": compiled["compiled_content"],
+                        "compiled_chars": compiled["compiled_chars"],
+                        "processing_time_ms": compiled["processing_time_ms"],
+                        "llm_error": compiled["llm_error"],
+                        "section": all_paragraphs[idx]["section"],
+                        "related_entity_count": len(related_ents),
+                        "para_index": idx + 1,
+                    })
 
                 # ── Phase 2: 按章节分组生成 Wiki 页面 ──
                 for section, comp_results in section_groups.items():
@@ -1998,7 +2040,6 @@ H{level}
         on_chunk: Any | None = None,
     ) -> str:
         """调用 LLM 将单段内容编译为 wiki 结构化 Markdown。"""
-        from app.core.llm import ChatMessage
 
         # 构建实体上下文
         entity_context = ""
@@ -2086,18 +2127,14 @@ H{level}
 - 识别并标注关键术语和实体为 [[wikilink]]
 - 添加合适的小节标题"""
 
-        messages = [
-            ChatMessage(role="system", content=system_prompt),
-            ChatMessage(role="user", content=user_message),
-        ]
-
-        response = await self.llm.chat(
-            messages=messages,
+        # 统一 LLM 入口（带并发控制 + 重试 + 超时保护）
+        response_text = await self._llm_complete(
+            prompt=user_message,
+            system=system_prompt,
             temperature=0.3,
-            max_tokens=2000,
         )
 
-        result = response.text.strip()
+        result = response_text.strip()
 
         # 处理流式回调（模拟 chunk 输出）
         if on_chunk and result:

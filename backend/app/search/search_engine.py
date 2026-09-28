@@ -47,6 +47,22 @@ def _get_db() -> sqlite3.Connection:
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:
+    # 防护：检测 docs_fts 是否为 FTS5 虚拟表
+    # 历史 bug：rebuild_index 异常恢复路径可能用 CREATE TABLE AS SELECT 创建普通表，
+    # 普通表无 MATCH 语法支持，且 CREATE VIRTUAL TABLE IF NOT EXISTS 不会替换已存在表。
+    # 注意：FTS5 虚拟表在 sqlite_master.type 为 'table'（非 'virtual'），
+    # 需通过 SQL 文本是否含 'USING fts5' 判断。
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='docs_fts'"
+    ).fetchone()
+    if row and "USING FTS5" not in (row["sql"] or "").upper():
+        logger.warning(
+            "search_fts_table_corrupted",
+            msg="docs_fts 非 FTS5 表，重建",
+        )
+        conn.execute("DROP TABLE docs_fts")
+        conn.execute("DROP TABLE IF EXISTS doc_snippets")
+        conn.execute("DROP TABLE IF EXISTS doc_embeddings")
     conn.executescript("""
         -- FTS5 全文索引表（P2-1.5: content 存预分词文本，原始内容存 doc_snippets）
         CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
@@ -214,8 +230,11 @@ class SearchEngine:
 
             # Step 2: 读取原始内容并重新分词
             mode = get_settings().search_tokenizer
+            # format 列在 docs_fts_backup 中（doc_snippets_backup 无 format 列）
             rows = conn.execute(
-                "SELECT doc_id, title, content, format FROM doc_snippets_backup"
+                """SELECT s.doc_id, s.title, s.content, f.format
+                   FROM doc_snippets_backup s
+                   LEFT JOIN docs_fts_backup f ON s.doc_id = f.doc_id"""
             ).fetchall()
             reindexed = [
                 (
@@ -261,15 +280,19 @@ class SearchEngine:
             return backup_count
         except Exception as e:
             logger.error("search_index_rebuild_failed", error=str(e))
-            # 尝试从备份恢复
+            # 尝试从备份恢复（注意：docs_fts 必须重建为 FTS5 虚拟表，
+            # 不能 CREATE TABLE AS SELECT 否则退化为普通表、MATCH 失效）
             try:
                 conn.executescript("""
                     DROP TABLE IF EXISTS docs_fts;
                     DROP TABLE IF EXISTS doc_snippets;
                     DROP TABLE IF EXISTS doc_embeddings;
-                    CREATE TABLE docs_fts AS SELECT * FROM docs_fts_backup;
-                    CREATE TABLE doc_snippets AS SELECT * FROM doc_snippets_backup;
-                    CREATE TABLE doc_embeddings AS SELECT * FROM doc_embeddings_backup;
+                """)
+                _init_schema(conn)
+                conn.executescript("""
+                    INSERT INTO docs_fts SELECT * FROM docs_fts_backup;
+                    INSERT INTO doc_snippets SELECT * FROM doc_snippets_backup;
+                    INSERT INTO doc_embeddings SELECT * FROM doc_embeddings_backup;
                     DROP TABLE IF EXISTS docs_fts_backup;
                     DROP TABLE IF EXISTS doc_snippets_backup;
                     DROP TABLE IF EXISTS doc_embeddings_backup;
