@@ -34,6 +34,10 @@ ROLE_HIERARCHY: dict[str, int] = {"admin": 3, "operator": 2, "viewer": 1}
 _BCRYPT_PREFIX = "$2b$"
 _SHA256_LEGACY_PREFIX = "sha256$"
 
+# 预计算的虚拟 bcrypt 哈希（用于不存在用户时均衡响应时间，防用户名枚举）
+# cost=12, 对应 "dummy-password"
+_DUMMY_BCRYPT_HASH = b"$2b$12$dhBJCNsr7byIsNv5sOSnvez6lhi3Mg2un/EbsDyDvrYIJvKsCodLC"
+
 
 def _get_db() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -306,6 +310,9 @@ class AuthStore:
                 (username,),
             ).fetchone()
             if not row:
+                # 安全：对不存在的用户执行虚拟 bcrypt 校验，均衡响应时间防用户名枚举
+                import bcrypt as _bcrypt
+                _bcrypt.checkpw(password.encode("utf-8"), _DUMMY_BCRYPT_HASH)
                 return None
 
             # P0-5: 检查账户锁定

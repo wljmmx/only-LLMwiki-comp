@@ -60,6 +60,7 @@ from app.knowledge import (
     unignore_issue,
     update_backlinks,
 )
+from app.knowledge.wiki_index import invalidate_pages_cache
 from app.parsers import supported_formats
 from app.routers.parsers_router import EXT_FMT_MAP
 from app.storage import get_document_store, get_version_control
@@ -763,6 +764,9 @@ async def llm_wiki_page_put(
         change_summary=body.change_summary or "用户编辑",
     )
 
+    # 失效 wiki 页面列表缓存
+    invalidate_pages_cache()
+
     # 9. backlink 重建（update_backlinks 已做差量：先删后插）
     try:
         update_backlinks(slug, new_content)
@@ -869,6 +873,9 @@ def _delete_wiki_page(slug: str) -> tuple[bool, int]:
         return (False, 0)
 
     count = vc.delete_all(doc_key)
+
+    # 失效 wiki 页面列表缓存
+    invalidate_pages_cache()
 
     # 清理搜索索引
     try:

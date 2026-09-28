@@ -11,6 +11,8 @@ S12-4 分片支持：当 wiki 规模 > SHARD_THRESHOLD 时自动按类型拆分�
 
 from __future__ import annotations
 
+import threading
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -24,6 +26,11 @@ from app.knowledge.wikilink import (
 from app.storage.version_control import get_version_control
 
 logger = structlog.get_logger()
+
+# ── list_wiki_pages 内存缓存（TTL，线程安全）──
+_pages_cache: dict[int, tuple[float, list[dict]]] = {}
+_pages_cache_lock = threading.Lock()
+_PAGES_TTL: float = 30.0  # 30 秒缓存
 
 INDEX_SLUG = "wiki:index"
 
@@ -70,19 +77,40 @@ def _parse_frontmatter(content: str) -> tuple[dict, str]:
 def list_wiki_pages(limit: int = 500) -> list[dict]:
     """列出所有 wiki 页面（最新版本，不含 content）
 
+    优化：使用 get_latest_batch() 批量获取（2 次 SQL 替代 N+1 次），
+    30 秒 TTL 内存缓存。
+
     Returns:
         [{slug, title, type, tags, created_at, updated_at, review_status, doc_key, version}]
     """
+    # 检查缓存
+    cache_key = limit
+    with _pages_cache_lock:
+        entry = _pages_cache.get(cache_key)
+        if entry is not None:
+            expires_at, cached = entry
+            if time.time() < expires_at:
+                return cached
+
     vc = get_version_control()
     rows = vc.list_by_prefix("wiki:", limit)
+    # 排除 index 与 log 自身（保留文件，非概念页）
+    wiki_rows = [r for r in rows if _slug_from_key(r["doc_key"]) not in ("index", "log")]
+
+    if not wiki_rows:
+        result = []
+        with _pages_cache_lock:
+            _pages_cache[cache_key] = (time.time() + _PAGES_TTL, result)
+        return result
+
+    # 批量获取最新版本（1 次 SQL 替代 N 次 get_latest）
+    doc_keys = [r["doc_key"] for r in wiki_rows]
+    latest_map = vc.get_latest_batch(doc_keys)
+
     pages = []
-    for r in rows:
-        # 排除 index 与 log 自身（保留文件，非概念页）
+    for r in wiki_rows:
         slug = _slug_from_key(r["doc_key"])
-        if slug in ("index", "log"):
-            continue
-        # 读取最新版本内容解析 frontmatter
-        latest = vc.get_latest(r["doc_key"])
+        latest = latest_map.get(r["doc_key"])
         if not latest:
             continue
         meta, _ = _parse_frontmatter(latest["content"])
@@ -99,7 +127,19 @@ def list_wiki_pages(limit: int = 500) -> list[dict]:
                 "review_status": meta.get("review_status", "auto"),
             }
         )
+
+    # 写入缓存
+    with _pages_cache_lock:
+        _pages_cache[cache_key] = (time.time() + _PAGES_TTL, pages)
+
     return pages
+
+
+def invalidate_pages_cache() -> None:
+    """清除 list_wiki_pages 缓存（wiki 页面变更时调用）"""
+    with _pages_cache_lock:
+        _pages_cache.clear()
+    logger.debug("wiki_pages_cache_invalidated")
 
 
 def get_all_slugs() -> set[str]:
