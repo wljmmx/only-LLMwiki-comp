@@ -13,13 +13,21 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import structlog
 
 logger = structlog.get_logger()
+
+# ── deadlinks/orphan 缓存（TTL，线程安全）──
+_link_cache: dict[str, Any] = {}
+_link_cache_lock = threading.Lock()
+_LINK_TTL: float = 30.0  # 30 秒缓存
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "events.db"
 
@@ -201,6 +209,9 @@ def update_backlinks(source_slug: str, md: str) -> int:
             (source_slug, target, display, count, now),
         )
     conn.commit()
+    # 失效 deadlinks/orphan 缓存
+    with _link_cache_lock:
+        _link_cache.clear()
     return len(target_count)
 
 
@@ -215,6 +226,9 @@ def remove_backlinks(source_slug: str) -> int:
         "DELETE FROM wiki_backlinks WHERE source_slug = ?", (source_slug,)
     )
     conn.commit()
+    # 失效 deadlinks/orphan 缓存
+    with _link_cache_lock:
+        _link_cache.clear()
     return cursor.rowcount
 
 
@@ -268,6 +282,8 @@ def get_outlinks(source_slug: str) -> list[BacklinkEntry]:
 def get_orphan_slugs(known_slugs: set[str]) -> list[str]:
     """查询孤岛页面（无任何入链）
 
+    优化：30s TTL 缓存，backlink 变更时自动失效。
+
     Args:
         known_slugs: 所有已知 slug 集合
 
@@ -276,16 +292,28 @@ def get_orphan_slugs(known_slugs: set[str]) -> list[str]:
     """
     if not known_slugs:
         return []
+    cache_key = f"orphan:{len(known_slugs)}"
+    with _link_cache_lock:
+        entry = _link_cache.get(cache_key)
+        if entry is not None:
+            expires_at, cached = entry
+            if time.time() < expires_at:
+                return cached
     conn = _get_db()
     # 查所有被链接的 target
     rows = conn.execute("SELECT DISTINCT target_slug FROM wiki_backlinks").fetchall()
     linked_targets = {r["target_slug"] for r in rows}
     # 已知 slug 中不在 linked_targets 的就是孤岛
-    return sorted(known_slugs - linked_targets)
+    result = sorted(known_slugs - linked_targets)
+    with _link_cache_lock:
+        _link_cache[cache_key] = (time.time() + _LINK_TTL, result)
+    return result
 
 
 def get_all_deadlinks(existing_slugs: set[str]) -> list[DeadLink]:
     """查询所有死链（backlink 表中 target 不存在的）
+
+    优化：30s TTL 缓存，backlink 变更时自动失效。
 
     Args:
         existing_slugs: 已存在的所有 slug 集合
@@ -293,6 +321,13 @@ def get_all_deadlinks(existing_slugs: set[str]) -> list[DeadLink]:
     Returns:
         DeadLink 列表
     """
+    cache_key = f"deadlinks:{len(existing_slugs)}"
+    with _link_cache_lock:
+        entry = _link_cache.get(cache_key)
+        if entry is not None:
+            expires_at, cached = entry
+            if time.time() < expires_at:
+                return cached
     conn = _get_db()
     rows = conn.execute(
         """SELECT DISTINCT source_slug, target_slug
@@ -302,7 +337,7 @@ def get_all_deadlinks(existing_slugs: set[str]) -> list[DeadLink]:
         else "SELECT DISTINCT source_slug, target_slug FROM wiki_backlinks",
         tuple(existing_slugs) if existing_slugs else (),
     ).fetchall()
-    return [
+    result = [
         DeadLink(
             slug=r["target_slug"],
             source_slug=r["source_slug"],
@@ -310,3 +345,6 @@ def get_all_deadlinks(existing_slugs: set[str]) -> list[DeadLink]:
         )
         for r in rows
     ]
+    with _link_cache_lock:
+        _link_cache[cache_key] = (time.time() + _LINK_TTL, result)
+    return result
